@@ -78,6 +78,12 @@ class QtMainWindowSettingsMixin:
         self.ui_font_spin.setValue(
             self._to_float(payload.get("ui_font_pt", self._default_ui_font_pt), self._default_ui_font_pt)
         )
+        self.playback_speed_spin.setValue(
+            self._to_float(
+                payload.get("playback_rows_per_sec", self.DEFAULT_PLAYBACK_ROWS_PER_SEC),
+                self.DEFAULT_PLAYBACK_ROWS_PER_SEC,
+            )
+        )
         self._apply_ui_scale()
 
         self._startup_row_id = self._to_int(payload.get("row_id", 0), 0)
@@ -137,6 +143,7 @@ class QtMainWindowSettingsMixin:
                 "show_3d_colorbar": bool(self.show_colorbar_check.isChecked()),
                 "ui_control_scale_pct": int(self.ui_control_scale_spin.value()),
                 "ui_font_pt": float(self.ui_font_spin.value()),
+                "playback_rows_per_sec": float(self.playback_speed_spin.value()),
                 "qt_auto_layout": bool(self._auto_layout_enabled),
                 "qt_window_size": [int(self.width()), int(self.height())],
                 "qt_main_splitter_sizes": [int(v) for v in self.main_splitter.sizes()],

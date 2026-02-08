@@ -11,6 +11,7 @@ from .qt_window.runtime import (
     QT_IMPORT_ERROR,
     BaseMainWindow,
     QtCore,
+    QtGui,
     QtWidgets,
     pg,
 )
@@ -37,6 +38,7 @@ class CASALSQtMainWindow(
     INTERACT_MAX_3D_FP = 72
     INTERACT_MAX_3D_SAMPLES = 180
     RENDER_DEBOUNCE_MS = 80
+    INTERACTIVE_LOD_SETTLE_MS = 220
     PREFERRED_WINDOW_WIDTH = 1540
     PREFERRED_WINDOW_HEIGHT = 960
     MIN_WINDOW_WIDTH = 920
@@ -54,6 +56,9 @@ class CASALSQtMainWindow(
     DEFAULT_UI_CONTROL_SCALE_PERCENT = 100
     MIN_UI_FONT_PT = 7.0
     MAX_UI_FONT_PT = 24.0
+    MIN_PLAYBACK_ROWS_PER_SEC = 0.5
+    MAX_PLAYBACK_ROWS_PER_SEC = 30.0
+    DEFAULT_PLAYBACK_ROWS_PER_SEC = 5.0
     MIN_AXIS_SCALE = 0.05
     MAX_AXIS_SCALE = 20.0
     CUSTOM_CMAP_GREEN_BLACK_BLUE = "green_black_blue"
@@ -102,10 +107,12 @@ class CASALSQtMainWindow(
         self.meta: TdmsMeta | None = None
 
         self._last_camera_position = None
+        self._has_rendered_3d_scene = False
         self._is_syncing_camera = False
         self._pv_mesh_actor = None
         self._last_axis_scale = (1.0, 1.0, 1.0)
         self._last_3d_axes_ranges = None
+        self._last_3d_scene_bounds = None
         self._layout_initialized = False
         self._layout_busy = False
         self._interactive_2d_enabled = pg is not None
@@ -113,23 +120,63 @@ class CASALSQtMainWindow(
         self.canvas = None
         self.pg_plot = None
         self.pg_image_item = None
+        self.pg_colorbar_view = None
+        self.pg_colorbar = None
+        self._preserve_2d_view_on_next_draw = False
+        self._playback_paused = False
         self._default_ui_font_pt = self._to_float(QtWidgets.QApplication.font().pointSizeF(), 10.0)
         if self._default_ui_font_pt <= 0.0:
             self._default_ui_font_pt = 10.0
+        startup_scale_pct = self._to_int(
+            self._settings_cache.get("ui_control_scale_pct", self.DEFAULT_UI_CONTROL_SCALE_PERCENT),
+            self.DEFAULT_UI_CONTROL_SCALE_PERCENT,
+        )
+        self._startup_ui_control_scale_percent = int(
+            round(
+                max(
+                    self.MIN_UI_CONTROL_SCALE * 100.0,
+                    min(self.MAX_UI_CONTROL_SCALE * 100.0, float(startup_scale_pct)),
+                )
+            )
+        )
+        startup_font_pt = self._to_float(
+            self._settings_cache.get("ui_font_pt", self._default_ui_font_pt),
+            self._default_ui_font_pt,
+        )
+        self._startup_ui_font_pt = max(
+            self.MIN_UI_FONT_PT,
+            min(self.MAX_UI_FONT_PT, float(startup_font_pt)),
+        )
+        app = QtWidgets.QApplication.instance()
+        if app is not None:
+            startup_font = QtGui.QFont(app.font())
+            startup_font.setPointSizeF(self._startup_ui_font_pt)
+            app.setFont(startup_font)
+            self.setFont(startup_font)
 
         self._render_timer = QtCore.QTimer(self)
         self._render_timer.setSingleShot(True)
-        self._render_timer.timeout.connect(lambda: self.render_current_row(show_errors=False))
+        self._render_timer.timeout.connect(self._on_render_timer_timeout)
+        self._interactive_lod_pending = False
+
+        self._full_res_render_timer = QtCore.QTimer(self)
+        self._full_res_render_timer.setSingleShot(True)
+        self._full_res_render_timer.timeout.connect(self._on_full_res_render_timeout)
+
+        self._playback_timer = QtCore.QTimer(self)
+        self._playback_timer.setSingleShot(False)
+        self._playback_timer.setInterval(200)
+        self._playback_timer.timeout.connect(self._on_playback_tick)
 
         self._camera_poll_timer = QtCore.QTimer(self)
         self._camera_poll_timer.setInterval(120)
         self._camera_poll_timer.timeout.connect(self._sync_camera_from_pyvista)
-        self._camera_poll_timer.start()
 
         self._build_ui()
         restored_layout = self._restore_settings()
         if not restored_layout:
             self._apply_resolution_adaptive_layout(initial=True)
+        self._update_camera_polling_state()
 
         if not tdms_available():
             self._set_status("nptdms is missing. Install with: pip install nptdms")

@@ -86,12 +86,6 @@ class CASALSQtMainWindow(
                 "Install with: pip install matplotlib\n"
                 f"Import error: {MATPLOTLIB_IMPORT_ERROR}"
             )
-        if PYVISTA_IMPORT_ERROR is not None:
-            raise RuntimeError(
-                "pyvista + pyvistaqt are required for true embedded 3D.\n"
-                "Install with: pip install pyvista pyvistaqt\n"
-                f"Import error: {PYVISTA_IMPORT_ERROR}"
-            )
 
         super().__init__()
         self.setWindowTitle("CASALS TDMS Viewer (Qt + PyVistaQt)")
@@ -105,10 +99,12 @@ class CASALSQtMainWindow(
 
         self.processor = CasalsTdmsProcessor()
         self.meta: TdmsMeta | None = None
+        self._pyvista_backend_available = PYVISTA_IMPORT_ERROR is None
 
         self._last_camera_position = None
         self._has_rendered_3d_scene = False
         self._is_syncing_camera = False
+        self._preserve_camera_on_scale_once = False
         self._pv_mesh_actor = None
         self._last_axis_scale = (1.0, 1.0, 1.0)
         self._last_3d_axes_ranges = None
@@ -186,5 +182,7 @@ class CASALSQtMainWindow(
                 "Install dependency with:\n"
                 "pip install nptdms"
             )
+        elif not self._pyvista_backend_available:
+            self._set_status("3D backend unavailable. Install: pip install pyvista pyvistaqt (2D remains usable).")
 
 __all__ = ["CASALSQtMainWindow"]

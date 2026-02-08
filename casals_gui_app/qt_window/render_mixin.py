@@ -17,6 +17,13 @@ class QtMainWindowRenderMixin:
     def _clamp(value: float, lo: float, hi: float) -> float:
         return max(lo, min(hi, value))
 
+    def _is_3d_backend_available(self) -> bool:
+        if not bool(getattr(self, "_pyvista_backend_available", False)):
+            return False
+        if pv is None:
+            return False
+        return getattr(self, "pv_view", None) is not None
+
     @staticmethod
     def _clamp_axis_range(raw_range, bound_lo: float, bound_hi: float) -> tuple[float, float]:
         lo_bound = float(min(bound_lo, bound_hi))
@@ -82,6 +89,28 @@ class QtMainWindowRenderMixin:
             z0, z1 = z1, z0
         return x0, x1, y0, y1, z0, z1
 
+    @staticmethod
+    def _scaled_scene_bounds_from_axes_ranges(
+        axes_ranges: tuple[float, float, float, float, float, float],
+        axis_scale: tuple[float, float, float],
+    ) -> tuple[float, float, float, float, float, float]:
+        x0, x1, y0, y1, z0, z1 = (float(v) for v in axes_ranges)
+        sx, sy, sz = (max(1e-6, float(v)) for v in axis_scale)
+        x0s = x0
+        x1s = x0 + (x1 - x0) * sx
+        y0s = y0
+        y1s = y0 + (y1 - y0) * sy
+        z0s = z0
+        z1s = z0 + (z1 - z0) * sz
+        return (
+            min(x0s, x1s),
+            max(x0s, x1s),
+            min(y0s, y1s),
+            max(y0s, y1s),
+            min(z0s, z1s),
+            max(z0s, z1s),
+        )
+
     def _axis_origin_from_axes_ranges(self) -> tuple[float, float, float] | None:
         if self._last_3d_axes_ranges is None:
             return None
@@ -115,6 +144,9 @@ class QtMainWindowRenderMixin:
         *,
         row_id: int,
         force_interactive_lod: bool,
+        target_fp: int,
+        target_samples: int,
+        track_axis_reversed: bool,
         input_shape: tuple[int, int],
         ds_shape: tuple[int, int],
         ds_fp: int,
@@ -158,6 +190,12 @@ class QtMainWindowRenderMixin:
         payload = {
             "row_id": int(row_id),
             "preview_lod": bool(force_interactive_lod),
+            "target_fp": int(target_fp),
+            "target_samples": int(target_samples),
+            "track_axis_reversed": bool(track_axis_reversed),
+            "keep_view_checked": bool(hasattr(self, "keep_view_check") and self.keep_view_check.isChecked()),
+            "preserve_camera_on_scale_once": bool(getattr(self, "_preserve_camera_on_scale_once", False)),
+            "manual_axis_labels": True,
             "input_shape_fp_sample": [int(input_shape[0]), int(input_shape[1])],
             "ds_shape_fp_sample": [int(ds_shape[0]), int(ds_shape[1])],
             "downsample_steps": {"fp_step": int(ds_fp), "sample_step": int(ds_sample)},
@@ -174,6 +212,141 @@ class QtMainWindowRenderMixin:
         }
         print("[CASALS 3D AXIS DEBUG] " + json.dumps(payload, ensure_ascii=False))
 
+    @staticmethod
+    def _map_physical_to_scene(value: float, phys_lo: float, phys_hi: float, scene_lo: float, scene_hi: float) -> float:
+        p0 = float(phys_lo)
+        p1 = float(phys_hi)
+        s0 = float(scene_lo)
+        s1 = float(scene_hi)
+        if abs(p1 - p0) < 1e-9:
+            return 0.5 * (s0 + s1)
+        t = (float(value) - p0) / (p1 - p0)
+        return s0 + t * (s1 - s0)
+
+    @staticmethod
+    def _axis_tick_values(lo: float, hi: float, count: int = 6) -> np.ndarray:
+        count = max(2, int(count))
+        return np.linspace(float(lo), float(hi), count, dtype=np.float64)
+
+    def _clear_manual_axis_label_actors(self) -> None:
+        for name in ("manual_axis_labels_x", "manual_axis_labels_y", "manual_axis_labels_z"):
+            try:
+                self.pv_view.remove_actor(name, render=False)
+            except Exception:
+                pass
+
+    def _set_cube_axis_numeric_label_visibility(self, visible: bool) -> None:
+        cube_actor = getattr(self, "_last_cube_axes_actor", None)
+        if cube_actor is None:
+            return
+        flag = bool(visible)
+        for method_name in (
+            "SetXAxisLabelVisibility",
+            "SetYAxisLabelVisibility",
+            "SetZAxisLabelVisibility",
+        ):
+            method = getattr(cube_actor, method_name, None)
+            if callable(method):
+                try:
+                    method(flag)
+                except Exception:
+                    pass
+
+    def _draw_manual_axis_labels(
+        self,
+        axes_ranges: tuple[float, float, float, float, float, float],
+        scene_bounds: tuple[float, float, float, float, float, float],
+        track_axis_reversed: bool = False,
+    ) -> None:
+        self._clear_manual_axis_label_actors()
+        x0, x1, y0, y1, z0, z1 = (float(v) for v in axes_ranges)
+        sx0, sx1, sy0, sy1, sz0, sz1 = (float(v) for v in scene_bounds)
+        sx_span = max(1e-6, abs(sx1 - sx0))
+        sy_span = max(1e-6, abs(sy1 - sy0))
+
+        font_size = max(8, int(round(self._visual_font_pt() * 0.95)))
+        x_ticks = self._axis_tick_values(x0, x1, count=6)
+        y_ticks = self._axis_tick_values(y0, y1, count=6)
+        z_ticks = self._axis_tick_values(z0, z1, count=6)
+
+        x_span_phys = abs(x1 - x0)
+        z_span_phys = abs(z1 - z0)
+        x_fmt = "{:.3f}" if x_span_phys < 10.0 else ("{:.1f}" if x_span_phys >= 200.0 else "{:.2f}")
+        y_fmt = "{:.0f}"
+        z_fmt = "{:.2f}" if z_span_phys < 20.0 else ("{:.0f}" if z_span_phys >= 200.0 else "{:.1f}")
+
+        x_points = np.array(
+            [
+                (
+                    self._map_physical_to_scene(v, x0, x1, sx0, sx1),
+                    sy0 - 0.035 * sy_span,
+                    sz0,
+                )
+                for v in x_ticks
+            ],
+            dtype=np.float32,
+        )
+        y_points = np.array(
+            [
+                (
+                    sx0 - 0.030 * sx_span,
+                    (
+                        self._map_physical_to_scene(v, y0, y1, sy1, sy0)
+                        if track_axis_reversed
+                        else self._map_physical_to_scene(v, y0, y1, sy0, sy1)
+                    ),
+                    sz0,
+                )
+                for v in y_ticks
+            ],
+            dtype=np.float32,
+        )
+        z_points = np.array(
+            [
+                (
+                    sx0 - 0.030 * sx_span,
+                    sy0,
+                    self._map_physical_to_scene(v, z0, z1, sz0, sz1),
+                )
+                for v in z_ticks
+            ],
+            dtype=np.float32,
+        )
+
+        self.pv_view.add_point_labels(
+            x_points,
+            [x_fmt.format(float(v)) for v in x_ticks],
+            always_visible=True,
+            shape_opacity=0.0,
+            show_points=False,
+            text_color="black",
+            font_size=font_size,
+            name="manual_axis_labels_x",
+            render=False,
+        )
+        self.pv_view.add_point_labels(
+            y_points,
+            [y_fmt.format(float(v)) for v in y_ticks],
+            always_visible=True,
+            shape_opacity=0.0,
+            show_points=False,
+            text_color="black",
+            font_size=font_size,
+            name="manual_axis_labels_y",
+            render=False,
+        )
+        self.pv_view.add_point_labels(
+            z_points,
+            [z_fmt.format(float(v)) for v in z_ticks],
+            always_visible=True,
+            shape_opacity=0.0,
+            show_points=False,
+            text_color="black",
+            font_size=font_size,
+            name="manual_axis_labels_z",
+            render=False,
+        )
+
     def _on_render_timer_timeout(self) -> None:
         force_preview = bool(getattr(self, "_interactive_lod_pending", False))
         self._interactive_lod_pending = False
@@ -181,6 +354,8 @@ class QtMainWindowRenderMixin:
 
     def _on_full_res_render_timeout(self) -> None:
         if self._view_mode != "3D":
+            return
+        if not self._is_3d_backend_available():
             return
         if not self.auto_render_check.isChecked():
             return
@@ -232,6 +407,33 @@ class QtMainWindowRenderMixin:
             self.ds_fp_spin.setValue(ds_fp)
             self.ds_fp_spin.blockSignals(False)
         return ds_sample, ds_fp
+
+    def _target_3d_dims(self, interactive: bool) -> tuple[int, int]:
+        if interactive:
+            default_fp = int(self.INTERACT_MAX_3D_FP)
+            default_samples = int(self.INTERACT_MAX_3D_SAMPLES)
+            fp_widget = getattr(self, "preview_target_fp_spin", None)
+            sample_widget = getattr(self, "preview_target_sample_spin", None)
+        else:
+            default_fp = int(self.MAX_3D_FP)
+            default_samples = int(self.MAX_3D_SAMPLES)
+            fp_widget = getattr(self, "auto_target_fp_spin", None)
+            sample_widget = getattr(self, "auto_target_sample_spin", None)
+
+        target_fp = int(fp_widget.value()) if fp_widget is not None else default_fp
+        target_samples = int(sample_widget.value()) if sample_widget is not None else default_samples
+        target_fp = max(8, target_fp)
+        target_samples = max(16, target_samples)
+        return target_fp, target_samples
+
+    def _is_track_axis_reversed(self) -> bool:
+        widget = getattr(self, "reverse_track_axis_check", None)
+        if widget is None:
+            return False
+        try:
+            return bool(widget.isChecked())
+        except Exception:
+            return False
 
     @staticmethod
     def _downsample_indices(length: int, step: int) -> np.ndarray:
@@ -290,19 +492,42 @@ class QtMainWindowRenderMixin:
             cmap = self.CMAPS[0]
         return cmap
 
+    def _is_cmap_reversed(self) -> bool:
+        widget = getattr(self, "reverse_cmap_check", None)
+        if widget is None:
+            return False
+        try:
+            return bool(widget.isChecked())
+        except Exception:
+            return False
+
     def _resolve_mpl_cmap(self, cmap_name: str | None = None):
         name = str(cmap_name) if cmap_name is not None else self._get_cmap()
         if name not in self.CMAPS:
             name = self.CMAPS[0]
+        reverse = self._is_cmap_reversed()
         if name == self.CUSTOM_CMAP_GREEN_BLACK_BLUE:
+            colors = ["#00ff00", "#000000", "#0000ff"]
+            if reverse:
+                colors = list(reversed(colors))
             if LinearSegmentedColormap is not None:
                 return LinearSegmentedColormap.from_list(
-                    self.CUSTOM_CMAP_GREEN_BLACK_BLUE,
-                    ["#00ff00", "#000000", "#0000ff"],
+                    self.CUSTOM_CMAP_GREEN_BLACK_BLUE + ("_r" if reverse else ""),
+                    colors,
                     N=256,
                 )
-            return mpl_cm.get_cmap("RdBu_r", 256)
-        return mpl_cm.get_cmap(name, 256)
+            return mpl_cm.get_cmap("RdBu" if reverse else "RdBu_r", 256)
+        cmap = mpl_cm.get_cmap(name, 256)
+        if not reverse:
+            return cmap
+        reversed_method = getattr(cmap, "reversed", None)
+        if callable(reversed_method):
+            try:
+                return reversed_method()
+            except Exception:
+                pass
+        reverse_name = name[:-2] if name.endswith("_r") else f"{name}_r"
+        return mpl_cm.get_cmap(reverse_name, 256)
 
     def _lookup_table_from_cmap(self, cmap_name: str) -> np.ndarray:
         cmap = self._resolve_mpl_cmap(cmap_name)
@@ -391,6 +616,7 @@ class QtMainWindowRenderMixin:
         self.row_spin.blockSignals(False)
         self._last_camera_position = None
         self._has_rendered_3d_scene = False
+        self._preserve_camera_on_scale_once = False
         self._last_3d_axes_ranges = None
         self._last_3d_scene_bounds = None
         self._update_camera_polling_state()
@@ -432,10 +658,11 @@ class QtMainWindowRenderMixin:
 
     def _apply_mode_visibility(self) -> None:
         mode = self._view_mode
+        has_3d = self._is_3d_backend_available()
         if hasattr(self, "three_d_sampling_group"):
-            self.three_d_sampling_group.setVisible(mode == "3D")
+            self.three_d_sampling_group.setVisible(mode == "3D" and has_3d)
         if hasattr(self, "three_d_view_group"):
-            self.three_d_view_group.setVisible(mode == "3D")
+            self.three_d_view_group.setVisible(mode == "3D" and has_3d)
         if hasattr(self, "clip_group"):
             self.clip_group.setVisible(True)
         if hasattr(self, "ui_group"):
@@ -443,7 +670,12 @@ class QtMainWindowRenderMixin:
         if hasattr(self, "mode_value_label"):
             self.mode_value_label.setText(mode)
         if hasattr(self, "mode_toggle_btn"):
-            self.mode_toggle_btn.setText("Switch to 3D" if mode == "2D" else "Switch to 2D")
+            if has_3d:
+                self.mode_toggle_btn.setEnabled(True)
+                self.mode_toggle_btn.setText("Switch to 3D" if mode == "2D" else "Switch to 2D")
+            else:
+                self.mode_toggle_btn.setEnabled(False)
+                self.mode_toggle_btn.setText("3D unavailable")
         if hasattr(self, "view_stack") and self.view_stack.count() >= 2:
             self.view_stack.setCurrentIndex(1 if mode == "3D" else 0)
         self._update_playback_controls()
@@ -452,6 +684,10 @@ class QtMainWindowRenderMixin:
         mode_norm = str(mode).upper()
         if mode_norm not in {"2D", "3D"}:
             mode_norm = "2D"
+        if mode_norm == "3D" and not self._is_3d_backend_available():
+            mode_norm = "2D"
+            if trigger_render:
+                self._set_status("3D backend unavailable. Install: pip install pyvista pyvistaqt")
         if mode_norm != "2D" and (self._playback_timer.isActive() or self._playback_paused):
             self._stop_2d_playback(set_status=False)
         self._view_mode = mode_norm
@@ -511,8 +747,8 @@ class QtMainWindowRenderMixin:
             return
 
         if sender in (self.x_scale_spin, self.y_scale_spin, self.z_scale_spin):
-            if self._apply_axis_scale_from_controls():
-                return
+            # Scaling changes geometry; rebuild the mesh to keep axis mapping stable.
+            self._preserve_camera_on_scale_once = True
             self._maybe_render()
             return
 
@@ -531,16 +767,31 @@ class QtMainWindowRenderMixin:
         return (cx, cy, cz), (x_span, y_span, z_span)
 
     def _apply_camera_from_controls(self) -> bool:
-        scene = self._scene_center_spans_from_axes()
-        if scene is None:
-            return False
-        center, spans = scene
+        scene_bounds = self._last_3d_scene_bounds
+        if scene_bounds is None:
+            scene = self._scene_center_spans_from_axes()
+            if scene is None:
+                return False
+            center, spans = scene
+            sx, sy, sz = self._last_axis_scale
+            spans = (
+                max(1e-6, float(spans[0]) * float(sx)),
+                max(1e-6, float(spans[1]) * float(sy)),
+                max(1e-6, float(spans[2]) * float(sz)),
+            )
+        else:
+            x0, x1, y0, y1, z0, z1 = (float(v) for v in scene_bounds)
+            center = (0.5 * (x0 + x1), 0.5 * (y0 + y1), 0.5 * (z0 + z1))
+            spans = (
+                max(1e-6, x1 - x0),
+                max(1e-6, y1 - y0),
+                max(1e-6, z1 - z0),
+            )
         elev, azim, _x, _y, _z = self._sanitize_3d_view()
-        sx, sy, sz = self._last_axis_scale
         radius = max(
-            spans[0] * float(sx),
-            spans[1] * float(sy),
-            spans[2] * float(sz),
+            spans[0],
+            spans[1],
+            spans[2],
             1.0,
         )
         self.pv_view.camera_position = self._camera_from_angles(
@@ -557,63 +808,17 @@ class QtMainWindowRenderMixin:
         return True
 
     def _apply_axis_scale_from_controls(self) -> bool:
-        if self._pv_mesh_actor is None:
-            return False
-        scene = self._scene_center_spans_from_axes()
-        if scene is None:
-            return False
-        _center, spans = scene
-        axis_origin = self._axis_origin_from_axes_ranges()
-        if axis_origin is None:
-            return False
-        _elev, _azim, x_vis_scale, y_vis_scale, z_vis_scale = self._sanitize_3d_view()
-        x_span, y_span, z_span = spans
-        y_auto_scale = self._clamp(x_span / y_span, self.MIN_AXIS_SCALE, self.MAX_AXIS_SCALE)
-        z_auto_scale = self._clamp(x_span / z_span, self.MIN_AXIS_SCALE, self.MAX_AXIS_SCALE)
-        x_total_scale = self._clamp(float(x_vis_scale), self.MIN_AXIS_SCALE, self.MAX_AXIS_SCALE)
-        y_total_scale = self._clamp(y_auto_scale * float(y_vis_scale), self.MIN_AXIS_SCALE, self.MAX_AXIS_SCALE)
-        z_total_scale = self._clamp(z_auto_scale * float(z_vis_scale), self.MIN_AXIS_SCALE, self.MAX_AXIS_SCALE)
-        self._last_axis_scale = (x_total_scale, y_total_scale, z_total_scale)
-
-        try:
-            self._pv_mesh_actor.SetOrigin(
-                float(axis_origin[0]),
-                float(axis_origin[1]),
-                float(axis_origin[2]),
-            )
-        except Exception:
-            pass
-        try:
-            self._pv_mesh_actor.SetScale(
-                float(self._last_axis_scale[0]),
-                float(self._last_axis_scale[1]),
-                float(self._last_axis_scale[2]),
-            )
-        except Exception:
-            try:
-                self._pv_mesh_actor.scale = self._last_axis_scale
-            except Exception:
-                return False
-
-        if self._last_3d_axes_ranges is not None:
-            self._last_3d_axes_ranges = self._normalize_axes_ranges(self._last_3d_axes_ranges)
-        self._last_3d_scene_bounds = self._last_3d_axes_ranges
-        self._update_3d_axis_fonts(
-            axes_ranges=self._last_3d_axes_ranges,
-            scene_bounds=self._last_3d_scene_bounds,
-            render_now=False,
-        )
-        self.pv_view.reset_camera_clipping_range()
-        self.pv_view.render()
-        self._last_camera_position = self.pv_view.camera_position
-        self._has_rendered_3d_scene = True
-        self._update_camera_polling_state()
-        return True
+        # Deprecated fast path kept for compatibility; scale updates rebuild 3D mesh.
+        return False
 
     def _maybe_render(self) -> None:
         if not self.auto_render_check.isChecked():
             return
-        preview_3d = self._view_mode == "3D" and self.interactive_lod_check.isChecked()
+        preview_3d = (
+            self._view_mode == "3D"
+            and self._is_3d_backend_available()
+            and self.interactive_lod_check.isChecked()
+        )
         self._render_timer.stop()
         self._full_res_render_timer.stop()
         self._interactive_lod_pending = preview_3d
@@ -858,12 +1063,10 @@ class QtMainWindowRenderMixin:
         vmax: float,
         force_interactive_lod: bool = False,
     ) -> tuple[tuple[int, int], int, int]:
-        if force_interactive_lod and self.interactive_lod_check.isChecked():
-            target_fp = self.INTERACT_MAX_3D_FP
-            target_samples = self.INTERACT_MAX_3D_SAMPLES
-        else:
-            target_fp = self.MAX_3D_FP
-            target_samples = self.MAX_3D_SAMPLES
+        if not self._is_3d_backend_available():
+            raise RuntimeError("3D backend unavailable. Install: pip install pyvista pyvistaqt")
+        interactive_target = bool(force_interactive_lod and self.interactive_lod_check.isChecked())
+        target_fp, target_samples = self._target_3d_dims(interactive=interactive_target)
 
         ds_sample, ds_fp = self._effective_3d_downsample(
             n_fp=row_data.shape[0],
@@ -872,6 +1075,7 @@ class QtMainWindowRenderMixin:
             target_samples=target_samples,
         )
         elev, azim, x_vis_scale, y_vis_scale, z_vis_scale = self._sanitize_3d_view()
+        track_axis_reversed = self._is_track_axis_reversed()
 
         fp_idx = self._downsample_indices(row_data.shape[0], ds_fp)
         sample_idx = self._downsample_indices(row_data.shape[1], ds_sample)
@@ -884,14 +1088,13 @@ class QtMainWindowRenderMixin:
         x_axis_min = 0.0
         x_axis_max = float(max(0, row_data.shape[1] - 1)) * float(self.processor.dr)
         y_axis_min, y_axis_max = self._track_index_axis_range(n_fp=row_data.shape[0])
-        z_axis_min = float(np.min(z_raw)) if z_raw.size else 0.0
-        z_axis_max = float(np.max(z_raw)) if z_raw.size else 1.0
+        if track_axis_reversed:
+            y_grid = (float(y_axis_min) + float(y_axis_max)) - y_grid
+        z_axis_min = float(np.min(row_data)) if row_data.size else 0.0
+        z_axis_max = float(np.max(row_data)) if row_data.size else 1.0
         if np.isclose(z_axis_min, z_axis_max):
             z_axis_min -= 0.5
             z_axis_max += 0.5
-        cx = 0.5 * (x_axis_min + x_axis_max)
-        cy = 0.5 * (y_axis_min + y_axis_max)
-        cz = 0.5 * (z_axis_min + z_axis_max)
         axis_origin = (x_axis_min, y_axis_min, z_axis_min)
 
         x_span = x_axis_max - x_axis_min
@@ -917,11 +1120,12 @@ class QtMainWindowRenderMixin:
                 z_axis_max,
             )
         )
-        # Keep cube-axis numeric values in physical units from the current row data.
-        # Visual stretching is applied on the mesh actor transform only.
-        scene_bounds = axes_ranges
+        scene_bounds = self._scaled_scene_bounds_from_axes_ranges(axes_ranges, self._last_axis_scale)
 
-        grid = pv.StructuredGrid(x_grid, y_grid, z_raw)
+        x_plot = axis_origin[0] + (x_grid - axis_origin[0]) * float(self._last_axis_scale[0])
+        y_plot = axis_origin[1] + (y_grid - axis_origin[1]) * float(self._last_axis_scale[1])
+        z_plot = axis_origin[2] + (z_raw - axis_origin[2]) * float(self._last_axis_scale[2])
+        grid = pv.StructuredGrid(x_plot, y_plot, z_plot)
         grid.point_data["amplitude"] = z_color.ravel(order="F")
 
         if self._pv_mesh_actor is not None:
@@ -956,59 +1160,42 @@ class QtMainWindowRenderMixin:
             name="casals_surface",
             render=False,
         )
-        try:
-            self._pv_mesh_actor.SetOrigin(
-                float(axis_origin[0]),
-                float(axis_origin[1]),
-                float(axis_origin[2]),
-            )
-        except Exception:
-            pass
-        try:
-            self._pv_mesh_actor.SetScale(
-                float(self._last_axis_scale[0]),
-                float(self._last_axis_scale[1]),
-                float(self._last_axis_scale[2]),
-            )
-        except Exception:
-            try:
-                self._pv_mesh_actor.scale = self._last_axis_scale
-            except Exception:
-                pass
 
         used_axes_ranges, used_bounds = self._update_3d_axis_fonts(
             axes_ranges=axes_ranges,
             scene_bounds=scene_bounds,
             render_now=False,
         )
-        if not used_axes_ranges and not np.allclose(self._last_axis_scale, (1.0, 1.0, 1.0), atol=1e-6):
-            try:
-                self._pv_mesh_actor.SetScale(1.0, 1.0, 1.0)
-            except Exception:
-                try:
-                    self._pv_mesh_actor.scale = (1.0, 1.0, 1.0)
-                except Exception:
-                    pass
-            self._last_axis_scale = (1.0, 1.0, 1.0)
-            self._last_3d_axes_ranges = None
-            self._last_3d_scene_bounds = None
-            self._update_3d_axis_fonts(render_now=False)
+        self._set_cube_axis_numeric_label_visibility(False)
+        self._draw_manual_axis_labels(
+            axes_ranges=axes_ranges,
+            scene_bounds=scene_bounds,
+            track_axis_reversed=track_axis_reversed,
+        )
 
-        if (
-            self.keep_view_check.isChecked()
+        preserve_camera = bool(
+            (self.keep_view_check.isChecked() or getattr(self, "_preserve_camera_on_scale_once", False))
             and self._has_rendered_3d_scene
             and self._last_camera_position is not None
-        ):
+        )
+        if preserve_camera:
             self.pv_view.camera_position = self._last_camera_position
         else:
+            sx0, sx1, sy0, sy1, sz0, sz1 = scene_bounds
+            scene_cx = 0.5 * (sx0 + sx1)
+            scene_cy = 0.5 * (sy0 + sy1)
+            scene_cz = 0.5 * (sz0 + sz1)
+            scene_x_span = max(1e-6, sx1 - sx0)
+            scene_y_span = max(1e-6, sy1 - sy0)
+            scene_z_span = max(1e-6, sz1 - sz0)
             radius = max(
-                x_span * float(self._last_axis_scale[0]),
-                y_span * float(self._last_axis_scale[1]),
-                z_span_geom * float(self._last_axis_scale[2]),
+                scene_x_span,
+                scene_y_span,
+                scene_z_span,
                 1.0,
             )
             self.pv_view.camera_position = self._camera_from_angles(
-                center=(cx, cy, cz),
+                center=(scene_cx, scene_cy, scene_cz),
                 radius=radius,
                 elev=elev,
                 azim=azim,
@@ -1029,9 +1216,14 @@ class QtMainWindowRenderMixin:
         self._last_camera_position = self.pv_view.camera_position
         self._has_rendered_3d_scene = True
         self._update_camera_polling_state()
+        if not force_interactive_lod:
+            self._preserve_camera_on_scale_once = False
         self._log_3d_axes_debug(
             row_id=row_id,
             force_interactive_lod=force_interactive_lod,
+            target_fp=target_fp,
+            target_samples=target_samples,
+            track_axis_reversed=track_axis_reversed,
             input_shape=row_data.shape,
             ds_shape=z_raw.shape,
             ds_fp=ds_fp,
@@ -1055,6 +1247,8 @@ class QtMainWindowRenderMixin:
         return z_raw.shape, ds_fp, ds_sample
 
     def _sync_camera_from_pyvista(self) -> None:
+        if not self._is_3d_backend_available():
+            return
         if self.view_stack.currentIndex() != 1:
             return
         if not self.keep_view_check.isChecked():
@@ -1093,8 +1287,14 @@ class QtMainWindowRenderMixin:
         self.x_scale_spin.setValue(self.DEFAULT_X_VIS_SCALE)
         self.y_scale_spin.setValue(self.DEFAULT_Y_VIS_SCALE)
         self.z_scale_spin.setValue(self.DEFAULT_Z_SCALE)
+        reverse_track_widget = getattr(self, "reverse_track_axis_check", None)
+        if reverse_track_widget is not None:
+            reverse_track_widget.blockSignals(True)
+            reverse_track_widget.setChecked(False)
+            reverse_track_widget.blockSignals(False)
         self._last_camera_position = None
         self._has_rendered_3d_scene = False
+        self._preserve_camera_on_scale_once = False
         self._last_3d_axes_ranges = None
         self._last_3d_scene_bounds = None
         self._update_camera_polling_state()
@@ -1164,6 +1364,9 @@ class QtMainWindowRenderMixin:
                 f"display=[{vmin:.1f}, {vmax:.1f}]"
             )
 
+        auto_target_fp, auto_target_samples = self._target_3d_dims(interactive=False)
+        preview_target_fp, preview_target_samples = self._target_3d_dims(interactive=True)
+        track_reverse = self._is_track_axis_reversed()
         self._set_summary(
             f"Notebook-aligned extraction:\n"
             f"- 2D backend: {'PyQtGraph (interactive)' if self._interactive_2d_enabled else 'Matplotlib'}\n"
@@ -1175,9 +1378,11 @@ class QtMainWindowRenderMixin:
             f"- matrix shape: {row_data.shape[0]} x {row_data.shape[1]} (footprint x sample)\n"
             f"- mode: {mode} (embedded Qt widget)\n"
             f"- 3D backend: PyVistaQt (VTK)\n"
-            f"- fast 3D: {self.fast_3d_check.isChecked()} | target <= {self.MAX_3D_FP}x{self.MAX_3D_SAMPLES}\n"
-            f"- interactive LOD: {self.interactive_lod_check.isChecked()} | preview <= {self.INTERACT_MAX_3D_FP}x{self.INTERACT_MAX_3D_SAMPLES}\n"
+            f"- colormap: {self._get_cmap()} | reversed: {self._is_cmap_reversed()}\n"
+            f"- fast 3D: {self.fast_3d_check.isChecked()} | target <= {auto_target_fp}x{auto_target_samples}\n"
+            f"- interactive LOD: {self.interactive_lod_check.isChecked()} | preview <= {preview_target_fp}x{preview_target_samples}\n"
             f"- 3D colorbar: {self.show_colorbar_check.isChecked()}\n"
+            f"- track axis descending (255->0): {track_reverse}\n"
             f"- user axis visual scale (x,y,z): ({self.x_scale_spin.value():.3f}, {self.y_scale_spin.value():.3f}, {self.z_scale_spin.value():.3f})\n"
             f"- axis visual scale only (x,y,z): ({self._last_axis_scale[0]:.2f}, {self._last_axis_scale[1]:.2f}, {self._last_axis_scale[2]:.2f})\n"
             f"- percentile clip: [{self.clip_low_spin.value():.2f}, {self.clip_high_spin.value():.2f}]%\n"
@@ -1215,7 +1420,9 @@ class QtMainWindowRenderMixin:
         self._playback_paused = False
         self._camera_poll_timer.stop()
         self._has_rendered_3d_scene = False
+        self._preserve_camera_on_scale_once = False
         self._last_3d_scene_bounds = None
+        self._clear_manual_axis_label_actors()
         try:
             self.processor.close()
         except Exception:

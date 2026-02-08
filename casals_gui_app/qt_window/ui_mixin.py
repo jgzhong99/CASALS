@@ -6,6 +6,7 @@ from .runtime import (
     Figure,
     FigureCanvas,
     NavigationToolbar,
+    PYVISTA_IMPORT_ERROR,
     PYQTGRAPH_IMPORT_ERROR,
     QtCore,
     QtGui,
@@ -16,6 +17,19 @@ from .runtime import (
 
 
 class QtMainWindowUiMixin:
+    @staticmethod
+    def _set_help(widget, text: str) -> None:
+        if widget is None:
+            return
+        try:
+            widget.setToolTip(text)
+        except Exception:
+            pass
+        try:
+            widget.setStatusTip(text)
+        except Exception:
+            pass
+
     def _build_ui(self) -> None:
         root = QtWidgets.QWidget(self)
         self.setCentralWidget(root)
@@ -30,6 +44,14 @@ class QtMainWindowUiMixin:
         load_btn = QtWidgets.QPushButton("Load")
         self.file_info_label = QtWidgets.QLabel("No file loaded.")
         self.file_info_label.setWordWrap(True)
+        self._set_help(file_group, "Select a TDMS file, load metadata, then render rows.")
+        self._set_help(self.file_path_edit, "Path to TDMS file. You can type/paste a path or click Choose.")
+        self._set_help(choose_btn, "Browse and select a TDMS file from disk.")
+        self._set_help(load_btn, "Load the selected TDMS file and parse metadata.")
+        self._set_help(
+            self.file_info_label,
+            "Loaded-file summary: group name, row count, footprints, samples, and channels.",
+        )
         file_layout.addWidget(self.file_path_edit, 0, 0)
         file_layout.addWidget(choose_btn, 0, 1)
         file_layout.addWidget(load_btn, 0, 2)
@@ -63,15 +85,23 @@ class QtMainWindowUiMixin:
         self._build_2d_view()
         self._build_3d_view()
         self._apply_ui_scale()
+        self._configure_3d_backend_ui_state()
 
         self.status_label = QtWidgets.QLabel("Load a TDMS file to start.")
+        self._set_help(self.status_label, "Current operation/result message.")
         right_layout.addWidget(self.status_label)
 
         self.summary_text = QtWidgets.QPlainTextEdit()
         self.summary_text.setReadOnly(True)
         self.summary_text.setMaximumHeight(200)
+        self._set_help(self.summary_text, "Technical summary of extraction and rendering settings.")
         right_layout.addWidget(self.summary_text)
         two_d_backend = "PyQtGraph (interactive)" if self._interactive_2d_enabled else "Matplotlib"
+        three_d_backend = (
+            "embedded PyVistaQt"
+            if bool(getattr(self, "_pyvista_backend_available", False))
+            else "unavailable (install: pip install pyvista pyvistaqt)"
+        )
         optional_note = ""
         if not self._interactive_2d_enabled and PYQTGRAPH_IMPORT_ERROR is not None:
             optional_note = "\n5) Optional interactive 2D: pip install pyqtgraph"
@@ -80,7 +110,7 @@ class QtMainWindowUiMixin:
             "1) Extract row cube (sweep, step, samples)\n"
             "2) Apply TX_SAMPLES_CUT = [8, 68]\n"
             "3) Flatten to Ordering B (step-major -> sweep-minor)\n"
-            f"4) 2D in {two_d_backend}, 3D in embedded PyVistaQt"
+            f"4) 2D in {two_d_backend}, 3D in {three_d_backend}"
             f"{optional_note}"
         )
 
@@ -93,7 +123,8 @@ class QtMainWindowUiMixin:
     def _build_controls(self) -> None:
         row_group = QtWidgets.QGroupBox("Row")
         row_layout = QtWidgets.QGridLayout(row_group)
-        row_layout.addWidget(QtWidgets.QLabel("Row ID"), 0, 0)
+        row_id_label = QtWidgets.QLabel("Row ID")
+        row_layout.addWidget(row_id_label, 0, 0)
         self.row_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         self.row_slider.setRange(0, 0)
         self.row_spin = QtWidgets.QSpinBox()
@@ -110,7 +141,8 @@ class QtMainWindowUiMixin:
         row_layout.addWidget(self.play_btn, 3, 0)
         row_layout.addWidget(self.pause_btn, 3, 1)
         row_layout.addWidget(self.stop_btn, 3, 2)
-        row_layout.addWidget(QtWidgets.QLabel("2D speed"), 4, 0)
+        speed_label = QtWidgets.QLabel("2D speed")
+        row_layout.addWidget(speed_label, 4, 0)
         self.playback_speed_spin = QtWidgets.QDoubleSpinBox()
         self.playback_speed_spin.setRange(self.MIN_PLAYBACK_ROWS_PER_SEC, self.MAX_PLAYBACK_ROWS_PER_SEC)
         self.playback_speed_spin.setSingleStep(0.5)
@@ -118,6 +150,17 @@ class QtMainWindowUiMixin:
         self.playback_speed_spin.setSuffix(" row/s")
         self.playback_speed_spin.setValue(self.DEFAULT_PLAYBACK_ROWS_PER_SEC)
         row_layout.addWidget(self.playback_speed_spin, 4, 1, 1, 2)
+        self._set_help(row_group, "Select which row to display. Playback controls apply to 2D mode.")
+        self._set_help(row_id_label, "Row index in the loaded TDMS file.")
+        self._set_help(self.row_slider, "Drag to change row quickly.")
+        self._set_help(self.row_spin, "Set row index precisely.")
+        self._set_help(self.prev_btn, "Move to previous row.")
+        self._set_help(self.next_btn, "Move to next row.")
+        self._set_help(self.play_btn, "Start automatic row playback in 2D mode.")
+        self._set_help(self.pause_btn, "Pause 2D row playback.")
+        self._set_help(self.stop_btn, "Stop 2D row playback.")
+        self._set_help(speed_label, "Playback speed for 2D mode.")
+        self._set_help(self.playback_speed_spin, "Rows per second during 2D playback.")
         self.controls_layout.addWidget(row_group)
 
         self.display_group = QtWidgets.QGroupBox("Display")
@@ -126,20 +169,38 @@ class QtMainWindowUiMixin:
         self.mode_toggle_btn = QtWidgets.QPushButton("Switch to 3D")
         self.cmap_combo = QtWidgets.QComboBox()
         self.cmap_combo.addItems(list(self.CMAPS))
+        self.reverse_cmap_check = QtWidgets.QCheckBox("Reverse colormap")
+        self.reverse_cmap_check.setChecked(False)
         self.symmetric_check = QtWidgets.QCheckBox("Symmetric around 0")
         self.symmetric_check.setChecked(True)
         self.force_zero_center_check = QtWidgets.QCheckBox("Force 0 at colorbar center")
         self.force_zero_center_check.setChecked(False)
         self.auto_render_check = QtWidgets.QCheckBox("Auto render")
         self.auto_render_check.setChecked(True)
-        display_layout.addWidget(QtWidgets.QLabel("Mode"), 0, 0)
+        mode_label = QtWidgets.QLabel("Mode")
+        display_layout.addWidget(mode_label, 0, 0)
         display_layout.addWidget(self.mode_value_label, 0, 1)
         display_layout.addWidget(self.mode_toggle_btn, 1, 0, 1, 2)
-        display_layout.addWidget(QtWidgets.QLabel("Colormap"), 2, 0)
+        cmap_label = QtWidgets.QLabel("Colormap")
+        display_layout.addWidget(cmap_label, 2, 0)
         display_layout.addWidget(self.cmap_combo, 2, 1)
-        display_layout.addWidget(self.symmetric_check, 3, 0, 1, 2)
-        display_layout.addWidget(self.force_zero_center_check, 4, 0, 1, 2)
-        display_layout.addWidget(self.auto_render_check, 5, 0, 1, 2)
+        display_layout.addWidget(self.reverse_cmap_check, 3, 0, 1, 2)
+        display_layout.addWidget(self.symmetric_check, 4, 0, 1, 2)
+        display_layout.addWidget(self.force_zero_center_check, 5, 0, 1, 2)
+        display_layout.addWidget(self.auto_render_check, 6, 0, 1, 2)
+        self._set_help(self.display_group, "General display mode and color mapping controls.")
+        self._set_help(mode_label, "Current rendering mode.")
+        self._set_help(self.mode_value_label, "Current mode: 2D or 3D.")
+        self._set_help(self.mode_toggle_btn, "Switch between 2D heatmap and 3D surface view.")
+        self._set_help(cmap_label, "Colormap used for amplitude values.")
+        self._set_help(self.cmap_combo, "Choose colormap for 2D/3D amplitude display.")
+        self._set_help(self.reverse_cmap_check, "Reverse selected colormap direction for both 2D and 3D.")
+        self._set_help(self.symmetric_check, "Use symmetric color limits [-A, +A] around zero.")
+        self._set_help(
+            self.force_zero_center_check,
+            "Keep 0 at colormap center even when symmetric limits are disabled.",
+        )
+        self._set_help(self.auto_render_check, "Automatically re-render after parameter changes.")
         self.controls_layout.addWidget(self.display_group)
 
         self.three_d_sampling_group = QtWidgets.QGroupBox("3D Sampling")
@@ -158,14 +219,66 @@ class QtMainWindowUiMixin:
         self.interactive_lod_check.setChecked(True)
         self.show_colorbar_check = QtWidgets.QCheckBox("Show 3D colorbar")
         self.show_colorbar_check.setChecked(False)
-        ds_layout.addWidget(QtWidgets.QLabel("Sample ds"), 0, 0)
+        self.auto_target_fp_spin = QtWidgets.QSpinBox()
+        self.auto_target_fp_spin.setRange(16, 2048)
+        self.auto_target_fp_spin.setValue(self.MAX_3D_FP)
+        self.auto_target_sample_spin = QtWidgets.QSpinBox()
+        self.auto_target_sample_spin.setRange(32, 8192)
+        self.auto_target_sample_spin.setValue(self.MAX_3D_SAMPLES)
+        self.preview_target_fp_spin = QtWidgets.QSpinBox()
+        self.preview_target_fp_spin.setRange(16, 2048)
+        self.preview_target_fp_spin.setValue(self.INTERACT_MAX_3D_FP)
+        self.preview_target_sample_spin = QtWidgets.QSpinBox()
+        self.preview_target_sample_spin.setRange(32, 8192)
+        self.preview_target_sample_spin.setValue(self.INTERACT_MAX_3D_SAMPLES)
+        sample_ds_label = QtWidgets.QLabel("Sample ds")
+        ds_layout.addWidget(sample_ds_label, 0, 0)
         ds_layout.addWidget(self.ds_sample_spin, 0, 1)
-        ds_layout.addWidget(QtWidgets.QLabel("Footprint ds"), 1, 0)
+        fp_ds_label = QtWidgets.QLabel("Footprint ds")
+        ds_layout.addWidget(fp_ds_label, 1, 0)
         ds_layout.addWidget(self.ds_fp_spin, 1, 1)
         ds_layout.addWidget(self.keep_view_check, 2, 0, 1, 2)
         ds_layout.addWidget(self.fast_3d_check, 3, 0, 1, 2)
         ds_layout.addWidget(self.interactive_lod_check, 4, 0, 1, 2)
         ds_layout.addWidget(self.show_colorbar_check, 5, 0, 1, 2)
+        auto_fp_label = QtWidgets.QLabel("Auto target FP")
+        ds_layout.addWidget(auto_fp_label, 6, 0)
+        ds_layout.addWidget(self.auto_target_fp_spin, 6, 1)
+        auto_sample_label = QtWidgets.QLabel("Auto target Samples")
+        ds_layout.addWidget(auto_sample_label, 7, 0)
+        ds_layout.addWidget(self.auto_target_sample_spin, 7, 1)
+        preview_fp_label = QtWidgets.QLabel("Preview target FP")
+        ds_layout.addWidget(preview_fp_label, 8, 0)
+        ds_layout.addWidget(self.preview_target_fp_spin, 8, 1)
+        preview_sample_label = QtWidgets.QLabel("Preview target Samples")
+        ds_layout.addWidget(preview_sample_label, 9, 0)
+        ds_layout.addWidget(self.preview_target_sample_spin, 9, 1)
+        self._set_help(
+            self.three_d_sampling_group,
+            "Control 3D downsampling and preview/full-resolution rendering behavior.",
+        )
+        self._set_help(sample_ds_label, "Manual downsample step on sample axis.")
+        self._set_help(self.ds_sample_spin, "Manual sample-axis step before 3D mesh build. 1 means no downsample.")
+        self._set_help(fp_ds_label, "Manual downsample step on footprint axis.")
+        self._set_help(self.ds_fp_spin, "Manual footprint-axis step before 3D mesh build. 1 means no downsample.")
+        self._set_help(self.keep_view_check, "Preserve current mouse camera when re-rendering 3D.")
+        self._set_help(
+            self.fast_3d_check,
+            "Enable automatic downsample so mesh size stays under target limits.",
+        )
+        self._set_help(
+            self.interactive_lod_check,
+            "Render a lighter preview first during interaction, then refine.",
+        )
+        self._set_help(self.show_colorbar_check, "Show/hide scalar colorbar in 3D view.")
+        self._set_help(auto_fp_label, "Target max footprints for automatic 3D downsample.")
+        self._set_help(self.auto_target_fp_spin, "Automatic 3D target maximum footprint count.")
+        self._set_help(auto_sample_label, "Target max samples for automatic 3D downsample.")
+        self._set_help(self.auto_target_sample_spin, "Automatic 3D target maximum sample count.")
+        self._set_help(preview_fp_label, "Target max footprints for interactive preview render.")
+        self._set_help(self.preview_target_fp_spin, "Preview 3D target maximum footprint count.")
+        self._set_help(preview_sample_label, "Target max samples for interactive preview render.")
+        self._set_help(self.preview_target_sample_spin, "Preview 3D target maximum sample count.")
         self.controls_layout.addWidget(self.three_d_sampling_group)
 
         self.three_d_view_group = QtWidgets.QGroupBox("3D View")
@@ -190,18 +303,48 @@ class QtMainWindowUiMixin:
         self.z_scale_spin.setRange(self.MIN_AXIS_SCALE, self.MAX_AXIS_SCALE)
         self.z_scale_spin.setSingleStep(0.05)
         self.z_scale_spin.setValue(self.DEFAULT_Z_SCALE)
+        self.reverse_track_axis_check = QtWidgets.QCheckBox("Reverse track axis (255 -> 0)")
+        self.reverse_track_axis_check.setChecked(False)
         reset_view_btn = QtWidgets.QPushButton("Reset 3D View")
-        view_layout.addWidget(QtWidgets.QLabel("Elev"), 0, 0)
+        elev_label = QtWidgets.QLabel("Elev")
+        view_layout.addWidget(elev_label, 0, 0)
         view_layout.addWidget(self.elev_spin, 0, 1)
-        view_layout.addWidget(QtWidgets.QLabel("Azim"), 1, 0)
+        azim_label = QtWidgets.QLabel("Azim")
+        view_layout.addWidget(azim_label, 1, 0)
         view_layout.addWidget(self.azim_spin, 1, 1)
-        view_layout.addWidget(QtWidgets.QLabel("X vis scale"), 2, 0)
+        x_scale_label = QtWidgets.QLabel("X vis scale")
+        view_layout.addWidget(x_scale_label, 2, 0)
         view_layout.addWidget(self.x_scale_spin, 2, 1)
-        view_layout.addWidget(QtWidgets.QLabel("Y vis scale"), 3, 0)
+        y_scale_label = QtWidgets.QLabel("Y vis scale")
+        view_layout.addWidget(y_scale_label, 3, 0)
         view_layout.addWidget(self.y_scale_spin, 3, 1)
-        view_layout.addWidget(QtWidgets.QLabel("Z vis scale"), 4, 0)
+        z_scale_label = QtWidgets.QLabel("Z vis scale")
+        view_layout.addWidget(z_scale_label, 4, 0)
         view_layout.addWidget(self.z_scale_spin, 4, 1)
-        view_layout.addWidget(reset_view_btn, 5, 0, 1, 2)
+        view_layout.addWidget(self.reverse_track_axis_check, 5, 0, 1, 2)
+        view_layout.addWidget(reset_view_btn, 6, 0, 1, 2)
+        self._set_help(
+            self.three_d_view_group,
+            "Camera and visual-scale controls. They change view geometry only, not source data values.",
+        )
+        self._set_help(elev_label, "Camera elevation angle (degrees).")
+        self._set_help(self.elev_spin, "Camera elevation angle (degrees).")
+        self._set_help(azim_label, "Camera azimuth angle (degrees).")
+        self._set_help(self.azim_spin, "Camera azimuth angle (degrees).")
+        self._set_help(x_scale_label, "Visual stretch factor on X axis.")
+        self._set_help(self.x_scale_spin, "Visual X-axis scale. Does not change raw values.")
+        self._set_help(y_scale_label, "Visual stretch factor on Y axis.")
+        self._set_help(self.y_scale_spin, "Visual Y-axis scale. Does not change track index values.")
+        self._set_help(z_scale_label, "Visual stretch factor on Z axis.")
+        self._set_help(self.z_scale_spin, "Visual Z-axis scale. Does not change amplitude values.")
+        self._set_help(
+            self.reverse_track_axis_check,
+            "Display track index in descending direction (255 -> 0) instead of ascending (0 -> 255).",
+        )
+        self._set_help(
+            reset_view_btn,
+            "Reset 3D camera angles, visual scales, and track-axis direction to defaults.",
+        )
         self.controls_layout.addWidget(self.three_d_view_group)
 
         self.clip_group = QtWidgets.QGroupBox("General - Percentile Clip")
@@ -214,10 +357,17 @@ class QtMainWindowUiMixin:
         self.clip_high_spin.setRange(0.0, 100.0)
         self.clip_high_spin.setSingleStep(0.1)
         self.clip_high_spin.setValue(self.DEFAULT_PERCENTILE_CLIP[1])
-        clip_layout.addWidget(QtWidgets.QLabel("Low (%)"), 0, 0)
+        low_clip_label = QtWidgets.QLabel("Low (%)")
+        clip_layout.addWidget(low_clip_label, 0, 0)
         clip_layout.addWidget(self.clip_low_spin, 0, 1)
-        clip_layout.addWidget(QtWidgets.QLabel("High (%)"), 1, 0)
+        high_clip_label = QtWidgets.QLabel("High (%)")
+        clip_layout.addWidget(high_clip_label, 1, 0)
         clip_layout.addWidget(self.clip_high_spin, 1, 1)
+        self._set_help(self.clip_group, "Percentile clipping used for display range only.")
+        self._set_help(low_clip_label, "Lower percentile for display clipping.")
+        self._set_help(self.clip_low_spin, "Lower percentile used to compute display min.")
+        self._set_help(high_clip_label, "Upper percentile for display clipping.")
+        self._set_help(self.clip_high_spin, "Upper percentile used to compute display max.")
         self.controls_layout.addWidget(self.clip_group)
 
         self.ui_group = QtWidgets.QGroupBox("General - UI")
@@ -258,11 +408,19 @@ class QtMainWindowUiMixin:
 
         reset_ui_btn = QtWidgets.QPushButton("Reset UI Scale")
 
-        ui_layout.addWidget(QtWidgets.QLabel("Control size"), 0, 0)
+        control_size_label = QtWidgets.QLabel("Control size")
+        ui_layout.addWidget(control_size_label, 0, 0)
         ui_layout.addWidget(self.ui_control_scale_spin, 0, 1)
-        ui_layout.addWidget(QtWidgets.QLabel("Font size"), 1, 0)
+        font_size_label = QtWidgets.QLabel("Font size")
+        ui_layout.addWidget(font_size_label, 1, 0)
         ui_layout.addWidget(self.ui_font_spin, 1, 1)
         ui_layout.addWidget(reset_ui_btn, 2, 0, 1, 2)
+        self._set_help(self.ui_group, "Adjust UI scale and font size only.")
+        self._set_help(control_size_label, "Scale for control sizes and spacing.")
+        self._set_help(self.ui_control_scale_spin, "Scale for control dimensions and paddings.")
+        self._set_help(font_size_label, "Global UI font size.")
+        self._set_help(self.ui_font_spin, "Global UI font size in points.")
+        self._set_help(reset_ui_btn, "Reset UI control size and font size to defaults.")
         self.controls_layout.addWidget(self.ui_group)
 
         action_row = QtWidgets.QWidget()
@@ -272,6 +430,8 @@ class QtMainWindowUiMixin:
         save_btn = QtWidgets.QPushButton("Save PNG")
         action_layout.addWidget(render_btn)
         action_layout.addWidget(save_btn)
+        self._set_help(render_btn, "Render current row immediately.")
+        self._set_help(save_btn, "Save current visible 2D/3D view as PNG.")
         self.controls_layout.addWidget(action_row)
         self.controls_layout.addStretch(1)
 
@@ -287,6 +447,7 @@ class QtMainWindowUiMixin:
 
         self.mode_toggle_btn.clicked.connect(self._toggle_mode)
         self.cmap_combo.currentTextChanged.connect(self._maybe_render)
+        self.reverse_cmap_check.toggled.connect(self._maybe_render)
         self.symmetric_check.toggled.connect(self._maybe_render)
         self.force_zero_center_check.toggled.connect(self._maybe_render)
         self.auto_render_check.toggled.connect(self._on_auto_render_toggled)
@@ -297,12 +458,17 @@ class QtMainWindowUiMixin:
         self.fast_3d_check.toggled.connect(self._maybe_render)
         self.interactive_lod_check.toggled.connect(self._maybe_render)
         self.show_colorbar_check.toggled.connect(self._maybe_render)
+        self.auto_target_fp_spin.valueChanged.connect(self._maybe_render)
+        self.auto_target_sample_spin.valueChanged.connect(self._maybe_render)
+        self.preview_target_fp_spin.valueChanged.connect(self._maybe_render)
+        self.preview_target_sample_spin.valueChanged.connect(self._maybe_render)
 
         self.elev_spin.valueChanged.connect(self._on_view_controls_changed)
         self.azim_spin.valueChanged.connect(self._on_view_controls_changed)
         self.x_scale_spin.valueChanged.connect(self._on_view_controls_changed)
         self.y_scale_spin.valueChanged.connect(self._on_view_controls_changed)
         self.z_scale_spin.valueChanged.connect(self._on_view_controls_changed)
+        self.reverse_track_axis_check.toggled.connect(self._maybe_render)
         reset_view_btn.clicked.connect(self._reset_3d_view)
 
         self.clip_low_spin.valueChanged.connect(self._maybe_render)
@@ -337,6 +503,7 @@ class QtMainWindowUiMixin:
             self.pg_plot.setLabel("bottom", "Footprint index (Ordering B: step-major -> sweep-minor)")
             self.pg_plot.setLabel("left", "Range (m)")
             self.pg_plot.setTitle("CASALS row heatmap")
+            self._set_help(self.pg_plot, "Interactive 2D heatmap. Drag to pan, wheel to zoom.")
 
             self.pg_image_item = pg.ImageItem(axisOrder="row-major")
             self.pg_plot.addItem(self.pg_image_item)
@@ -346,6 +513,7 @@ class QtMainWindowUiMixin:
             self.pg_colorbar_view.setBackground("white")
             self.pg_colorbar_view.setMinimumHeight(64)
             self.pg_colorbar_view.setMaximumHeight(96)
+            self._set_help(self.pg_colorbar_view, "2D amplitude colorbar.")
             self.pg_colorbar = pg.ColorBarItem(
                 values=(0.0, 1.0),
                 colorMap=self._pg_colormap_from_cmap(self._get_cmap()),
@@ -373,6 +541,8 @@ class QtMainWindowUiMixin:
             self.figure = Figure(figsize=(8.6, 6.4), dpi=100)
             self.canvas = FigureCanvas(self.figure)
             toolbar = NavigationToolbar(self.canvas, page)
+            self._set_help(self.canvas, "2D heatmap canvas.")
+            self._set_help(toolbar, "Matplotlib navigation toolbar for pan/zoom/save.")
             layout.addWidget(toolbar)
             layout.addWidget(self.canvas, 1)
 
@@ -382,11 +552,39 @@ class QtMainWindowUiMixin:
         page = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
-        self.pv_view = QtInteractor(page)
         self._last_cube_axes_actor = None
+        if QtInteractor is None:
+            self.pv_view = None
+            message = QtWidgets.QLabel(
+                "3D view unavailable.\nInstall dependencies:\n  pip install pyvista pyvistaqt"
+            )
+            message.setWordWrap(True)
+            message.setAlignment(QtCore.Qt.AlignCenter)
+            if PYVISTA_IMPORT_ERROR is not None:
+                details = QtWidgets.QLabel(f"Import error: {PYVISTA_IMPORT_ERROR}")
+                details.setWordWrap(True)
+                details.setAlignment(QtCore.Qt.AlignCenter)
+                layout.addStretch(1)
+                layout.addWidget(message, 0)
+                layout.addWidget(details, 0)
+                layout.addStretch(1)
+                self._set_help(details, "PyVista/PyVistaQt import failure details.")
+            else:
+                layout.addStretch(1)
+                layout.addWidget(message, 0)
+                layout.addStretch(1)
+            self._set_help(message, "3D rendering backend is missing. 2D mode is still available.")
+            self.view_stack.addWidget(page)
+            return
+
+        self.pv_view = QtInteractor(page)
         self.pv_view.set_background("white")
         self.pv_view.add_axes(interactive=False)
         self._update_3d_axis_fonts()
+        self._set_help(
+            self.pv_view,
+            "3D surface viewport. Left drag: rotate, middle drag: pan, wheel: zoom.",
+        )
         try:
             self.pv_view.enable_trackball_style()
         except Exception:
@@ -394,6 +592,20 @@ class QtMainWindowUiMixin:
         # QtInteractor is already a QWidget; add it directly for reliable mouse events.
         layout.addWidget(self.pv_view, 1)
         self.view_stack.addWidget(page)
+
+    def _configure_3d_backend_ui_state(self) -> None:
+        has_3d = bool(getattr(self, "_pyvista_backend_available", False) and getattr(self, "pv_view", None) is not None)
+        if has_3d:
+            return
+        if hasattr(self, "mode_toggle_btn"):
+            self.mode_toggle_btn.setEnabled(False)
+            self.mode_toggle_btn.setText("3D unavailable")
+            self._set_help(
+                self.mode_toggle_btn,
+                "3D backend is unavailable. Install: pip install pyvista pyvistaqt",
+            )
+        if hasattr(self, "mode_value_label"):
+            self.mode_value_label.setText("2D")
 
     def _set_status(self, text: str) -> None:
         self.status_label.setText(text)
@@ -508,7 +720,7 @@ class QtMainWindowUiMixin:
         scene_bounds: tuple[float, float, float, float, float, float] | None = None,
         render_now: bool = True,
     ) -> tuple[bool, bool]:
-        if not hasattr(self, "pv_view"):
+        if not hasattr(self, "pv_view") or self.pv_view is None:
             return False, False
         if axes_ranges is not None:
             self._last_3d_axes_ranges = axes_ranges

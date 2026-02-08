@@ -46,6 +46,7 @@ class QtMainWindowSettingsMixin:
         cmap = str(payload.get("cmap", self.CMAPS[0]))
         if cmap in self.CMAPS:
             self.cmap_combo.setCurrentText(cmap)
+        self.reverse_cmap_check.setChecked(bool(payload.get("reverse_cmap", False)))
 
         self.symmetric_check.setChecked(bool(payload.get("symmetric", True)))
         self.force_zero_center_check.setChecked(bool(payload.get("force_zero_center", False)))
@@ -54,6 +55,12 @@ class QtMainWindowSettingsMixin:
         self.fast_3d_check.setChecked(bool(payload.get("fast_3d", True)))
         self.interactive_lod_check.setChecked(bool(payload.get("interactive_lod", True)))
         self.show_colorbar_check.setChecked(bool(payload.get("show_3d_colorbar", False)))
+        reverse_track_axis = payload.get("reverse_track_axis", False)
+        # Legacy configs had this option defaulting to True. If no schema marker exists,
+        # treat it as legacy and reset to the new default (ascending 0 -> 255).
+        if "reverse_track_axis_schema" not in payload:
+            reverse_track_axis = False
+        self.reverse_track_axis_check.setChecked(bool(reverse_track_axis))
 
         self.clip_low_spin.setValue(
             self._to_float(payload.get("clip_low", self.DEFAULT_PERCENTILE_CLIP[0]), self.DEFAULT_PERCENTILE_CLIP[0])
@@ -63,6 +70,21 @@ class QtMainWindowSettingsMixin:
         )
         self.ds_sample_spin.setValue(self._to_int(payload.get("ds_sample", 2), 2))
         self.ds_fp_spin.setValue(self._to_int(payload.get("ds_fp", 1), 1))
+        self.auto_target_fp_spin.setValue(
+            self._to_int(payload.get("auto_target_fp", self.MAX_3D_FP), self.MAX_3D_FP)
+        )
+        self.auto_target_sample_spin.setValue(
+            self._to_int(payload.get("auto_target_samples", self.MAX_3D_SAMPLES), self.MAX_3D_SAMPLES)
+        )
+        self.preview_target_fp_spin.setValue(
+            self._to_int(payload.get("preview_target_fp", self.INTERACT_MAX_3D_FP), self.INTERACT_MAX_3D_FP)
+        )
+        self.preview_target_sample_spin.setValue(
+            self._to_int(
+                payload.get("preview_target_samples", self.INTERACT_MAX_3D_SAMPLES),
+                self.INTERACT_MAX_3D_SAMPLES,
+            )
+        )
         self.elev_spin.setValue(self._to_float(payload.get("elev", self.DEFAULT_ELEV), self.DEFAULT_ELEV))
         self.azim_spin.setValue(self._to_float(payload.get("azim", self.DEFAULT_AZIM), self.DEFAULT_AZIM))
         self.x_scale_spin.setValue(
@@ -126,6 +148,7 @@ class QtMainWindowSettingsMixin:
                 "clip_low": float(self.clip_low_spin.value()),
                 "clip_high": float(self.clip_high_spin.value()),
                 "cmap": self._get_cmap(),
+                "reverse_cmap": bool(self.reverse_cmap_check.isChecked()),
                 "symmetric": bool(self.symmetric_check.isChecked()),
                 "force_zero_center": bool(self.force_zero_center_check.isChecked()),
                 "auto_update": bool(self.auto_render_check.isChecked()),
@@ -138,9 +161,15 @@ class QtMainWindowSettingsMixin:
                 "z_scale": float(self.z_scale_spin.value()),
                 "ds_sample": int(self.ds_sample_spin.value()),
                 "ds_fp": int(self.ds_fp_spin.value()),
+                "auto_target_fp": int(self.auto_target_fp_spin.value()),
+                "auto_target_samples": int(self.auto_target_sample_spin.value()),
+                "preview_target_fp": int(self.preview_target_fp_spin.value()),
+                "preview_target_samples": int(self.preview_target_sample_spin.value()),
                 "fast_3d": bool(self.fast_3d_check.isChecked()),
                 "interactive_lod": bool(self.interactive_lod_check.isChecked()),
                 "show_3d_colorbar": bool(self.show_colorbar_check.isChecked()),
+                "reverse_track_axis": bool(self.reverse_track_axis_check.isChecked()),
+                "reverse_track_axis_schema": 1,
                 "ui_control_scale_pct": int(self.ui_control_scale_spin.value()),
                 "ui_font_pt": float(self.ui_font_spin.value()),
                 "playback_rows_per_sec": float(self.playback_speed_spin.value()),

@@ -1,0 +1,7 @@
+numpy>=1.24
+matplotlib>=3.8
+nptdms>=1.10
+PyQt5>=5.15
+pyvista>=0.46
+pyvistaqt>=0.11
+pyqtgraph>=0.13

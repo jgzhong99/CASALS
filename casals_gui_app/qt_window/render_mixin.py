@@ -487,10 +487,7 @@ class QtMainWindowRenderMixin:
         return elev, azim, x_scale, y_scale, z_scale
 
     def _get_cmap(self) -> str:
-        cmap = str(self.cmap_combo.currentText())
-        if cmap not in self.CMAPS:
-            cmap = self.CMAPS[0]
-        return cmap
+        return self._normalized_cmap_name(self.cmap_combo.currentText())
 
     def _is_cmap_reversed(self) -> bool:
         widget = getattr(self, "reverse_cmap_check", None)
@@ -501,44 +498,86 @@ class QtMainWindowRenderMixin:
         except Exception:
             return False
 
-    def _resolve_mpl_cmap(self, cmap_name: str | None = None):
-        name = str(cmap_name) if cmap_name is not None else self._get_cmap()
+    def _normalized_cmap_name(self, cmap_name: str | None = None) -> str:
+        name = str(cmap_name) if cmap_name is not None else str(self.cmap_combo.currentText())
         if name not in self.CMAPS:
             name = self.CMAPS[0]
-        reverse = self._is_cmap_reversed()
+        return name
+
+    def _cmap_cache_key(self, cmap_name: str | None = None) -> tuple[str, bool]:
+        return self._normalized_cmap_name(cmap_name), self._is_cmap_reversed()
+
+    def _cache_bucket(self, attr_name: str) -> dict:
+        bucket = getattr(self, attr_name, None)
+        if not isinstance(bucket, dict):
+            bucket = {}
+            setattr(self, attr_name, bucket)
+        return bucket
+
+    def _resolve_mpl_cmap(self, cmap_name: str | None = None):
+        key = self._cmap_cache_key(cmap_name)
+        cache = self._cache_bucket("_mpl_cmap_cache")
+        cached = cache.get(key)
+        if cached is not None:
+            return cached
+
+        name, reverse = key
         if name == self.CUSTOM_CMAP_GREEN_BLACK_BLUE:
             colors = ["#00ff00", "#000000", "#0000ff"]
             if reverse:
                 colors = list(reversed(colors))
             if LinearSegmentedColormap is not None:
-                return LinearSegmentedColormap.from_list(
+                resolved = LinearSegmentedColormap.from_list(
                     self.CUSTOM_CMAP_GREEN_BLACK_BLUE + ("_r" if reverse else ""),
                     colors,
                     N=256,
                 )
-            return mpl_cm.get_cmap("RdBu" if reverse else "RdBu_r", 256)
+            else:
+                resolved = mpl_cm.get_cmap("RdBu" if reverse else "RdBu_r", 256)
+            cache[key] = resolved
+            return resolved
         cmap = mpl_cm.get_cmap(name, 256)
         if not reverse:
+            cache[key] = cmap
             return cmap
         reversed_method = getattr(cmap, "reversed", None)
         if callable(reversed_method):
             try:
-                return reversed_method()
+                resolved = reversed_method()
+                cache[key] = resolved
+                return resolved
             except Exception:
                 pass
         reverse_name = name[:-2] if name.endswith("_r") else f"{name}_r"
-        return mpl_cm.get_cmap(reverse_name, 256)
+        resolved = mpl_cm.get_cmap(reverse_name, 256)
+        cache[key] = resolved
+        return resolved
 
     def _lookup_table_from_cmap(self, cmap_name: str) -> np.ndarray:
+        key = self._cmap_cache_key(cmap_name)
+        cache = self._cache_bucket("_lut_cache")
+        cached = cache.get(key)
+        if cached is not None:
+            return cached
+
         cmap = self._resolve_mpl_cmap(cmap_name)
         lut = np.clip(cmap(np.linspace(0.0, 1.0, 256)) * 255.0, 0.0, 255.0).astype(np.uint8)
+        cache[key] = lut
         return lut
 
     def _pg_colormap_from_cmap(self, cmap_name: str):
+        key = self._cmap_cache_key(cmap_name)
+        cache = self._cache_bucket("_pg_colormap_cache")
+        cached = cache.get(key)
+        if cached is not None:
+            return cached
+
         cmap = self._resolve_mpl_cmap(cmap_name)
         stops = np.linspace(0.0, 1.0, 256, dtype=np.float32)
         colors = np.clip(cmap(stops) * 255.0, 0.0, 255.0).astype(np.uint8)
-        return pg.ColorMap(stops, colors)
+        colormap = pg.ColorMap(stops, colors)
+        cache[key] = colormap
+        return colormap
 
     def _draw_placeholder(self, text: str) -> None:
         if self._interactive_2d_enabled and self.pg_plot is not None and self.pg_image_item is not None:

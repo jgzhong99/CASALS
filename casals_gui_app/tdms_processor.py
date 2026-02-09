@@ -54,6 +54,7 @@ class CasalsTdmsProcessor:
         self.tdms: TdmsFile | None = None
         self.group = None
         self.channel_index: dict[tuple[int, int], object] = {}
+        self._channel_grid: tuple[tuple[object, ...], ...] = ()
 
         self.wvl_steps_per_sweep = 32
         self.sweeps_per_cycle = 8
@@ -79,25 +80,29 @@ class CasalsTdmsProcessor:
         self.tdms = None
         self.group = None
         self.channel_index = {}
+        self._channel_grid = ()
         self.rows_per_file = 0
         self.samples_per_row = 0
         self.samples_per_row_rx = 0
         self._cache_row_id = None
         self._cache_row = None
 
-    def _validate_tx_cut(self) -> tuple[int, int]:
+    def _validate_tx_cut_for_samples(self, samples_per_row: int) -> tuple[int, int]:
         head_cut = int(self.tx_samples_cut[0])
         tail_cut = int(self.tx_samples_cut[1])
         if head_cut < 0 or tail_cut < 0:
             raise ValueError(f"TX_SAMPLES_CUT must be non-negative, got {self.tx_samples_cut}")
-        if self.samples_per_row <= 0:
+        if samples_per_row <= 0:
             raise ValueError("samples_per_row is not initialized.")
-        if head_cut + tail_cut >= self.samples_per_row:
+        if head_cut + tail_cut >= samples_per_row:
             raise ValueError(
                 f"Invalid TX_SAMPLES_CUT={self.tx_samples_cut}; "
-                f"need head+tail < samples_per_row={self.samples_per_row}"
+                f"need head+tail < samples_per_row={samples_per_row}"
             )
         return head_cut, tail_cut
+
+    def _validate_tx_cut(self) -> tuple[int, int]:
+        return self._validate_tx_cut_for_samples(self.samples_per_row)
 
     def _require_loaded(self) -> None:
         if self.tdms is None or self.group is None:
@@ -114,89 +119,113 @@ class CasalsTdmsProcessor:
         if not tdms_path.exists():
             raise FileNotFoundError(f"TDMS file does not exist: {tdms_path}")
 
-        self.close()
-        self.tdms = TdmsFile.open(tdms_path)
+        opened_tdms = None
+        try:
+            opened_tdms = TdmsFile.open(tdms_path)
 
-        group_names = [g.name for g in self.tdms.groups()]
-        if not group_names:
-            raise ValueError("No groups found in TDMS file.")
+            group_names = [g.name for g in opened_tdms.groups()]
+            if not group_names:
+                raise ValueError("No groups found in TDMS file.")
 
-        group_name = self.DEFAULT_GROUP if self.DEFAULT_GROUP in group_names else group_names[0]
-        self.group = self.tdms[group_name]
+            group_name = self.DEFAULT_GROUP if self.DEFAULT_GROUP in group_names else group_names[0]
+            group = opened_tdms[group_name]
 
-        self.wvl_steps_per_sweep = int(self.group.properties.get("# WVLSteps/Sweep", 32))
-        self.sweeps_per_cycle = int(self.group.properties.get("# Sweeps/ShiftCycle", 8))
-        self.rows_per_file = int(self.group.properties.get("Sweeps/File", 0))
-        self.footprints_per_row = self.wvl_steps_per_sweep * self.sweeps_per_cycle
-        if self.footprints_per_row != self.EXPECTED_FOOTPRINTS_PER_ROW:
-            raise ValueError(
-                f"Invalid footprint count per row: {self.footprints_per_row}. "
-                f"Expected exactly {self.EXPECTED_FOOTPRINTS_PER_ROW} "
-                "(track index must be 0..255)."
-            )
-        if self.rows_per_file <= 0:
-            raise ValueError("Group property 'Sweeps/File' is missing or <= 0.")
-
-        self.channel_index = {}
-        for channel in self.group.channels():
-            match = self.CHANNEL_PATTERN.match(channel.name)
-            if match is None:
-                continue
-            sweep = int(match.group(1))
-            step = int(match.group(2))
-            self.channel_index[(sweep, step)] = channel
-
-        if not self.channel_index:
-            raise ValueError("No channels matched pattern Sweep{s}Step{st}.")
-
-        expected_keys = {
-            (sweep, step)
-            for sweep in range(self.sweeps_per_cycle)
-            for step in range(self.wvl_steps_per_sweep)
-        }
-        missing_keys = sorted(expected_keys - set(self.channel_index))
-        if missing_keys:
-            preview = ", ".join(f"Sweep{s}Step{st}" for s, st in missing_keys[:8])
-            if len(missing_keys) > 8:
-                preview += ", ..."
-            raise ValueError(
-                f"Missing {len(missing_keys)} expected channels; "
-                f"first missing: {preview}"
-            )
-
-        ref_channel = self.channel_index.get((0, 0))
-        if ref_channel is None:
-            ref_channel = next(iter(self.channel_index.values()))
-        channel_length = len(ref_channel)
-        if channel_length % self.rows_per_file != 0:
-            raise ValueError(
-                f"Channel length {channel_length} is not divisible by rows={self.rows_per_file}; "
-                "reshape would be ambiguous."
-            )
-        for (sweep, step), channel in self.channel_index.items():
-            this_length = len(channel)
-            if this_length != channel_length:
+            wvl_steps_per_sweep = int(group.properties.get("# WVLSteps/Sweep", 32))
+            sweeps_per_cycle = int(group.properties.get("# Sweeps/ShiftCycle", 8))
+            rows_per_file = int(group.properties.get("Sweeps/File", 0))
+            footprints_per_row = wvl_steps_per_sweep * sweeps_per_cycle
+            if footprints_per_row != self.EXPECTED_FOOTPRINTS_PER_ROW:
                 raise ValueError(
-                    "Inconsistent channel lengths detected: "
-                    f"Sweep{sweep}Step{step} has {this_length}, expected {channel_length}."
+                    f"Invalid footprint count per row: {footprints_per_row}. "
+                    f"Expected exactly {self.EXPECTED_FOOTPRINTS_PER_ROW} "
+                    "(track index must be 0..255)."
+                )
+            if rows_per_file <= 0:
+                raise ValueError("Group property 'Sweeps/File' is missing or <= 0.")
+
+            channel_index: dict[tuple[int, int], object] = {}
+            for channel in group.channels():
+                match = self.CHANNEL_PATTERN.match(channel.name)
+                if match is None:
+                    continue
+                sweep = int(match.group(1))
+                step = int(match.group(2))
+                channel_index[(sweep, step)] = channel
+
+            if not channel_index:
+                raise ValueError("No channels matched pattern Sweep{s}Step{st}.")
+
+            expected_keys = {
+                (sweep, step)
+                for sweep in range(sweeps_per_cycle)
+                for step in range(wvl_steps_per_sweep)
+            }
+            missing_keys = sorted(expected_keys - set(channel_index))
+            if missing_keys:
+                preview = ", ".join(f"Sweep{s}Step{st}" for s, st in missing_keys[:8])
+                if len(missing_keys) > 8:
+                    preview += ", ..."
+                raise ValueError(
+                    f"Missing {len(missing_keys)} expected channels; "
+                    f"first missing: {preview}"
                 )
 
-        self.samples_per_row = channel_length // self.rows_per_file
-        head_cut, tail_cut = self._validate_tx_cut()
-        self.samples_per_row_rx = self.samples_per_row - head_cut - tail_cut
+            ref_channel = channel_index.get((0, 0))
+            if ref_channel is None:
+                ref_channel = next(iter(channel_index.values()))
+            channel_length = len(ref_channel)
+            if channel_length % rows_per_file != 0:
+                raise ValueError(
+                    f"Channel length {channel_length} is not divisible by rows={rows_per_file}; "
+                    "reshape would be ambiguous."
+                )
+            for (sweep, step), channel in channel_index.items():
+                this_length = len(channel)
+                if this_length != channel_length:
+                    raise ValueError(
+                        "Inconsistent channel lengths detected: "
+                        f"Sweep{sweep}Step{step} has {this_length}, expected {channel_length}."
+                    )
+
+            samples_per_row = channel_length // rows_per_file
+            head_cut, tail_cut = self._validate_tx_cut_for_samples(samples_per_row)
+            samples_per_row_rx = samples_per_row - head_cut - tail_cut
+            channel_grid = tuple(
+                tuple(channel_index[(sweep, step)] for step in range(wvl_steps_per_sweep))
+                for sweep in range(sweeps_per_cycle)
+            )
+        except Exception:
+            if opened_tdms is not None:
+                try:
+                    opened_tdms.close()
+                except Exception:
+                    pass
+            raise
+
+        self.close()
+        self.tdms = opened_tdms
+        self.group = group
+        self.channel_index = channel_index
+        self._channel_grid = channel_grid
+        self.wvl_steps_per_sweep = wvl_steps_per_sweep
+        self.sweeps_per_cycle = sweeps_per_cycle
+        self.rows_per_file = rows_per_file
+        self.footprints_per_row = footprints_per_row
+        self.samples_per_row = samples_per_row
+        self.samples_per_row_rx = samples_per_row_rx
         self._cache_row_id = None
         self._cache_row = None
 
         return TdmsMeta(
             path=tdms_path,
             group_name=group_name,
-            rows_per_file=self.rows_per_file,
-            sweeps_per_cycle=self.sweeps_per_cycle,
-            steps_per_sweep=self.wvl_steps_per_sweep,
-            footprints_per_row=self.footprints_per_row,
-            samples_per_row=self.samples_per_row,
-            samples_per_row_rx=self.samples_per_row_rx,
-            channels=len(self.channel_index),
+            rows_per_file=rows_per_file,
+            sweeps_per_cycle=sweeps_per_cycle,
+            steps_per_sweep=wvl_steps_per_sweep,
+            footprints_per_row=footprints_per_row,
+            samples_per_row=samples_per_row,
+            samples_per_row_rx=samples_per_row_rx,
+            channels=len(channel_index),
             tx_samples_cut=(head_cut, tail_cut),
             dr_m_per_sample=self.dr,
         )
@@ -219,9 +248,16 @@ class CasalsTdmsProcessor:
             dtype=np.int16,
         )
 
-        for sweep in range(self.sweeps_per_cycle):
-            for step in range(self.wvl_steps_per_sweep):
-                channel = self.channel_index[(sweep, step)]
+        channel_grid = self._channel_grid
+        if not channel_grid:
+            channel_grid = tuple(
+                tuple(self.channel_index[(sweep, step)] for step in range(self.wvl_steps_per_sweep))
+                for sweep in range(self.sweeps_per_cycle)
+            )
+            self._channel_grid = channel_grid
+
+        for sweep, channels in enumerate(channel_grid):
+            for step, channel in enumerate(channels):
 
                 segment = np.asarray(channel[row_start:row_end], dtype=np.int16)
                 if segment.size != self.samples_per_row:

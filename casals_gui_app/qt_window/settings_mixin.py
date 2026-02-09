@@ -185,6 +185,13 @@ class QtMainWindowSettingsMixin:
         except Exception:
             pass
 
+        if (
+            isinstance(self._settings_cache, dict)
+            and payload == self._settings_cache
+            and self._settings_path.exists()
+        ):
+            return
+
         try:
             tmp_path = self._settings_path.with_suffix(self._settings_path.suffix + ".tmp")
             tmp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")

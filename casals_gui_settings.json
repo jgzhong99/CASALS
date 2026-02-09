@@ -1,6 +1,6 @@
 {
   "tdms_path": "C:/Users/zhong267/OneDrive - purdue.edu/Research/CASALS/tdms/casals_18-11-2024_13-34-53_158-003.tdms",
-  "row_id": 1082,
+  "row_id": 1160,
   "clip_low": 0.8,
   "clip_high": 99.5,
   "disp_low": 29.9,
@@ -26,8 +26,8 @@
     1370
   ],
   "qt_main_splitter_sizes": [
-    260,
-    2279
+    433,
+    2106
   ],
   "qt_window_geometry": "AdnQywADAAD/////////+gAACgAAAAVxAAAACgAAAB4AAAalAAADbAAAAAACAAAACgAAAAAAAAAAFwAACf8AAAVw",
   "ui_control_scale_pct": 110,
@@ -42,7 +42,7 @@
   "auto_target_samples": 5000,
   "preview_target_fp": 72,
   "preview_target_samples": 400,
-  "reverse_track_axis": true,
+  "reverse_track_axis": false,
   "reverse_track_axis_schema": 1,
   "reverse_cmap": true
 }

@@ -78,7 +78,7 @@ class Config:
 
     # Right-panel current sweep profile.
     profile_y: str = "refh"  # "refh", "snr", or "amp"
-    profile_y_percentile_range: Tuple[float, float] = (1.0, 99.0)
+    profile_y_percentile_range: Optional[Tuple[float, float]] = None
 
     # Coordinate projection. If None, infer WGS84 UTM EPSG from median lon/lat.
     output_epsg_override: Optional[int] = None
@@ -86,6 +86,8 @@ class Config:
 
     # Animation layout and styling.
     figsize: Tuple[float, float] = (13.5, 7.5)
+    map_xy_percentile_range: Optional[Tuple[float, float]] = None
+    axis_padding_fraction: float = 0.02
     show_all_display_points_as_context: bool = True
     context_point_size: float = 0.25
     context_alpha: float = 0.05
@@ -333,6 +335,38 @@ def robust_range(arr: np.ndarray, p_lo: float = 2.0, p_hi: float = 98.0) -> Tupl
     return lo, hi
 
 
+def stable_axis_limits(
+    arr: np.ndarray,
+    percentile_range: Optional[Tuple[float, float]] = None,
+    pad_fraction: float = 0.02,
+    absolute_pad: float = 0.0,
+) -> Tuple[float, float]:
+    finite = np.asarray(arr, dtype=np.float64)
+    finite = finite[np.isfinite(finite)]
+    if finite.size == 0:
+        return 0.0, 1.0
+
+    if percentile_range is not None:
+        lo, hi = percentile_range
+        lo_v = float(np.nanpercentile(finite, lo))
+        hi_v = float(np.nanpercentile(finite, hi))
+    else:
+        lo_v = float(np.nanmin(finite))
+        hi_v = float(np.nanmax(finite))
+
+    if not np.isfinite(lo_v) or not np.isfinite(hi_v) or hi_v < lo_v:
+        lo_v = float(np.nanmin(finite))
+        hi_v = float(np.nanmax(finite))
+
+    span = hi_v - lo_v
+    if span <= 0.0:
+        base = max(abs(lo_v), 1.0)
+        span = base * 0.05
+
+    pad = max(float(absolute_pad), span * max(0.0, float(pad_fraction)))
+    return lo_v - pad, hi_v + pad
+
+
 def make_frame_sweeps(n_sweeps: int, cfg: Config) -> np.ndarray:
     start = max(0, int(cfg.start_sweep))
     end = n_sweeps - 1 if cfg.end_sweep is None else min(n_sweeps - 1, int(cfg.end_sweep))
@@ -516,12 +550,18 @@ def main() -> None:
         x_plot = x - x0
         y_plot = y - y0
         xy_units = f"local projected meters, origin=median EPSG:{epsg} ({x0:.3f}, {y0:.3f})"
+        x_label = "Local X (m)"
+        y_label = "Local Y (m)"
+        map_title = f"Map view | local EPSG:{epsg}"
     else:
         x0 = 0.0
         y0 = 0.0
         x_plot = x
         y_plot = y
         xy_units = f"EPSG:{epsg} projected meters"
+        x_label = "Projected X (m)"
+        y_label = "Projected Y (m)"
+        map_title = f"Map view | EPSG:{epsg}"
 
     grids, grid_info = reshape_by_sweep_track(
         pd.sweep_num,
@@ -552,12 +592,33 @@ def main() -> None:
     if cmax <= cmin:
         cmax = cmin + 1.0
 
-    py_lo, py_hi = robust_range(profile_grid[disp_mask], *cfg.profile_y_percentile_range)
-
     x_disp = grids["x"][disp_mask]
     y_disp = grids["y"][disp_mask]
     if x_disp.size == 0:
         raise ValueError("Display filter removed all points. Lower display_snr_min or disable display_good_snr_only.")
+    track_disp = np.nonzero(disp_mask)[1].astype(np.float64)
+
+    map_x_lo, map_x_hi = stable_axis_limits(
+        x_disp,
+        percentile_range=cfg.map_xy_percentile_range,
+        pad_fraction=cfg.axis_padding_fraction,
+    )
+    map_y_lo, map_y_hi = stable_axis_limits(
+        y_disp,
+        percentile_range=cfg.map_xy_percentile_range,
+        pad_fraction=cfg.axis_padding_fraction,
+    )
+    prof_x_lo, prof_x_hi = stable_axis_limits(
+        track_disp,
+        percentile_range=None,
+        pad_fraction=0.0,
+        absolute_pad=0.5,
+    )
+    py_lo, py_hi = stable_axis_limits(
+        profile_grid[disp_mask],
+        percentile_range=cfg.profile_y_percentile_range,
+        pad_fraction=cfg.axis_padding_fraction,
+    )
 
     print(f"Records: {pd.lon.size:,}")
     print(f"Sweeps x tracks: {n_sweeps} x {n_tracks} = {n_sweeps*n_tracks:,}")
@@ -567,10 +628,21 @@ def main() -> None:
     print(f"Color by: {cfg.color_by}, color range: {cmin:.3f} to {cmax:.3f}")
 
     fig = plt.figure(figsize=cfg.figsize)
-    gs = fig.add_gridspec(nrows=2, ncols=2, width_ratios=[2.2, 1.0], height_ratios=[1.0, 0.035], wspace=0.20, hspace=0.12)
+    gs = fig.add_gridspec(
+        nrows=2,
+        ncols=2,
+        width_ratios=[3.6, 1.05],
+        height_ratios=[1.0, 0.042],
+        wspace=0.12,
+        hspace=0.08,
+        left=0.055,
+        right=0.985,
+        top=0.90,
+        bottom=0.10,
+    )
     ax_map = fig.add_subplot(gs[0, 0])
     ax_prof = fig.add_subplot(gs[0, 1])
-    cax = fig.add_subplot(gs[1, 0])
+    cax = fig.add_subplot(gs[1, :])
 
     cmap = plt.get_cmap(cfg.cmap)
     norm = plt.Normalize(cmin, cmax)
@@ -600,15 +672,16 @@ def main() -> None:
     ax_map.add_collection(current_line)
 
     ax_map.set_aspect("equal", adjustable="box")
-    ax_map.set_xlabel(f"X ({xy_units})")
-    ax_map.set_ylabel(f"Y ({xy_units})")
-    ax_map.set_xlim(float(np.nanpercentile(x_disp, 0.2)), float(np.nanpercentile(x_disp, 99.8)))
-    ax_map.set_ylim(float(np.nanpercentile(y_disp, 0.2)), float(np.nanpercentile(y_disp, 99.8)))
+    ax_map.set_xlabel(x_label)
+    ax_map.set_ylabel(y_label)
+    ax_map.set_xlim(map_x_lo, map_x_hi)
+    ax_map.set_ylim(map_y_lo, map_y_hi)
     ax_map.grid(True, linewidth=0.3, alpha=0.35)
+    ax_map.set_title(map_title, fontsize=10)
 
     prof_scatter = ax_prof.scatter([], [], s=18, c=[], cmap=cmap, norm=norm, edgecolors="k", linewidths=0.2)
     prof_line, = ax_prof.plot([], [], color="0.25", linewidth=0.8, alpha=0.55)
-    ax_prof.set_xlim(-1, n_tracks)
+    ax_prof.set_xlim(prof_x_lo, prof_x_hi)
     ax_prof.set_ylim(py_lo, py_hi)
     ax_prof.set_xlabel("track_num within current sweep")
     ax_prof.set_ylabel(cfg.profile_y)
@@ -618,8 +691,9 @@ def main() -> None:
     sm.set_array([])
     cb = fig.colorbar(sm, cax=cax, orientation="horizontal")
     cb.set_label(cfg.color_by)
+    cb.outline.set_linewidth(0.6)
 
-    title = fig.suptitle("", fontsize=12)
+    title = fig.suptitle("", fontsize=11.5)
 
     def get_sweep_data(s: int, include_filter: bool = True) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         m = np.isfinite(grids["x"][s]) & np.isfinite(grids["y"][s]) & np.isfinite(profile_grid[s]) & np.isfinite(color_grid[s])
@@ -676,11 +750,10 @@ def main() -> None:
             prof_line.set_data([], [])
 
         title.set_text(
-            f"CASALS L1B sweep animation | sweep {s:,}/{n_sweeps-1:,} | "
-            f"track records shown: {xs.size}/{n_tracks} | trail: {trail_start:,}–{s:,} | "
-            f"display SNR min: {cfg.display_snr_min}"
+            f"CASALS L1B pushbroom | sweep {s:,}/{n_sweeps-1:,} | "
+            f"shown {xs.size}/{n_tracks} | trail {trail_start:,}-{s:,}"
         )
-        ax_prof.set_title(f"Current sweep profile: sweep_num={s}")
+        ax_prof.set_title(f"Current sweep profile: {s}")
         return trail_scatter, current_scatter, current_line, prof_scatter, prof_line, title
 
     # Render the first frame once to determine exact pixel size for OpenCV VideoWriter.
@@ -727,6 +800,9 @@ def main() -> None:
         "sweep_numbers_rendered_sample": [int(v) for v in frame_sweeps[:10]],
         "xy_origin_offset_applied": {"x0": x0, "y0": y0} if cfg.use_local_xy_origin else None,
         "color_range": {"min": cmin, "max": cmax},
+        "map_x_range": {"min": map_x_lo, "max": map_x_hi},
+        "map_y_range": {"min": map_y_lo, "max": map_y_hi},
+        "profile_x_range": {"min": prof_x_lo, "max": prof_x_hi},
         "profile_y_range": {"min": py_lo, "max": py_hi},
         "source_attrs_subset": pd.attrs,
     }

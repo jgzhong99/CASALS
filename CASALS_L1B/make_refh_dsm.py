@@ -867,7 +867,7 @@ def main() -> None:
         snr_threshold=5.0,
 
         # DSM grid size in meters.
-        dsm_resolution_m=5.0,
+        dsm_resolution_m=10.0,
 
         # Usually leave None; this infers WGS84 / UTM from H5 lon/lat. For this file it should be EPSG:32618.
         output_epsg_override=None,

@@ -38,6 +38,9 @@ else:
     _CV2_IMPORT_ERROR = None
 
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+
+
 @dataclass
 class Config:
     h5_path: Path
@@ -69,23 +72,38 @@ class Config:
     display_snr_max: Optional[float] = None
     display_good_snr_only: bool = False
 
-    # Color variable for map/current-sweep/profile plots.
+    # Color variable for map/current-sweep plots.
     # Options: "snr", "refh", "amp", "track".
     color_by: str = "snr"
     color_min: Optional[float] = 1.0
     color_max: Optional[float] = 6.0
     cmap: str = "viridis"
 
-    # Right-panel current sweep profile.
-    profile_y: str = "refh"  # "refh", "snr", or "amp"
-    profile_y_percentile_range: Optional[Tuple[float, float]] = None
+    # Display-only orientation control. If enabled, the script checks the
+    # displayed footprint aspect ratio after filtering. If the footprint is
+    # much taller than wide, it rotates the plot coordinates by 90 degrees
+    # so the single map panel uses the frame more efficiently. This does not
+    # modify the georeferenced coordinates or H5-derived data.
+    auto_rotate_display_by_aspect: bool = True
+    auto_rotate_aspect_threshold: float = 1.25
 
     # Coordinate projection. If None, infer WGS84 UTM EPSG from median lon/lat.
     output_epsg_override: Optional[int] = None
     use_local_xy_origin: bool = True
 
     # Animation layout and styling.
-    figsize: Tuple[float, float] = (13.5, 7.5)
+    # If figsize is None, the script estimates a single-panel figure size from
+    # the map extent and a detected/fallback screen aspect ratio.  This keeps
+    # portrait-like and landscape-like CASALS footprints from being forced into
+    # the old fixed two-panel layout.
+    figsize: Optional[Tuple[float, float]] = None
+    screen_aspect_override: Optional[float] = None
+    fallback_screen_aspect: float = 16.0 / 9.0
+    max_fig_width_in: float = 13.5
+    min_fig_width_in: float = 7.5
+    min_fig_height_in: float = 5.0
+    min_fig_aspect: float = 0.75
+    map_aspect_padding: float = 1.12
     map_xy_percentile_range: Optional[Tuple[float, float]] = None
     axis_padding_fraction: float = 0.02
     show_all_display_points_as_context: bool = True
@@ -299,16 +317,6 @@ def choose_color_values(grids: Dict[str, np.ndarray], cfg: Config) -> np.ndarray
     raise ValueError(f"Unsupported color_by={cfg.color_by!r}; use snr, refh, amp, or track.")
 
 
-def choose_profile_y(grids: Dict[str, np.ndarray], cfg: Config) -> np.ndarray:
-    mode = cfg.profile_y.lower()
-    if mode == "refh":
-        return grids["refh"]
-    if mode == "snr":
-        return grids["snr"]
-    if mode == "amp":
-        return grids["amp"]
-    raise ValueError(f"Unsupported profile_y={cfg.profile_y!r}; use refh, snr, or amp.")
-
 
 def display_mask_for_grid(grids: Dict[str, np.ndarray], cfg: Config) -> np.ndarray:
     mask = np.isfinite(grids["x"]) & np.isfinite(grids["y"]) & np.isfinite(grids["refh"]) & np.isfinite(grids["snr"])
@@ -365,6 +373,150 @@ def stable_axis_limits(
 
     pad = max(float(absolute_pad), span * max(0.0, float(pad_fraction)))
     return lo_v - pad, hi_v + pad
+
+
+def apply_display_rotation_if_needed(
+    grids: Dict[str, np.ndarray],
+    disp_mask: np.ndarray,
+    cfg: Config,
+    base_x_label: str,
+    base_y_label: str,
+) -> Tuple[Dict[str, np.ndarray], str, str, Dict[str, Any]]:
+    """Rotate display coordinates by 90 degrees when the map footprint is tall.
+
+    This is intentionally display-only. It modifies the plotting grids in memory
+    after projection and sweep/track reshaping, but the metadata records the
+    operation so the original projected-coordinate meaning remains explicit.
+    """
+    x = grids["x"]
+    y = grids["y"]
+    x_vals = np.asarray(x[disp_mask], dtype=np.float64)
+    y_vals = np.asarray(y[disp_mask], dtype=np.float64)
+
+    x_lo, x_hi = stable_axis_limits(x_vals, percentile_range=cfg.map_xy_percentile_range, pad_fraction=0.0)
+    y_lo, y_hi = stable_axis_limits(y_vals, percentile_range=cfg.map_xy_percentile_range, pad_fraction=0.0)
+    x_span = max(float(x_hi - x_lo), 1e-9)
+    y_span = max(float(y_hi - y_lo), 1e-9)
+    aspect_y_over_x = y_span / x_span
+
+    rotate = bool(cfg.auto_rotate_display_by_aspect and aspect_y_over_x >= float(cfg.auto_rotate_aspect_threshold))
+    info = {
+        "auto_rotate_display_by_aspect": bool(cfg.auto_rotate_display_by_aspect),
+        "auto_rotate_aspect_threshold": float(cfg.auto_rotate_aspect_threshold),
+        "pre_rotation_x_span_m": float(x_span),
+        "pre_rotation_y_span_m": float(y_span),
+        "pre_rotation_y_over_x_aspect": float(aspect_y_over_x),
+        "display_rotated_90deg": rotate,
+        "rotation_semantics": "plot_x = original_y, plot_y = -original_x" if rotate else "none",
+    }
+
+    if not rotate:
+        return grids, base_x_label, base_y_label, info
+
+    new_grids = dict(grids)
+    new_grids["x"] = y.copy()
+    new_grids["y"] = -x.copy()
+    x_label = f"{base_y_label} (display X; auto-rotated)"
+    y_label = f"-{base_x_label} (display Y; auto-rotated)"
+    return new_grids, x_label, y_label, info
+
+
+
+def detect_screen_aspect(fallback: float = 16.0 / 9.0) -> float:
+    """Return the primary screen width/height ratio when Tk can see a display.
+
+    The function is deliberately optional: batch/HPC/headless runs fall back to
+    a conventional 16:9-like ratio without failing the animation.
+    """
+    try:
+        import tkinter as tk
+
+        root = tk.Tk()
+        root.withdraw()
+        width = float(root.winfo_screenwidth())
+        height = float(root.winfo_screenheight())
+        root.destroy()
+        if width > 0 and height > 0 and np.isfinite(width / height):
+            return width / height
+    except Exception:
+        pass
+    return float(fallback)
+
+
+def infer_single_panel_figsize(
+    map_x_range: Tuple[float, float],
+    map_y_range: Tuple[float, float],
+    cfg: Config,
+) -> Tuple[Tuple[float, float], Dict[str, float]]:
+    """Infer a readable one-panel figure size from map and screen aspect.
+
+    The map axes keep equal x/y scaling.  The figure aspect is therefore based
+    mainly on the displayed map extent, but it is bounded so the rendered video
+    remains practical on a normal monitor.
+    """
+    if cfg.figsize is not None:
+        w, h = float(cfg.figsize[0]), float(cfg.figsize[1])
+        return (w, h), {
+            "figure_width_in": w,
+            "figure_height_in": h,
+            "screen_aspect": float("nan"),
+            "map_aspect": float("nan"),
+            "target_aspect": w / h if h > 0 else float("nan"),
+            "figsize_mode": "manual",
+        }
+
+    screen_aspect = (
+        float(cfg.screen_aspect_override)
+        if cfg.screen_aspect_override is not None
+        else detect_screen_aspect(cfg.fallback_screen_aspect)
+    )
+    if not np.isfinite(screen_aspect) or screen_aspect <= 0:
+        screen_aspect = float(cfg.fallback_screen_aspect)
+
+    dx = max(float(map_x_range[1] - map_x_range[0]), 1e-6)
+    dy = max(float(map_y_range[1] - map_y_range[0]), 1e-6)
+    map_aspect = dx / dy
+
+    # Add mild padding for labels/colorbar/title, then bound to a monitor-
+    # friendly range.  Very tall footprints remain portrait-ish instead of
+    # being forced into 16:9, but not so narrow that labels become unreadable.
+    target_aspect = map_aspect * float(cfg.map_aspect_padding)
+    lower = max(float(cfg.min_fig_aspect), 1.0 / max(screen_aspect, 1e-6))
+    upper = max(lower, screen_aspect)
+    target_aspect = min(max(target_aspect, lower), upper)
+
+    max_w = float(cfg.max_fig_width_in)
+    max_h = max(float(cfg.min_fig_height_in), max_w / screen_aspect)
+    if target_aspect >= screen_aspect:
+        fig_w = max_w
+        fig_h = fig_w / target_aspect
+    else:
+        fig_h = max_h
+        fig_w = fig_h * target_aspect
+
+    if fig_w < float(cfg.min_fig_width_in):
+        fig_w = float(cfg.min_fig_width_in)
+        fig_h = fig_w / target_aspect
+    if fig_h < float(cfg.min_fig_height_in):
+        fig_h = float(cfg.min_fig_height_in)
+        fig_w = fig_h * target_aspect
+
+    return (float(fig_w), float(fig_h)), {
+        "figure_width_in": float(fig_w),
+        "figure_height_in": float(fig_h),
+        "screen_aspect": float(screen_aspect),
+        "map_aspect": float(map_aspect),
+        "target_aspect": float(target_aspect),
+        "figsize_mode": "auto_single_panel",
+    }
+
+
+def resolve_config_path(path: Path) -> Path:
+    """Resolve config paths relative to the script location, not the launch CWD."""
+    path = Path(path).expanduser()
+    if path.is_absolute():
+        return path
+    return (SCRIPT_DIR / path).resolve()
 
 
 def make_frame_sweeps(n_sweeps: int, cfg: Config) -> np.ndarray:
@@ -501,12 +653,15 @@ def main() -> None:
         display_snr_max=None,
         display_good_snr_only=False,
 
-        # Coloring and profile.
+        # Coloring.
         color_by="snr",            # snr, refh, amp, or track
         color_min=1.0,
         color_max=6.0,
         cmap="viridis",
-        profile_y="refh",          # refh, snr, or amp
+
+        # Display orientation. Auto-rotation is display-only and is recorded in metadata.
+        auto_rotate_display_by_aspect=True,
+        auto_rotate_aspect_threshold=1.25,
 
         # Coordinate output. For this granule, automatic inference should give EPSG:32618.
         output_epsg_override=None,
@@ -518,6 +673,8 @@ def main() -> None:
     )
     # -------------------------------------------------------------------------
 
+    cfg.h5_path = resolve_config_path(cfg.h5_path)
+    cfg.out_dir = resolve_config_path(cfg.out_dir)
     cfg.out_dir.mkdir(parents=True, exist_ok=True)
 
     print("=" * 88)
@@ -581,8 +738,21 @@ def main() -> None:
     n_tracks = grid_info["n_tracks"]
     frame_sweeps = make_frame_sweeps(n_sweeps, cfg)
     disp_mask = display_mask_for_grid(grids, cfg)
+
+    x_disp_pre = grids["x"][disp_mask]
+    if x_disp_pre.size == 0:
+        raise ValueError("Display filter removed all points. Lower display_snr_min or disable display_good_snr_only.")
+
+    grids, x_label, y_label, rotation_info = apply_display_rotation_if_needed(
+        grids, disp_mask, cfg, x_label, y_label
+    )
+    if rotation_info["display_rotated_90deg"]:
+        map_title = (
+            f"Map view | local EPSG:{epsg} | display rotated 90°"
+            if cfg.use_local_xy_origin
+            else f"Map view | EPSG:{epsg} | display rotated 90°"
+        )
     color_grid = choose_color_values(grids, cfg)
-    profile_grid = choose_profile_y(grids, cfg)
 
     cmin, cmax = robust_range(color_grid[disp_mask], 2, 98)
     if cfg.color_min is not None:
@@ -594,9 +764,6 @@ def main() -> None:
 
     x_disp = grids["x"][disp_mask]
     y_disp = grids["y"][disp_mask]
-    if x_disp.size == 0:
-        raise ValueError("Display filter removed all points. Lower display_snr_min or disable display_good_snr_only.")
-    track_disp = np.nonzero(disp_mask)[1].astype(np.float64)
 
     map_x_lo, map_x_hi = stable_axis_limits(
         x_disp,
@@ -608,17 +775,6 @@ def main() -> None:
         percentile_range=cfg.map_xy_percentile_range,
         pad_fraction=cfg.axis_padding_fraction,
     )
-    prof_x_lo, prof_x_hi = stable_axis_limits(
-        track_disp,
-        percentile_range=None,
-        pad_fraction=0.0,
-        absolute_pad=0.5,
-    )
-    py_lo, py_hi = stable_axis_limits(
-        profile_grid[disp_mask],
-        percentile_range=cfg.profile_y_percentile_range,
-        pad_fraction=cfg.axis_padding_fraction,
-    )
 
     print(f"Records: {pd.lon.size:,}")
     print(f"Sweeps x tracks: {n_sweeps} x {n_tracks} = {n_sweeps*n_tracks:,}")
@@ -626,23 +782,29 @@ def main() -> None:
     print(f"Display points after filter: {int(disp_mask.sum()):,}")
     print(f"Rendered animation frames: {frame_sweeps.size}")
     print(f"Color by: {cfg.color_by}, color range: {cmin:.3f} to {cmax:.3f}")
+    print(f"Display rotation: {rotation_info['rotation_semantics']} (pre y/x aspect={rotation_info['pre_rotation_y_over_x_aspect']:.3f})")
 
-    fig = plt.figure(figsize=cfg.figsize)
+    fig_size, layout_info = infer_single_panel_figsize((map_x_lo, map_x_hi), (map_y_lo, map_y_hi), cfg)
+    print(
+        "Figure layout: "
+        f"{fig_size[0]:.2f} x {fig_size[1]:.2f} in | "
+        f"map aspect={layout_info['map_aspect']:.3f} | "
+        f"screen aspect={layout_info['screen_aspect']:.3f}"
+    )
+
+    fig = plt.figure(figsize=fig_size)
     gs = fig.add_gridspec(
         nrows=2,
-        ncols=2,
-        width_ratios=[3.6, 1.05],
-        height_ratios=[1.0, 0.042],
-        wspace=0.12,
+        ncols=1,
+        height_ratios=[1.0, 0.045],
         hspace=0.08,
-        left=0.055,
+        left=0.075,
         right=0.985,
         top=0.90,
-        bottom=0.10,
+        bottom=0.11,
     )
     ax_map = fig.add_subplot(gs[0, 0])
-    ax_prof = fig.add_subplot(gs[0, 1])
-    cax = fig.add_subplot(gs[1, :])
+    cax = fig.add_subplot(gs[1, 0])
 
     cmap = plt.get_cmap(cfg.cmap)
     norm = plt.Normalize(cmin, cmax)
@@ -679,14 +841,6 @@ def main() -> None:
     ax_map.grid(True, linewidth=0.3, alpha=0.35)
     ax_map.set_title(map_title, fontsize=10)
 
-    prof_scatter = ax_prof.scatter([], [], s=18, c=[], cmap=cmap, norm=norm, edgecolors="k", linewidths=0.2)
-    prof_line, = ax_prof.plot([], [], color="0.25", linewidth=0.8, alpha=0.55)
-    ax_prof.set_xlim(prof_x_lo, prof_x_hi)
-    ax_prof.set_ylim(py_lo, py_hi)
-    ax_prof.set_xlabel("track_num within current sweep")
-    ax_prof.set_ylabel(cfg.profile_y)
-    ax_prof.grid(True, linewidth=0.3, alpha=0.4)
-
     sm = plt.cm.ScalarMappable(norm=norm, cmap=cmap)
     sm.set_array([])
     cb = fig.colorbar(sm, cax=cax, orientation="horizontal")
@@ -695,16 +849,15 @@ def main() -> None:
 
     title = fig.suptitle("", fontsize=11.5)
 
-    def get_sweep_data(s: int, include_filter: bool = True) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        m = np.isfinite(grids["x"][s]) & np.isfinite(grids["y"][s]) & np.isfinite(profile_grid[s]) & np.isfinite(color_grid[s])
+    def get_sweep_data(s: int, include_filter: bool = True) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        m = np.isfinite(grids["x"][s]) & np.isfinite(grids["y"][s]) & np.isfinite(color_grid[s])
         if include_filter:
             m &= disp_mask[s]
         tracks = np.arange(n_tracks, dtype=np.float64)[m]
         xs = grids["x"][s, m]
         ys = grids["y"][s, m]
-        vals = profile_grid[s, m]
         cols = color_grid[s, m]
-        return tracks, xs, ys, vals, cols
+        return tracks, xs, ys, cols
 
     def update(frame_idx: int):
         s = int(frame_sweeps[frame_idx])
@@ -722,7 +875,7 @@ def main() -> None:
             trail_scatter.set_offsets(np.empty((0, 2)))
             trail_scatter.set_array(np.asarray([], dtype=np.float64))
 
-        tracks, xs, ys, vals, cols = get_sweep_data(s, include_filter=True)
+        tracks, xs, ys, cols = get_sweep_data(s, include_filter=True)
         if xs.size:
             current_scatter.set_offsets(np.column_stack((xs, ys)))
             current_scatter.set_array(cols.astype(np.float64))
@@ -738,23 +891,11 @@ def main() -> None:
             current_scatter.set_array(np.asarray([], dtype=np.float64))
             current_line.set_segments([])
 
-        # Profile panel: use all finite current sweep points that pass display filter.
-        if tracks.size:
-            order = np.argsort(tracks)
-            prof_scatter.set_offsets(np.column_stack((tracks, vals)))
-            prof_scatter.set_array(cols.astype(np.float64))
-            prof_line.set_data(tracks[order], vals[order])
-        else:
-            prof_scatter.set_offsets(np.empty((0, 2)))
-            prof_scatter.set_array(np.asarray([], dtype=np.float64))
-            prof_line.set_data([], [])
-
         title.set_text(
             f"CASALS L1B pushbroom | sweep {s:,}/{n_sweeps-1:,} | "
             f"shown {xs.size}/{n_tracks} | trail {trail_start:,}-{s:,}"
         )
-        ax_prof.set_title(f"Current sweep profile: {s}")
-        return trail_scatter, current_scatter, current_line, prof_scatter, prof_line, title
+        return trail_scatter, current_scatter, current_line, title
 
     # Render the first frame once to determine exact pixel size for OpenCV VideoWriter.
     update(0)
@@ -802,8 +943,8 @@ def main() -> None:
         "color_range": {"min": cmin, "max": cmax},
         "map_x_range": {"min": map_x_lo, "max": map_x_hi},
         "map_y_range": {"min": map_y_lo, "max": map_y_hi},
-        "profile_x_range": {"min": prof_x_lo, "max": prof_x_hi},
-        "profile_y_range": {"min": py_lo, "max": py_hi},
+        "display_rotation": rotation_info,
+        "single_panel_layout": layout_info,
         "source_attrs_subset": pd.attrs,
     }
     metadata_path = cfg.out_dir / f"{cfg.output_stem}_metadata.json"

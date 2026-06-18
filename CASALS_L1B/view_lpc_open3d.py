@@ -455,10 +455,10 @@ def visualize_open3d(summary: LasViewSummary, cfg: Config) -> None:
 def main() -> None:
     cfg = Config(
         # Set this to the exact 3DEP LAS/LAZ clip you want to view.
-        input_las_path=Path(
-            "./point_cloud_data/download_3dep_lpc/"
-            "casals_l1b_20241112T165718_001_02_MD_Southeast_1_2019_EPSG6347_39a068a77804.laz"
-        ),
+        #input_las_path=Path("./point_cloud_data/download_3dep_lpc/casals_l1b_20241112T165718_001_02_MD_Southeast_1_2019_EPSG6347_39a068a77804.laz"),
+        #input_las_path=Path("./outputs/transfer_3dep_labels_to_casals_refh/casals_l1b_single_casals_3dep_pseudolabeled_aligned.las"),
+        #input_las_path=Path("./point_cloud_data/classify_refh_3dep_like_rules/casals_l1b_20241112T165718_001_02_3dep_like_rules_classified.las"),
+        input_las_path=Path("./outputs/transfer_3dep_labels_to_casals_refh_multi/pair1_md_casals_3dep_pseudolabeled_aligned.las"),
         output_dir=Path("./outputs/view_3dep_lpc_open3d"),
         save_legend_png=True,
         legend_png_name="classification_color_legend.png",

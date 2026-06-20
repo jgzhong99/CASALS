@@ -2584,20 +2584,40 @@ def compute_ground_to_ground_residuals(
     summary_rows = make_residual_summary_rows(stats_map, cfg)
     summary_rows.to_csv(out_dir / "ground_to_ground_offset_summary.csv", index=False)
 
+    finite_point_values = point_values[np.isfinite(point_values)]
+    if finite_point_values.size:
+        p2_point = float(np.percentile(finite_point_values, 0.2))
+        p98_point = float(np.percentile(finite_point_values, 99.8))
+        point_hist_values = finite_point_values[(finite_point_values >= p2_point) & (finite_point_values <= p98_point)]
+    else:
+        p2_point = math.nan
+        p98_point = math.nan
+        point_hist_values = finite_point_values
+
     fig, ax = plt.subplots(figsize=(8, 5), dpi=cfg.dpi)
-    ax.hist(point_values[np.isfinite(point_values)], bins=120, color="0.35")
+    ax.hist(point_hist_values, bins=120, color="0.35")
     ax.set_xlabel("Residual (m)")
     ax.set_ylabel("count")
-    ax.set_title("Pointwise ground-to-ground residual")
+    ax.set_title(f"Pointwise ground-to-ground residual (p2-p98: {p2_point:.3f} to {p98_point:.3f} m)")
     fig.tight_layout()
     fig.savefig(out_dir / "residual_histogram_pointwise.png")
     plt.close(fig)
 
+    finite_grid_values = grid_values[np.isfinite(grid_values)]
+    if finite_grid_values.size:
+        p2_grid = float(np.percentile(finite_grid_values, 2))
+        p98_grid = float(np.percentile(finite_grid_values, 98))
+        grid_hist_values = finite_grid_values[(finite_grid_values >= p2_grid) & (finite_grid_values <= p98_grid)]
+    else:
+        p2_grid = math.nan
+        p98_grid = math.nan
+        grid_hist_values = finite_grid_values
+
     fig, ax = plt.subplots(figsize=(8, 5), dpi=cfg.dpi)
-    ax.hist(grid_values[np.isfinite(grid_values)], bins=120, color="0.35")
+    ax.hist(grid_hist_values, bins=120, color="0.35")
     ax.set_xlabel("Residual (m)")
     ax.set_ylabel("count")
-    ax.set_title("Grid-to-grid ground residual")
+    ax.set_title(f"Grid-to-grid ground residual (p2-p98: {p2_grid:.3f} to {p98_grid:.3f} m)")
     fig.tight_layout()
     fig.savefig(out_dir / "residual_histogram_grid.png")
     plt.close(fig)
@@ -3223,16 +3243,16 @@ def make_markdown_report(summary_df: pd.DataFrame, transform_df: pd.DataFrame, o
 def main() -> None:
     cfg = Config(
         pairs=[
-            PairConfig(
-                label="casals_20241112_MD_Southeast_1_2019",
-                h5_path=Path(r"./casals_h5_downloads/casals_l1b_20241112T165718_001_02.h5"),
-                dep_las_path=Path(r"./point_cloud_data/download_3dep_lpc/casals_l1b_20241112T165718_001_02_MD_Southeast_1_2019_EPSG6347_39a068a77804.laz"),
-            ),
-            PairConfig(
-                label="casals_20241112_DE_Statewide_1_B23",
-                h5_path=Path(r"./casals_h5_downloads/casals_l1b_20241112T170442_001_02.h5"),
-                dep_las_path=Path(r"./point_cloud_data/download_3dep_lpc/casals_l1b_20241112T170442_001_02_DE_Statewide_1_B23_EPSG6347_b60d6cbd5f2f.laz"),
-            ),
+            #PairConfig(
+            #    label="casals_20241112_MD_Southeast_1_2019",
+            #    h5_path=Path(r"./casals_h5_downloads/casals_l1b_20241112T165718_001_02.h5"),
+            #    dep_las_path=Path(r"./point_cloud_data/download_3dep_lpc/casals_l1b_20241112T165718_001_02_MD_Southeast_1_2019_EPSG6347_39a068a77804.laz"),
+            #),
+            #PairConfig(
+            #    label="casals_20241112_DE_Statewide_1_B23",
+            #    h5_path=Path(r"./casals_h5_downloads/casals_l1b_20241112T170442_001_02.h5"),
+            #    dep_las_path=Path(r"./point_cloud_data/download_3dep_lpc/casals_l1b_20241112T170442_001_02_DE_Statewide_1_B23_EPSG6347_b60d6cbd5f2f.laz"),
+            #),
             PairConfig(
                 label="casals_20241118_NC_HurricaneFlorence_9_2020",
                 h5_path=Path(r"./casals_h5_downloads/casals_l1b_20241118T171757_001_02.h5"),

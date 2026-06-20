@@ -30,6 +30,14 @@ import matplotlib.pyplot as plt
 from matplotlib.collections import LineCollection
 
 try:
+    import rasterio
+except Exception as exc:  # pragma: no cover
+    rasterio = None
+    _RASTERIO_IMPORT_ERROR = exc
+else:
+    _RASTERIO_IMPORT_ERROR = None
+
+try:
     import cv2
 except Exception as exc:  # pragma: no cover
     cv2 = None
@@ -72,7 +80,7 @@ class Config:
     display_snr_max: Optional[float] = None
     display_good_snr_only: bool = False
 
-    # Color variable for map/current-sweep plots.
+    # Color variable for point overlays when no DSM background is shown.
     # Options: "snr", "refh", "amp", "track".
     color_by: str = "snr"
     color_min: Optional[float] = 1.0
@@ -112,6 +120,32 @@ class Config:
     context_max_points: int = 500_000
     random_seed: int = 42
 
+    # Optional DSM background from make_refh_dsm.py output.
+    show_dsm_background: bool = True
+    dsm_path: Optional[Path] = None
+    dsm_search_dir: Path = Path(r"./outputs/make_refh_dsm")
+    dsm_cmap: str = "terrain"
+    dsm_alpha: float = 0.78
+    dsm_percentile_range: Tuple[float, float] = (2.0, 98.0)
+    trail_color: str = "#67d5ff"
+    current_sweep_color: str = "#ff6b57"
+
+    # Scanline styling. The current sweep is rendered as continuity-aware
+    # segments, re-oriented for display to prefer left-to-right and then
+    # low-to-high scanning so missing tracks do not create misleading jumps.
+    show_scanline: bool = True
+    scanline_color: str = "#ffb000"
+    scanline_halo_color: str = "white"
+    scanline_linewidth: float = 1.7
+    scanline_halo_linewidth: float = 4.2
+    scanline_alpha: float = 0.95
+    scanline_max_track_gap: int = 6
+    scanline_gap_factor: float = 6.0
+    scanline_min_segment_points: int = 2
+    show_scan_end_markers: bool = True
+    scanline_start_marker_size: float = 42.0
+    scanline_end_marker_size: float = 28.0
+
     # Save one static first-frame PNG for quick checking.
     write_first_frame_png: bool = True
 
@@ -128,6 +162,14 @@ class PulseArrays:
     sweep_num: np.ndarray
     track_num: np.ndarray
     attrs: Dict[str, Any]
+
+
+@dataclass
+class DsmBackground:
+    path: Path
+    array: np.ndarray
+    extent: Tuple[float, float, float, float]
+    value_range: Tuple[float, float]
 
 
 def _json_safe(obj: Any) -> Any:
@@ -519,6 +561,116 @@ def resolve_config_path(path: Path) -> Path:
     return (SCRIPT_DIR / path).resolve()
 
 
+def resolve_dsm_path(cfg: Config, h5_stem: str, epsg: int) -> Optional[Path]:
+    if not cfg.show_dsm_background:
+        return None
+    if cfg.dsm_path is not None:
+        path = resolve_config_path(cfg.dsm_path)
+        return path if path.exists() else None
+
+    search_dir = resolve_config_path(cfg.dsm_search_dir)
+    if not search_dir.exists():
+        return None
+
+    pattern = f"{h5_stem}_refh_surface_dsm_*_epsg{epsg}.tif"
+    candidates = [
+        p for p in search_dir.glob(pattern)
+        if "_strict_" not in p.name and p.suffix.lower() == ".tif"
+    ]
+    if not candidates:
+        return None
+    return sorted(candidates, key=lambda p: p.stat().st_mtime, reverse=True)[0]
+
+
+def load_dsm_background(
+    dsm_path: Path,
+    cfg: Config,
+    x0: float,
+    y0: float,
+    display_rotated_90deg: bool,
+) -> DsmBackground:
+    if rasterio is None:
+        raise RuntimeError(
+            "rasterio is not available for DSM background loading. "
+            f"Original import error: {_RASTERIO_IMPORT_ERROR}"
+        )
+
+    with rasterio.open(dsm_path) as ds:
+        arr = ds.read(1).astype(np.float32)
+        nodata = ds.nodata
+        if nodata is not None:
+            arr[arr == nodata] = np.nan
+        xmin = float(ds.bounds.left)
+        xmax = float(ds.bounds.right)
+        ymin = float(ds.bounds.bottom)
+        ymax = float(ds.bounds.top)
+
+    if cfg.use_local_xy_origin:
+        xmin -= float(x0)
+        xmax -= float(x0)
+        ymin -= float(y0)
+        ymax -= float(y0)
+
+    if display_rotated_90deg:
+        arr = np.rot90(arr, k=-1)
+        extent = (ymin, ymax, -xmax, -xmin)
+    else:
+        extent = (xmin, xmax, ymin, ymax)
+
+    value_range = robust_range(arr, cfg.dsm_percentile_range[0], cfg.dsm_percentile_range[1])
+    return DsmBackground(
+        path=dsm_path,
+        array=arr,
+        extent=extent,
+        value_range=value_range,
+    )
+
+
+def orient_segment_left_to_right_upward(segment: np.ndarray) -> np.ndarray:
+    """Prefer scan display direction from left to right, then from low to high."""
+    if segment.shape[0] < 2:
+        return segment
+    start = segment[0]
+    end = segment[-1]
+    dx = float(end[0] - start[0])
+    dy = float(end[1] - start[1])
+    if dx < 0:
+        return segment[::-1].copy()
+    if abs(dx) <= 1e-9 and dy < 0:
+        return segment[::-1].copy()
+    return segment
+
+
+def build_scanline_segments(tracks: np.ndarray, xs: np.ndarray, ys: np.ndarray, cfg: Config) -> Tuple[list[np.ndarray], Optional[np.ndarray]]:
+    if xs.size < 2:
+        return [], None
+
+    order = np.argsort(tracks)
+    tracks_sorted = np.asarray(tracks[order], dtype=np.int64)
+    pts = np.column_stack((xs[order], ys[order])).astype(np.float64, copy=False)
+    if pts.shape[0] < 2:
+        return [], None
+
+    d_track = np.diff(tracks_sorted)
+    d_xy = np.linalg.norm(np.diff(pts, axis=0), axis=1)
+    positive_steps = d_xy[np.isfinite(d_xy) & (d_xy > 0)]
+    base_step = float(np.nanmedian(positive_steps)) if positive_steps.size else 0.0
+    max_gap_m = float(cfg.scanline_gap_factor) * max(base_step, 1e-6)
+    break_after = (d_track > int(cfg.scanline_max_track_gap)) | (d_xy > max_gap_m)
+
+    starts = np.r_[0, np.flatnonzero(break_after) + 1]
+    ends = np.r_[starts[1:], pts.shape[0]]
+    segments = [
+        orient_segment_left_to_right_upward(pts[s:e])
+        for s, e in zip(starts, ends)
+        if (e - s) >= int(cfg.scanline_min_segment_points)
+    ]
+    if not segments:
+        return [], None
+    main_segment = max(segments, key=lambda seg: seg.shape[0])
+    return segments, main_segment
+
+
 def make_frame_sweeps(n_sweeps: int, cfg: Config) -> np.ndarray:
     start = max(0, int(cfg.start_sweep))
     end = n_sweeps - 1 if cfg.end_sweep is None else min(n_sweeps - 1, int(cfg.end_sweep))
@@ -629,7 +781,7 @@ def main() -> None:
     # USER SETTINGS: edit here.
     # -------------------------------------------------------------------------
     cfg = Config(
-        h5_path=Path(r"./casals_h5_downloads/casals_l1b_20241112T165718_001_02.h5"),
+        h5_path=Path(r"./casals_h5_downloads/casals_l1b_20241118T171757_001_02.h5"),
         out_dir=Path(r"./outputs/animate_pushbroom"),
 
         output_stem="casals_20241112_pushbroom_refh_snr",
@@ -776,6 +928,23 @@ def main() -> None:
         pad_fraction=cfg.axis_padding_fraction,
     )
 
+    dsm_background = None
+    dsm_path = resolve_dsm_path(cfg, cfg.h5_path.stem, epsg)
+    if cfg.show_dsm_background and dsm_path is not None:
+        try:
+            dsm_background = load_dsm_background(
+                dsm_path=dsm_path,
+                cfg=cfg,
+                x0=x0,
+                y0=y0,
+                display_rotated_90deg=bool(rotation_info["display_rotated_90deg"]),
+            )
+        except Exception as exc:
+            warnings.warn(f"Could not load DSM background from {dsm_path}: {exc}")
+            dsm_background = None
+    if dsm_background is not None:
+        map_title = f"{map_title} | DSM background"
+
     print(f"Records: {pd.lon.size:,}")
     print(f"Sweeps x tracks: {n_sweeps} x {n_tracks} = {n_sweeps*n_tracks:,}")
     print(f"Complete rectangular sweep-track grid: {grid_info['complete_rectangular_sweep_track_grid']}")
@@ -783,6 +952,7 @@ def main() -> None:
     print(f"Rendered animation frames: {frame_sweeps.size}")
     print(f"Color by: {cfg.color_by}, color range: {cmin:.3f} to {cmax:.3f}")
     print(f"Display rotation: {rotation_info['rotation_semantics']} (pre y/x aspect={rotation_info['pre_rotation_y_over_x_aspect']:.3f})")
+    print(f"DSM background: {str(dsm_path) if dsm_background is not None else 'none'}")
 
     fig_size, layout_info = infer_single_panel_figsize((map_x_lo, map_x_hi), (map_y_lo, map_y_hi), cfg)
     print(
@@ -808,10 +978,24 @@ def main() -> None:
 
     cmap = plt.get_cmap(cfg.cmap)
     norm = plt.Normalize(cmin, cmax)
+    use_dsm_colorbar = dsm_background is not None
+
+    if dsm_background is not None:
+        ax_map.imshow(
+            dsm_background.array,
+            extent=dsm_background.extent,
+            origin="upper",
+            cmap=cfg.dsm_cmap,
+            vmin=dsm_background.value_range[0],
+            vmax=dsm_background.value_range[1],
+            alpha=cfg.dsm_alpha,
+            interpolation="nearest",
+            zorder=0,
+        )
 
     # Optional context: a very light scatter of all display-selected points.
     context_artist = None
-    if cfg.show_all_display_points_as_context:
+    if cfg.show_all_display_points_as_context and dsm_background is None:
         rng = np.random.default_rng(cfg.random_seed)
         valid_indices = np.flatnonzero(disp_mask.ravel())
         if valid_indices.size > cfg.context_max_points:
@@ -826,12 +1010,21 @@ def main() -> None:
             alpha=cfg.context_alpha,
             linewidths=0,
             rasterized=True,
+            zorder=1,
         )
 
-    trail_scatter = ax_map.scatter([], [], s=cfg.trail_point_size, c=[], cmap=cmap, norm=norm, alpha=cfg.trail_alpha, linewidths=0, rasterized=True)
-    current_scatter = ax_map.scatter([], [], s=cfg.current_sweep_point_size, c=[], cmap=cmap, norm=norm, alpha=0.95, edgecolors="k", linewidths=0.25)
-    current_line = LineCollection([], colors="black", linewidths=0.8, alpha=0.8)
-    ax_map.add_collection(current_line)
+    if use_dsm_colorbar:
+        trail_scatter = ax_map.scatter([], [], s=cfg.trail_point_size, c=cfg.trail_color, alpha=cfg.trail_alpha, linewidths=0, rasterized=True, zorder=2)
+        current_scatter = ax_map.scatter([], [], s=cfg.current_sweep_point_size, c=cfg.current_sweep_color, alpha=0.97, edgecolors="white", linewidths=0.4, zorder=5)
+    else:
+        trail_scatter = ax_map.scatter([], [], s=cfg.trail_point_size, c=[], cmap=cmap, norm=norm, alpha=cfg.trail_alpha, linewidths=0, rasterized=True, zorder=2)
+        current_scatter = ax_map.scatter([], [], s=cfg.current_sweep_point_size, c=[], cmap=cmap, norm=norm, alpha=0.97, edgecolors="white", linewidths=0.35, zorder=5)
+    scanline_halo = LineCollection([], colors=cfg.scanline_halo_color, linewidths=cfg.scanline_halo_linewidth, alpha=cfg.scanline_alpha, zorder=3)
+    scanline_core = LineCollection([], colors=cfg.scanline_color, linewidths=cfg.scanline_linewidth, alpha=cfg.scanline_alpha, zorder=4)
+    ax_map.add_collection(scanline_halo)
+    ax_map.add_collection(scanline_core)
+    scanline_start = ax_map.scatter([], [], s=cfg.scanline_start_marker_size, marker="o", facecolors=cfg.scanline_color, edgecolors="white", linewidths=0.9, zorder=6)
+    scanline_end = ax_map.scatter([], [], s=cfg.scanline_end_marker_size, marker="o", facecolors="none", edgecolors="white", linewidths=1.0, zorder=6)
 
     ax_map.set_aspect("equal", adjustable="box")
     ax_map.set_xlabel(x_label)
@@ -841,10 +1034,16 @@ def main() -> None:
     ax_map.grid(True, linewidth=0.3, alpha=0.35)
     ax_map.set_title(map_title, fontsize=10)
 
-    sm = plt.cm.ScalarMappable(norm=norm, cmap=cmap)
+    if use_dsm_colorbar:
+        dsm_norm = plt.Normalize(dsm_background.value_range[0], dsm_background.value_range[1])
+        sm = plt.cm.ScalarMappable(norm=dsm_norm, cmap=plt.get_cmap(cfg.dsm_cmap))
+        colorbar_label = "DSM elevation (m)"
+    else:
+        sm = plt.cm.ScalarMappable(norm=norm, cmap=cmap)
+        colorbar_label = cfg.color_by
     sm.set_array([])
     cb = fig.colorbar(sm, cax=cax, orientation="horizontal")
-    cb.set_label(cfg.color_by)
+    cb.set_label(colorbar_label)
     cb.outline.set_linewidth(0.6)
 
     title = fig.suptitle("", fontsize=11.5)
@@ -870,32 +1069,47 @@ def main() -> None:
 
         if tx.size:
             trail_scatter.set_offsets(np.column_stack((tx, ty)))
-            trail_scatter.set_array(tc.astype(np.float64))
+            if not use_dsm_colorbar:
+                trail_scatter.set_array(tc.astype(np.float64))
         else:
             trail_scatter.set_offsets(np.empty((0, 2)))
-            trail_scatter.set_array(np.asarray([], dtype=np.float64))
+            if not use_dsm_colorbar:
+                trail_scatter.set_array(np.asarray([], dtype=np.float64))
 
         tracks, xs, ys, cols = get_sweep_data(s, include_filter=True)
         if xs.size:
             current_scatter.set_offsets(np.column_stack((xs, ys)))
-            current_scatter.set_array(cols.astype(np.float64))
-            # Draw a polyline connecting the current sweep in track order.
-            segments = []
-            if xs.size >= 2:
-                order = np.argsort(tracks)
-                pts = np.column_stack((xs[order], ys[order]))
-                segments = [pts]
-            current_line.set_segments(segments)
+            if not use_dsm_colorbar:
+                current_scatter.set_array(cols.astype(np.float64))
+            if cfg.show_scanline:
+                scan_segments, main_segment = build_scanline_segments(tracks, xs, ys, cfg)
+                scanline_halo.set_segments(scan_segments)
+                scanline_core.set_segments(scan_segments)
+                if cfg.show_scan_end_markers and main_segment is not None:
+                    scanline_start.set_offsets(main_segment[0:1, :])
+                    scanline_end.set_offsets(main_segment[-1:, :])
+                else:
+                    scanline_start.set_offsets(np.empty((0, 2)))
+                    scanline_end.set_offsets(np.empty((0, 2)))
+            else:
+                scanline_halo.set_segments([])
+                scanline_core.set_segments([])
+                scanline_start.set_offsets(np.empty((0, 2)))
+                scanline_end.set_offsets(np.empty((0, 2)))
         else:
             current_scatter.set_offsets(np.empty((0, 2)))
-            current_scatter.set_array(np.asarray([], dtype=np.float64))
-            current_line.set_segments([])
+            if not use_dsm_colorbar:
+                current_scatter.set_array(np.asarray([], dtype=np.float64))
+            scanline_halo.set_segments([])
+            scanline_core.set_segments([])
+            scanline_start.set_offsets(np.empty((0, 2)))
+            scanline_end.set_offsets(np.empty((0, 2)))
 
         title.set_text(
-            f"CASALS L1B pushbroom | sweep {s:,}/{n_sweeps-1:,} | "
+            f"CASALS L1B pushbroom | current sweep {s:,}/{n_sweeps-1:,} | "
             f"shown {xs.size}/{n_tracks} | trail {trail_start:,}-{s:,}"
         )
-        return trail_scatter, current_scatter, current_line, title
+        return trail_scatter, current_scatter, scanline_halo, scanline_core, scanline_start, scanline_end, title
 
     # Render the first frame once to determine exact pixel size for OpenCV VideoWriter.
     update(0)
@@ -941,8 +1155,18 @@ def main() -> None:
         "sweep_numbers_rendered_sample": [int(v) for v in frame_sweeps[:10]],
         "xy_origin_offset_applied": {"x0": x0, "y0": y0} if cfg.use_local_xy_origin else None,
         "color_range": {"min": cmin, "max": cmax},
+        "colorbar_source": "dsm_background" if use_dsm_colorbar else f"point_overlay:{cfg.color_by}",
         "map_x_range": {"min": map_x_lo, "max": map_x_hi},
         "map_y_range": {"min": map_y_lo, "max": map_y_hi},
+        "dsm_background": {
+            "path": str(dsm_background.path) if dsm_background is not None else None,
+            "value_range": {
+                "min": float(dsm_background.value_range[0]),
+                "max": float(dsm_background.value_range[1]),
+            } if dsm_background is not None else None,
+            "alpha": float(cfg.dsm_alpha) if dsm_background is not None else None,
+            "cmap": cfg.dsm_cmap if dsm_background is not None else None,
+        },
         "display_rotation": rotation_info,
         "single_panel_layout": layout_info,
         "source_attrs_subset": pd.attrs,

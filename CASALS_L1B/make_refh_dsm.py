@@ -47,8 +47,10 @@ else:
 
 try:
     import matplotlib.pyplot as plt
+    from matplotlib import ticker as mticker
 except Exception as exc:  # pragma: no cover
     plt = None
+    mticker = None
     _MATPLOTLIB_IMPORT_ERROR = exc
 else:
     _MATPLOTLIB_IMPORT_ERROR = None
@@ -92,10 +94,12 @@ class Config:
     min_points_per_cell: int = 1
 
     # Conservative support mask and fill controls.
+    # support_buffer_m=None expands support by one raster cell by default so
+    # the filled DSM is less punctured along track edges.
     write_raw_strict_dsm: bool = True
     write_support_mask_raster: bool = True
     write_fill_source_raster: bool = True
-    support_buffer_m: float = 0.0
+    support_buffer_m: Optional[float] = None
     support_closing_m: Optional[float] = None
     support_fill_holes: bool = True
     fill_internal_holes: bool = True
@@ -150,7 +154,7 @@ class ResolvedFillParams:
     idw_k: int
     idw_power: float
     idw_min_neighbors: int
-    max_internal_fill_distance_m: float
+    max_internal_fill_distance_m: Optional[float]
     idw_chunk_size: int
 
 
@@ -339,15 +343,13 @@ def build_valid_mask(pd: PointData, cfg: Config) -> Tuple[np.ndarray, Dict[str, 
 
 
 def resolve_fill_params(cfg: Config) -> ResolvedFillParams:
-    support_closing_m = float(cfg.support_closing_m) if cfg.support_closing_m is not None else 2.0 * float(cfg.dsm_resolution_m)
-    idw_radius_m = float(cfg.idw_radius_m) if cfg.idw_radius_m is not None else max(3.0 * float(cfg.dsm_resolution_m), support_closing_m + float(cfg.dsm_resolution_m))
-    max_internal_fill_distance_m = (
-        float(cfg.max_internal_fill_distance_m)
-        if cfg.max_internal_fill_distance_m is not None
-        else 4.0 * float(cfg.dsm_resolution_m)
-    )
+    res = float(cfg.dsm_resolution_m)
+    support_buffer_m = float(cfg.support_buffer_m) if cfg.support_buffer_m is not None else res
+    support_closing_m = float(cfg.support_closing_m) if cfg.support_closing_m is not None else 3.0 * res
+    idw_radius_m = float(cfg.idw_radius_m) if cfg.idw_radius_m is not None else max(4.0 * res, support_buffer_m + support_closing_m)
+    max_internal_fill_distance_m = float(cfg.max_internal_fill_distance_m) if cfg.max_internal_fill_distance_m is not None else None
     return ResolvedFillParams(
-        support_buffer_m=float(cfg.support_buffer_m),
+        support_buffer_m=support_buffer_m,
         support_closing_m=support_closing_m,
         support_fill_holes=bool(cfg.support_fill_holes),
         fill_internal_holes=bool(cfg.fill_internal_holes),
@@ -753,7 +755,75 @@ def write_selected_las(
     las.write(path)
 
 
-def write_previews(out_dir: Path, x: np.ndarray, y: np.ndarray, snr: np.ndarray, grids: Dict[str, np.ndarray], cfg: Config) -> None:
+def preview_extent_from_grid(grid: Dict[str, Any]) -> Tuple[float, float, float, float]:
+    return (
+        float(grid["xmin"]),
+        float(grid["xmax"]),
+        float(grid["ymin"]),
+        float(grid["ymax"]),
+    )
+
+
+def adaptive_map_figsize(xmin: float, xmax: float, ymin: float, ymax: float, long_side_in: float = 11.0, min_short_side_in: float = 5.5) -> Tuple[float, float]:
+    width_m = max(float(xmax) - float(xmin), 1e-6)
+    height_m = max(float(ymax) - float(ymin), 1e-6)
+    aspect = width_m / height_m
+    if aspect >= 1.0:
+        return long_side_in, max(min_short_side_in, min(long_side_in, long_side_in / aspect))
+    return max(min_short_side_in, min(long_side_in, long_side_in * aspect)), long_side_in
+
+
+def style_projected_meter_axes(ax: Any) -> None:
+    ax.set_xlabel("Projected Easting (m)")
+    ax.set_ylabel("Projected Northing (m)")
+    ax.ticklabel_format(style="plain", axis="both", useOffset=False)
+    if mticker is not None:
+        ax.xaxis.set_major_formatter(mticker.StrMethodFormatter("{x:,.0f}"))
+        ax.yaxis.set_major_formatter(mticker.StrMethodFormatter("{x:,.0f}"))
+
+
+def style_preview_figure(fig: Any, ax: Any) -> None:
+    fig.patch.set_facecolor("white")
+    ax.set_facecolor("black")
+
+
+def preview_cmap(name: str, bad_color: str = "black") -> Any:
+    cmap = plt.get_cmap(name).copy()
+    cmap.set_bad(color=bad_color)
+    return cmap
+
+
+PREVIEW_SNR_CMAP = "cividis"
+PREVIEW_ELEVATION_CMAP = "jet"
+PREVIEW_COUNT_CMAP = "inferno"
+PREVIEW_FILL_SOURCE_CMAP = "plasma"
+
+
+def percentile_color_limits(values: np.ndarray, lo_p: float = 2.0, hi_p: float = 98.0) -> Tuple[float, float]:
+    values = np.asarray(values, dtype=np.float64)
+    finite = values[np.isfinite(values)]
+    if finite.size == 0:
+        return 0.0, 1.0
+    vmin = float(np.nanpercentile(finite, lo_p))
+    vmax = float(np.nanpercentile(finite, hi_p))
+    if not np.isfinite(vmin) or not np.isfinite(vmax):
+        vmin = float(np.nanmin(finite))
+        vmax = float(np.nanmax(finite))
+    if vmax <= vmin:
+        vmax = vmin + 1e-6
+    return vmin, vmax
+
+
+def write_previews(
+    out_dir: Path,
+    x: np.ndarray,
+    y: np.ndarray,
+    z: np.ndarray,
+    snr: np.ndarray,
+    grids: Dict[str, np.ndarray],
+    grid: Dict[str, Any],
+    cfg: Config,
+) -> None:
     if plt is None:
         warnings.warn(f"matplotlib import failed; previews not written: {_MATPLOTLIB_IMPORT_ERROR}")
         return
@@ -761,79 +831,129 @@ def write_previews(out_dir: Path, x: np.ndarray, y: np.ndarray, snr: np.ndarray,
     rng = np.random.default_rng(cfg.random_seed)
     max_pts = min(250_000, x.size)
     idx = rng.choice(x.size, size=max_pts, replace=False) if x.size > max_pts else np.arange(x.size)
+    xmin, xmax, ymin, ymax = preview_extent_from_grid(grid)
+    map_figsize = adaptive_map_figsize(xmin, xmax, ymin, ymax)
+    map_extent = (xmin, xmax, ymin, ymax)
+    snr_vmin, snr_vmax = percentile_color_limits(snr, lo_p=2.0, hi_p=98.0)
+    z_vmin, z_vmax = percentile_color_limits(z, lo_p=2.0, hi_p=98.0)
 
-    fig, ax = plt.subplots(figsize=(7, 8))
+    fig, ax = plt.subplots(figsize=map_figsize)
+    style_preview_figure(fig, ax)
     sc = ax.scatter(
         x[idx],
         y[idx],
         c=snr[idx],
         s=0.4,
-        cmap="viridis",
-        vmin=cfg.snr_threshold,
-        vmax=max(6.0, np.nanpercentile(snr, 98)),
+        cmap=preview_cmap(PREVIEW_SNR_CMAP),
+        vmin=snr_vmin,
+        vmax=snr_vmax,
     )
     ax.set_aspect("equal", adjustable="box")
-    ax.set_xlabel("Projected X (m)")
-    ax.set_ylabel("Projected Y (m)")
+    ax.set_xlim(xmin, xmax)
+    ax.set_ylim(ymin, ymax)
+    style_projected_meter_axes(ax)
     ax.set_title(f"Selected CASALS refh surface points, SNR >= {cfg.snr_threshold}")
     fig.colorbar(sc, ax=ax, label="refh_snr")
     fig.tight_layout()
-    fig.savefig(out_dir / "selected_surface_points_snr_xy.png", dpi=220)
+    fig.savefig(out_dir / "selected_surface_points_snr_xy.png", dpi=220, facecolor="white")
     plt.close(fig)
 
     filled_dsm = grids["filled_dsm"]
-    fig, ax = plt.subplots(figsize=(8, 8))
-    im = ax.imshow(np.where(np.isfinite(filled_dsm), filled_dsm, np.nan), cmap="terrain")
+    fig, ax = plt.subplots(figsize=map_figsize)
+    style_preview_figure(fig, ax)
+    im = ax.imshow(
+        np.where(np.isfinite(filled_dsm), filled_dsm, np.nan),
+        cmap=preview_cmap(PREVIEW_ELEVATION_CMAP),
+        vmin=z_vmin,
+        vmax=z_vmax,
+        extent=map_extent,
+        origin="upper",
+        interpolation="nearest",
+    )
+    ax.set_aspect("equal", adjustable="box")
     ax.set_title(f"Filled DSM ({cfg.aggregation}, {cfg.dsm_resolution_m:g} m, SNR >= {cfg.snr_threshold})")
-    ax.set_xlabel("Column")
-    ax.set_ylabel("Row")
+    style_projected_meter_axes(ax)
     fig.colorbar(im, ax=ax, label="refh elevation, WGS84 ellipsoidal height (m)")
     fig.tight_layout()
-    fig.savefig(out_dir / "filled_dsm_preview.png", dpi=220)
+    fig.savefig(out_dir / "filled_dsm_preview.png", dpi=220, facecolor="white")
     plt.close(fig)
 
     strict_dsm = grids["strict_dsm"]
-    fig, ax = plt.subplots(figsize=(8, 8))
-    im = ax.imshow(np.where(np.isfinite(strict_dsm), strict_dsm, np.nan), cmap="terrain")
+    fig, ax = plt.subplots(figsize=map_figsize)
+    style_preview_figure(fig, ax)
+    im = ax.imshow(
+        np.where(np.isfinite(strict_dsm), strict_dsm, np.nan),
+        cmap=preview_cmap(PREVIEW_ELEVATION_CMAP),
+        vmin=z_vmin,
+        vmax=z_vmax,
+        extent=map_extent,
+        origin="upper",
+        interpolation="nearest",
+    )
+    ax.set_aspect("equal", adjustable="box")
     ax.set_title(f"Raw strict DSM ({cfg.aggregation}, {cfg.dsm_resolution_m:g} m, SNR >= {cfg.snr_threshold})")
-    ax.set_xlabel("Column")
-    ax.set_ylabel("Row")
+    style_projected_meter_axes(ax)
     fig.colorbar(im, ax=ax, label="refh elevation, WGS84 ellipsoidal height (m)")
     fig.tight_layout()
-    fig.savefig(out_dir / "strict_dsm_preview.png", dpi=220)
+    fig.savefig(out_dir / "strict_dsm_preview.png", dpi=220, facecolor="white")
     plt.close(fig)
 
     count = grids["count"]
-    fig, ax = plt.subplots(figsize=(8, 8))
-    im = ax.imshow(np.where(count > 0, count, np.nan), cmap="magma")
+    fig, ax = plt.subplots(figsize=map_figsize)
+    style_preview_figure(fig, ax)
+    im = ax.imshow(
+        np.where(count > 0, count, np.nan),
+        cmap=preview_cmap(PREVIEW_COUNT_CMAP),
+        extent=map_extent,
+        origin="upper",
+        interpolation="nearest",
+    )
+    ax.set_aspect("equal", adjustable="box")
     ax.set_title("Selected point count per DSM cell")
-    ax.set_xlabel("Column")
-    ax.set_ylabel("Row")
+    style_projected_meter_axes(ax)
     fig.colorbar(im, ax=ax, label="point count")
     fig.tight_layout()
-    fig.savefig(out_dir / "selected_point_count_grid.png", dpi=220)
+    fig.savefig(out_dir / "selected_point_count_grid.png", dpi=220, facecolor="white")
     plt.close(fig)
 
     support = grids["support_mask"].astype(np.uint8)
-    fig, ax = plt.subplots(figsize=(8, 8))
-    im = ax.imshow(support, cmap="gray", vmin=0, vmax=1)
+    fig, ax = plt.subplots(figsize=map_figsize)
+    style_preview_figure(fig, ax)
+    im = ax.imshow(
+        support,
+        cmap="gray",
+        vmin=0,
+        vmax=1,
+        extent=map_extent,
+        origin="upper",
+        interpolation="nearest",
+    )
+    ax.set_aspect("equal", adjustable="box")
     ax.set_title("DSM support mask")
-    ax.set_xlabel("Column")
-    ax.set_ylabel("Row")
+    style_projected_meter_axes(ax)
     fig.colorbar(im, ax=ax, label="0 outside, 1 inside")
     fig.tight_layout()
-    fig.savefig(out_dir / "support_mask_preview.png", dpi=220)
+    fig.savefig(out_dir / "support_mask_preview.png", dpi=220, facecolor="white")
     plt.close(fig)
 
     fill_source = grids["fill_source"]
-    fig, ax = plt.subplots(figsize=(8, 8))
-    im = ax.imshow(fill_source, cmap="viridis", vmin=0, vmax=3)
+    fig, ax = plt.subplots(figsize=map_figsize)
+    style_preview_figure(fig, ax)
+    im = ax.imshow(
+        fill_source,
+        cmap=PREVIEW_FILL_SOURCE_CMAP,
+        vmin=0,
+        vmax=3,
+        extent=map_extent,
+        origin="upper",
+        interpolation="nearest",
+    )
+    ax.set_aspect("equal", adjustable="box")
     ax.set_title("DSM fill source")
-    ax.set_xlabel("Column")
-    ax.set_ylabel("Row")
+    style_projected_meter_axes(ax)
     fig.colorbar(im, ax=ax, ticks=[0, 1, 2, 3], label="0 outside, 1 observed, 2 IDW, 3 nearest")
     fig.tight_layout()
-    fig.savefig(out_dir / "fill_source_preview.png", dpi=220)
+    fig.savefig(out_dir / "fill_source_preview.png", dpi=220, facecolor="white")
     plt.close(fig)
 
 
@@ -858,16 +978,16 @@ def main() -> None:
     # USER SETTINGS: edit here.
     # -------------------------------------------------------------------------
     cfg = Config(
-        h5_path=Path(r"./casals_h5_downloads/casals_l1b_20241112T165718_001_02.h5"),
+        h5_path=Path(r"./casals_h5_downloads/casals_l1b_20241118T171757_001_02.h5"),
         point_cloud_dir=Path(r"./point_cloud_data/make_refh_dsm"),
         out_dir=Path(r"./outputs/make_refh_dsm"),
 
         # Main threshold. Try 2.0, 3.0, 4.0, 4.5, 5.0.
         # In the tested file, 5.0 is exactly good_snr=True and keeps only ~1.19%.
-        snr_threshold=5.0,
+        snr_threshold=4.5,
 
         # DSM grid size in meters.
-        dsm_resolution_m=10.0,
+        dsm_resolution_m=2.0,
 
         # Usually leave None; this infers WGS84 / UTM from H5 lon/lat. For this file it should be EPSG:32618.
         output_epsg_override=None,
@@ -887,7 +1007,7 @@ def main() -> None:
         write_raw_strict_dsm=True,
         write_support_mask_raster=True,
         write_fill_source_raster=True,
-        support_buffer_m=0.0,
+        support_buffer_m=None,
         support_closing_m=None,
         support_fill_holes=True,
         fill_internal_holes=True,
@@ -983,7 +1103,7 @@ def main() -> None:
         write_selected_las(las_path, x, y, z, pd, mask, out_crs, cfg)
 
     if cfg.write_preview_png:
-        write_previews(cfg.out_dir, x, y, snr, grids, cfg)
+        write_previews(cfg.out_dir, x, y, z, snr, grids, grid, cfg)
 
     strict_valid = np.isfinite(grids["strict_dsm"])
     filled_valid = np.isfinite(grids["filled_dsm"])

@@ -1060,19 +1060,12 @@ CONFIG: Dict[str, Any] = {
 }
 
 
-DEFAULT_OUTPUT_DIR = Path("./outputs/ground_align_transfer_3dep_labels_to_casals")
+DEFAULT_OUTPUT_DIR = Path("./outputs/transfer_3dep_labels_to_casals")
 
 
 def derive_output_stem(casals_h5: Path, dep3_las: Path) -> str:
-    casals_stem = casals_h5.stem
-    dep3_stem = dep3_las.stem
-
-    dep3_suffix = dep3_stem
-    shared_prefix = casals_stem + "_"
-    if dep3_suffix.startswith(shared_prefix):
-        dep3_suffix = dep3_suffix[len(shared_prefix):]
-
-    return f"{casals_stem}__{dep3_suffix}__ground_aligned_3dep_labeled"
+    del dep3_las
+    return casals_h5.stem
 
 
 def resolve_output_las_path(cfg: Dict[str, Any]) -> Path:
@@ -1215,8 +1208,8 @@ def main() -> None:
     # Each job can override any key in CONFIG. This keeps the script consistent
     # with the rest of the CASALS_L1B flat-script workflow and makes multi-pair
     # processing straightforward.
-    # If "output" is omitted, the script writes to DEFAULT_OUTPUT_DIR using an
-    # auto-derived file name from the CASALS H5 and 3DEP LAS stems.
+    # If "output" is omitted, the script writes to DEFAULT_OUTPUT_DIR using the
+    # CASALS H5 stem as the base file name.
     # -------------------------------------------------------------------------
     jobs = [
         {
@@ -1224,11 +1217,11 @@ def main() -> None:
             "dep3_las": r"./point_cloud_data/download_3dep_lpc/casals_l1b_20241112T165718_001_02_MD_Southeast_1_2019_EPSG6347_39a068a77804.laz",
             "write_point_csv": False,
         },
-        {
-            "casals_h5": r"./casals_h5_downloads/casals_l1b_20241112T170442_001_02.h5",
-            "dep3_las": r"./point_cloud_data/download_3dep_lpc/casals_l1b_20241112T170442_001_02_DE_Statewide_1_B23_EPSG6347_b60d6cbd5f2f.laz",
-            "write_point_csv": False,
-        },
+        #{
+        #    "casals_h5": r"./casals_h5_downloads/casals_l1b_20241112T170442_001_02.h5",
+        #    "dep3_las": r"./point_cloud_data/download_3dep_lpc/casals_l1b_20241112T170442_001_02_DE_Statewide_1_B23_EPSG6347_b60d6cbd5f2f.laz",
+        #    "write_point_csv": False,
+        #},
         {
             "casals_h5": r"./casals_h5_downloads/casals_l1b_20241118T171757_001_02.h5",
             "dep3_las": r"./point_cloud_data/download_3dep_lpc/casals_l1b_20241118T171757_001_02_NC_HurricaneFlorence_9_2020_EPSG6347_f50533a04725.laz",

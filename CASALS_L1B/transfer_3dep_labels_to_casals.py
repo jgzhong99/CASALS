@@ -1031,7 +1031,7 @@ CONFIG: Dict[str, Any] = {
     "ground_idw_radius_m": 5.0,
     "ground_idw_k": 8,
     "ground_idw_min_neighbors": 1,
-    "ground_idw_power": 2.0,
+    "ground_idw_power": 3.0,
 
     # Robust clipping for dz estimation.
     "alignment_clip_iterations": 3,
@@ -1042,7 +1042,7 @@ CONFIG: Dict[str, Any] = {
     # For each aligned CASALS point, search nearby 3DEP points in 3D and assign
     # the dominant 3DEP LAS class. No-match/far points are written as class 7.
     "label_knn": 12,
-    "label_max_3d_distance_m": 4.0,
+    "label_max_3d_distance_m": 3.0,
     "label_strict_max_3d_distance_m": 2.0,
     "label_min_neighbors": 3,
     "label_min_vote_ratio": 0.65,

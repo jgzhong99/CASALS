@@ -43,6 +43,7 @@ CLASS_REASON_MAP = {
     3: "noise_below_ground",
     4: "noise_above_40m",
     5: "processed_unclassified_valid_hag",
+    6: "noise_low_density",
 }
 EPSG_RE = re.compile(r"EPSG[:\s]*([0-9]{4,6})", re.IGNORECASE)
 UTM_RE = re.compile(r"UTM(?:\s+ZONE)?[:\s]*([0-9]{1,2})([NS])?", re.IGNORECASE)
@@ -79,6 +80,15 @@ def collect_class_counts(values: np.ndarray) -> Dict[int, int]:
         return {}
     uniq, counts = np.unique(arr, return_counts=True)
     return {int(k): int(v) for k, v in zip(uniq, counts)}
+
+
+def finite_mask(*arrays: np.ndarray) -> np.ndarray:
+    if not arrays:
+        raise ValueError("finite_mask requires at least one array")
+    mask = np.ones(np.asarray(arrays[0]).shape[0], dtype=bool)
+    for arr in arrays:
+        mask &= np.isfinite(np.asarray(arr))
+    return mask
 
 
 def summarize_values(values: np.ndarray) -> Dict[str, Any]:
@@ -143,6 +153,44 @@ def print_console_metrics_table(
         print(confusion_df.to_string(index=False))
 
 
+def print_value_counts_table(
+    title: str,
+    counts: Dict[int, int],
+    name_map: Optional[Dict[int, str]] = None,
+) -> None:
+    if not counts:
+        return
+    rows = []
+    for code, count in sorted(counts.items()):
+        rows.append({
+            "code": int(code),
+            "name": (name_map or {}).get(int(code), ""),
+            "count": int(count),
+        })
+    print(title)
+    print(pd.DataFrame(rows).to_string(index=False))
+
+
+def print_density_quantiles_table(
+    pred_class_baseline: np.ndarray,
+    point_density_pts_m3: np.ndarray,
+) -> None:
+    rows = []
+    for cls in LABEL_ORDER:
+        mask = np.asarray(pred_class_baseline, dtype=np.uint8) == cls
+        density = np.asarray(point_density_pts_m3, dtype=np.float64)[mask]
+        p05, median, p95 = maybe_quantiles(density)
+        rows.append({
+            "class_code": cls,
+            "class_name": CLASS_NAME_MAP[cls],
+            "density_p05": p05,
+            "density_median": median,
+            "density_p95": p95,
+        })
+    print("Density quantiles by predicted class")
+    print(pd.DataFrame(rows).to_string(index=False))
+
+
 def build_output_paths(output_root: Path, h5_stem: str) -> Dict[str, Path]:
     root = Path(output_root)
     return {
@@ -177,7 +225,7 @@ def build_initial_run_metadata(
         "classification_parameters": {
             key: json_safe(value)
             for key, value in config.items()
-            if key.startswith(("GROUND_", "GRID_", "MIN_", "DTM_", "LAS_", "IDW_"))
+            if key.startswith(("GROUND_", "GRID_", "MIN_", "DTM_", "LAS_", "IDW_", "LOCAL_", "NOISE_"))
         },
         "evaluation_parameters": {
             "EVAL_REQUIRE_VALID_DTM": bool(config["EVAL_REQUIRE_VALID_DTM"]),
@@ -199,7 +247,11 @@ def build_common_metadata_payload(
     ground_grid: Dict[str, Any],
     dtm_sample_valid: np.ndarray,
     pred_counts: Dict[int, int],
+    classification_reason: np.ndarray,
+    point_density_pts_m3: np.ndarray,
 ) -> Dict[str, Any]:
+    density = np.asarray(point_density_pts_m3, dtype=np.float64)
+    density_finite = np.isfinite(density)
     return {
         "crs": {
             "chosen_projected_crs": projected_crs.to_string(),
@@ -218,7 +270,14 @@ def build_common_metadata_payload(
             "valid_dtm_cell_count": int(ground_grid["valid_cell_count"]),
             "dtm_invalid_count": int(np.count_nonzero(dtm_sample_valid == 0)),
             "predicted_class_counts": {str(k): int(v) for k, v in pred_counts.items()},
+            "classification_reason_counts": {
+                str(k): int(v) for k, v in collect_class_counts(classification_reason).items()
+            },
+            "density_noise_count": int(np.count_nonzero(np.asarray(classification_reason, dtype=np.uint8) == 6)),
+            "density_valid_count": int(np.count_nonzero(density_finite)),
+            "density_valid_fraction": float(np.mean(density_finite)),
         },
+        "density_summary": summarize_values(density),
     }
 
 
@@ -442,6 +501,56 @@ def project_lonlat_to_xy(lon: np.ndarray, lat: np.ndarray, projected_crs: CRS) -
     return np.asarray(x, dtype=np.float64), np.asarray(y, dtype=np.float64)
 
 
+def compute_local_point_density(
+    x: np.ndarray,
+    y: np.ndarray,
+    z: np.ndarray,
+    config: Dict[str, Any],
+) -> Dict[str, np.ndarray]:
+    local_neighbor_count = np.zeros(np.asarray(x).shape[0], dtype=np.uint32)
+    point_density_pts_m3 = np.full(np.asarray(x).shape[0], np.nan, dtype=np.float64)
+
+    valid_xyz = finite_mask(x, y, z)
+    if not np.any(valid_xyz):
+        return {
+            "local_neighbor_count": local_neighbor_count,
+            "point_density_pts_m3": point_density_pts_m3,
+        }
+
+    radius_m = float(config["LOCAL_FEATURE_RADIUS_M"])
+    chunk_size = max(1, int(config["LOCAL_FEATURE_QUERY_CHUNK_SIZE"]))
+    sphere_volume_m3 = float((4.0 / 3.0) * np.pi * radius_m**3)
+    xyz_valid = np.column_stack((
+        np.asarray(x, dtype=np.float64)[valid_xyz],
+        np.asarray(y, dtype=np.float64)[valid_xyz],
+        np.asarray(z, dtype=np.float64)[valid_xyz],
+    ))
+    valid_indices = np.flatnonzero(valid_xyz)
+    tree = cKDTree(xyz_valid)
+
+    for start in range(0, xyz_valid.shape[0], chunk_size):
+        stop = min(start + chunk_size, xyz_valid.shape[0])
+        query_xyz = xyz_valid[start:stop]
+        try:
+            counts = np.asarray(
+                tree.query_ball_point(query_xyz, r=radius_m, return_length=True, workers=-1),
+                dtype=np.uint32,
+            )
+        except TypeError:
+            counts = np.asarray(
+                [len(ids) for ids in tree.query_ball_point(query_xyz, r=radius_m, workers=-1)],
+                dtype=np.uint32,
+            )
+        point_ids = valid_indices[start:stop]
+        local_neighbor_count[point_ids] = counts
+        point_density_pts_m3[point_ids] = counts.astype(np.float64) / sphere_volume_m3
+
+    return {
+        "local_neighbor_count": local_neighbor_count,
+        "point_density_pts_m3": point_density_pts_m3,
+    }
+
+
 def build_ground_grid(
     x: np.ndarray,
     y: np.ndarray,
@@ -594,6 +703,7 @@ def classify_points_baseline(
     z: np.ndarray,
     local_ground_z_m: np.ndarray,
     dtm_sample_valid: np.ndarray,
+    point_density_pts_m3: np.ndarray,
     config: Dict[str, Any],
 ) -> Dict[str, np.ndarray]:
     hag = np.full(z.shape[0], np.nan, dtype=np.float64)
@@ -608,11 +718,16 @@ def classify_points_baseline(
     reason[invalid_dtm] = 2
 
     valid_mask = valid
-    ground = valid_mask & np.isfinite(hag) & (np.abs(hag) <= float(config["GROUND_RESID_TOL_M"]))
-    below_ground = valid_mask & np.isfinite(hag) & (hag < 0.0) & ~ground
-    above_40m = valid_mask & np.isfinite(hag) & (hag > 40.0) & ~ground & ~below_ground
-    processed = valid_mask & np.isfinite(hag) & ~(ground | below_ground | above_40m)
+    density = np.asarray(point_density_pts_m3, dtype=np.float64)
+    low_density = valid_mask & np.isfinite(density) & (density < float(config["NOISE_DENSITY_MAX_PTS_M3"]))
+    ground = valid_mask & np.isfinite(hag) & (np.abs(hag) <= float(config["GROUND_RESID_TOL_M"])) & ~low_density
+    below_ground = valid_mask & np.isfinite(hag) & (hag < 0.0) & ~(low_density | ground)
+    above_40m = valid_mask & np.isfinite(hag) & (hag > 40.0) & ~(low_density | ground | below_ground)
+    processed = valid_mask & np.isfinite(hag) & ~(low_density | ground | below_ground | above_40m)
     nonfinite_hag = valid_mask & ~np.isfinite(hag)
+
+    pred[low_density] = 7
+    reason[low_density] = 6
 
     pred[ground] = 2
     reason[ground] = 1
@@ -663,8 +778,6 @@ def read_reference_labels(reference_laz_path: Path) -> Dict[str, Any]:
             ref[name] = np.asarray(las[name])
 
     return ref
-
-
 def align_prediction_to_reference(
     prediction: Dict[str, np.ndarray],
     reference: Dict[str, Any],
@@ -781,6 +894,8 @@ def build_classification_summary_row(
     valid_dtm_cell_count: int,
     height_above_ground_m: np.ndarray,
     refh_snr: np.ndarray,
+    point_density_pts_m3: np.ndarray,
+    classification_reason: np.ndarray,
 ) -> Dict[str, Any]:
     row: Dict[str, Any] = {
         "h5_stem": h5_stem,
@@ -790,6 +905,7 @@ def build_classification_summary_row(
         "dtm_invalid_count": int(np.count_nonzero(np.asarray(dtm_sample_valid) == 0)),
         "ground_support_candidate_count": int(ground_support_candidate_count),
         "valid_dtm_cell_count": int(valid_dtm_cell_count),
+        "density_noise_count": int(np.count_nonzero(np.asarray(classification_reason, dtype=np.uint8) == 6)),
     }
     pred_counts = collect_class_counts(pred_class_baseline)
     ref_counts = collect_class_counts(eval_gt_class[np.asarray(eval_match_valid, dtype=bool)])
@@ -807,6 +923,11 @@ def build_classification_summary_row(
         row[f"refh_snr_pred_{cls}_p05"] = s05
         row[f"refh_snr_pred_{cls}_median"] = smed
         row[f"refh_snr_pred_{cls}_p95"] = s95
+
+        d05, dmed, d95 = maybe_quantiles(np.asarray(point_density_pts_m3, dtype=np.float64)[pred_mask])
+        row[f"density_pred_{cls}_p05"] = d05
+        row[f"density_pred_{cls}_median"] = dmed
+        row[f"density_pred_{cls}_p95"] = d95
     return row
 
 
@@ -981,6 +1102,8 @@ def write_classified_laz(
     refh_original_m: np.ndarray,
     local_ground_z_m: np.ndarray,
     height_above_ground_m: np.ndarray,
+    local_neighbor_count: np.ndarray,
+    point_density_pts_m3: np.ndarray,
     dtm_sample_valid: np.ndarray,
     classification_reason: np.ndarray,
     pred_class_baseline: np.ndarray,
@@ -1011,6 +1134,8 @@ def write_classified_laz(
         ExtraBytesParams(name="refh_original_m", type=np.float64, description="Original refh Z"),
         ExtraBytesParams(name="local_ground_z_m", type=np.float64, description="Local ground Z"),
         ExtraBytesParams(name="height_above_ground_m", type=np.float64, description="refh minus ground"),
+        ExtraBytesParams(name="local_neighbor_count", type=np.uint32, description="3D neighbor count"),
+        ExtraBytesParams(name="point_density_pts_m3", type=np.float32, description="3D point density"),
         ExtraBytesParams(name="dtm_sample_valid", type=np.uint8, description="1 if DTM valid"),
         ExtraBytesParams(name="classification_reason", type=np.uint8, description="Baseline reason"),
         ExtraBytesParams(name="pred_class_baseline", type=np.uint8, description="Baseline class"),
@@ -1049,6 +1174,8 @@ def write_classified_laz(
     las["refh_original_m"] = np.asarray(refh_original_m, dtype=np.float64)
     las["local_ground_z_m"] = np.asarray(local_ground_z_m, dtype=np.float64)
     las["height_above_ground_m"] = np.asarray(height_above_ground_m, dtype=np.float64)
+    las["local_neighbor_count"] = np.asarray(local_neighbor_count, dtype=np.uint32)
+    las["point_density_pts_m3"] = np.asarray(point_density_pts_m3, dtype=np.float32)
     las["dtm_sample_valid"] = np.asarray(dtm_sample_valid, dtype=np.uint8)
     las["classification_reason"] = np.asarray(classification_reason, dtype=np.uint8)
     las["pred_class_baseline"] = np.asarray(pred_class_baseline, dtype=np.uint8)
@@ -1182,12 +1309,26 @@ def process_one_pair(input_pair: Dict[str, Path], config: Dict[str, Any]) -> Dic
         print(f"Valid ground grid cells: {ground_grid['valid_cell_count']:,}")
 
         local_ground_z_m, dtm_sample_valid = sample_ground_grid_idw(x, y, ground_grid, config)
-        classification_result = classify_points_baseline(casals["z"], local_ground_z_m, dtm_sample_valid, config)
+        density_result = compute_local_point_density(x, y, casals["z"], config)
+        local_neighbor_count = density_result["local_neighbor_count"]
+        point_density_pts_m3 = density_result["point_density_pts_m3"]
+        print("Density source: computed_internal")
+        classification_result = classify_points_baseline(
+            casals["z"],
+            local_ground_z_m,
+            dtm_sample_valid,
+            point_density_pts_m3,
+            config,
+        )
         pred_class_baseline = classification_result["pred_class_baseline"]
         classification_reason = classification_result["classification_reason"]
         height_above_ground_m = classification_result["height_above_ground_m"]
         pred_counts = collect_class_counts(pred_class_baseline)
         print(f"Predicted class counts: {pred_counts}")
+        print_value_counts_table("Predicted class counts table", pred_counts, CLASS_NAME_MAP)
+        print_value_counts_table("Classification reason counts", collect_class_counts(classification_reason), CLASS_REASON_MAP)
+        print(f"Density valid fraction: {float(np.isfinite(point_density_pts_m3).mean()):.6f}")
+        print_density_quantiles_table(pred_class_baseline, point_density_pts_m3)
         common_metadata = build_common_metadata_payload(
             projected_crs=projected_crs,
             crs_info=crs_info,
@@ -1195,6 +1336,8 @@ def process_one_pair(input_pair: Dict[str, Path], config: Dict[str, Any]) -> Dic
             ground_grid=ground_grid,
             dtm_sample_valid=dtm_sample_valid,
             pred_counts=pred_counts,
+            classification_reason=classification_reason,
+            point_density_pts_m3=point_density_pts_m3,
         )
         common_laz_kwargs = {
             "output_path": output_paths["classified_laz"],
@@ -1209,6 +1352,8 @@ def process_one_pair(input_pair: Dict[str, Path], config: Dict[str, Any]) -> Dic
             "refh_original_m": casals["z"],
             "local_ground_z_m": local_ground_z_m,
             "height_above_ground_m": height_above_ground_m,
+            "local_neighbor_count": local_neighbor_count,
+            "point_density_pts_m3": point_density_pts_m3,
             "dtm_sample_valid": dtm_sample_valid,
             "classification_reason": classification_reason,
             "pred_class_baseline": pred_class_baseline,
@@ -1273,6 +1418,8 @@ def process_one_pair(input_pair: Dict[str, Path], config: Dict[str, Any]) -> Dic
                 valid_dtm_cell_count=ground_grid["valid_cell_count"],
                 height_above_ground_m=height_above_ground_m,
                 refh_snr=refh_snr,
+                point_density_pts_m3=point_density_pts_m3,
+                classification_reason=classification_reason,
             )
         except Exception as eval_exc:
             print(f"[ERROR] Evaluation failed for {h5_stem}: {eval_exc}")
@@ -1350,6 +1497,8 @@ def process_one_pair(input_pair: Dict[str, Path], config: Dict[str, Any]) -> Dic
                 "dtm_sample_valid": dtm_sample_valid,
                 "height_above_ground_m": height_above_ground_m,
                 "refh_snr": refh_snr,
+                "point_density_pts_m3": point_density_pts_m3,
+                "classification_reason": classification_reason,
                 "ground_support_candidate_count": ground_grid["support_count"],
                 "valid_dtm_cell_count": ground_grid["valid_cell_count"],
             },
@@ -1401,6 +1550,8 @@ def write_all_files_outputs(
         agg_dtm = np.concatenate([r["classification_summary_arrays"]["dtm_sample_valid"] for r in successful_results])
         agg_hag = np.concatenate([r["classification_summary_arrays"]["height_above_ground_m"] for r in successful_results])
         agg_snr = np.concatenate([r["classification_summary_arrays"]["refh_snr"] for r in successful_results])
+        agg_density = np.concatenate([r["classification_summary_arrays"]["point_density_pts_m3"] for r in successful_results])
+        agg_reason = np.concatenate([r["classification_summary_arrays"]["classification_reason"] for r in successful_results])
         agg_support_count = int(sum(r["classification_summary_arrays"]["ground_support_candidate_count"] for r in successful_results))
         agg_valid_cells = int(sum(r["classification_summary_arrays"]["valid_dtm_cell_count"] for r in successful_results))
         classification_rows.append(
@@ -1414,6 +1565,8 @@ def write_all_files_outputs(
                 valid_dtm_cell_count=agg_valid_cells,
                 height_above_ground_m=agg_hag,
                 refh_snr=agg_snr,
+                point_density_pts_m3=agg_density,
+                classification_reason=agg_reason,
             )
         )
 
@@ -1423,6 +1576,7 @@ def write_all_files_outputs(
         "matched_count",
         "unmatched_count",
         "dtm_invalid_count",
+        "density_noise_count",
         "ground_support_candidate_count",
         "valid_dtm_cell_count",
     ]
@@ -1436,6 +1590,9 @@ def write_all_files_outputs(
             f"refh_snr_pred_{cls}_p05",
             f"refh_snr_pred_{cls}_median",
             f"refh_snr_pred_{cls}_p95",
+            f"density_pred_{cls}_p05",
+            f"density_pred_{cls}_median",
+            f"density_pred_{cls}_p95",
         ])
     pd.DataFrame(classification_rows, columns=classification_columns).to_csv(classification_summary_path, index=False)
 
@@ -1544,6 +1701,11 @@ def main() -> None:
         "DTM_IDW_POWER": 2.0,
         "DTM_MAX_SEARCH_RADIUS_M": 30.0,
         "GROUND_RESID_TOL_M": 1.0,
+        "LOCAL_FEATURE_RADIUS_M": 5.0,
+        "LOCAL_FEATURE_MAX_NEIGHBORS": 24,
+        "LOCAL_FEATURE_MIN_NEIGHBORS": 6,
+        "LOCAL_FEATURE_QUERY_CHUNK_SIZE": 100_000,
+        "NOISE_DENSITY_MAX_PTS_M3": 0.04,
         "EVAL_REQUIRE_VALID_DTM": False,
         "EVAL_IGNORE_REFERENCE_NOISE": False,
         "EVAL_REQUIRE_TRANSFER_STATUS": None,

@@ -22,6 +22,32 @@ Recommended order:
 5. `diagnose_3dep_offsets.py`
 6. `view_refh_points.py` or the animation scripts as needed
 
+## Waveform Component Analysis
+
+This workflow analyzes `rx_waveform` components for diagnostics. It is designed
+for waveform component detection, refh quality diagnostics, stripe/artifact
+screening, and downstream refh classification features.
+
+Outputs:
+- `detect_waveform_components.py` writes component-level, pulse-level, and
+  sweep-level diagnostic summaries under `outputs/detect_waveform_components/`.
+- `component_table.parquet` stores one waveform-derived component per row.
+- `pulse_summary.parquet` stores one pulse-level waveform summary per row.
+- `sweep_summary.csv` stores one sweep-level diagnostic summary per row.
+
+Scientific caveats:
+- CASALS L1B still has one official geolocated `refh` point per pulse.
+- Waveform-derived secondary components are not official georeferenced returns.
+- This workflow does not create an official multi-return point cloud.
+- Any range-window / RX-bin analysis is diagnostic or hypothesis testing only.
+
+Recommended waveform-analysis order:
+1. `notebooks/01b_l1b_sweep_tx_rx_matrix.ipynb`
+2. `detect_waveform_components.py`
+3. `notebooks/01c_l1b_waveform_component_detection.ipynb`
+4. `notebooks/01d_l1b_waveform_components_vs_refh_quality.ipynb`
+5. `notebooks/01e_l1b_range_window_bin_mapping_hypothesis.ipynb`
+
 Default output convention:
 - `outputs/<script_name>/` stores JSON, PNG, TIF, CSV, MP4, and markdown reports.
 - `point_cloud_data/<script_name>/` stores LAS, LAZ, and PLY outputs.
@@ -37,6 +63,10 @@ Notes:
 
 Notebook helpers:
 - `notebooks/01_l1b_structure_and_refh.ipynb`
+- `notebooks/01b_l1b_sweep_tx_rx_matrix.ipynb`
+- `notebooks/01c_l1b_waveform_component_detection.ipynb`
+- `notebooks/01d_l1b_waveform_components_vs_refh_quality.ipynb`
+- `notebooks/01e_l1b_range_window_bin_mapping_hypothesis.ipynb`
 - `notebooks/02_refh_quality_and_dsm.ipynb`
 - `notebooks/03_3dep_offset_diagnosis.ipynb`
 

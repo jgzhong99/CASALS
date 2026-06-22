@@ -41,9 +41,12 @@ CLASS_REASON_MAP = {
     1: "ground_abs_hag_within_tol",
     2: "noise_invalid_dtm",
     3: "noise_below_ground",
-    4: "noise_above_40m",
+    4: "noise_above_max_hag",
     5: "processed_unclassified_valid_hag",
-    6: "noise_low_density",
+    6: "noise_low_density_pre_ground",
+    7: "processed_negative_hag_allowed",
+    8: "noise_low_density_post_ground",
+    9: "noise_low_density_processed_only",
 }
 EPSG_RE = re.compile(r"EPSG[:\s]*([0-9]{4,6})", re.IGNORECASE)
 UTM_RE = re.compile(r"UTM(?:\s+ZONE)?[:\s]*([0-9]{1,2})([NS])?", re.IGNORECASE)
@@ -225,7 +228,7 @@ def build_initial_run_metadata(
         "classification_parameters": {
             key: json_safe(value)
             for key, value in config.items()
-            if key.startswith(("GROUND_", "GRID_", "MIN_", "DTM_", "LAS_", "IDW_", "LOCAL_", "NOISE_"))
+            if key == "CLASSIFIER_MODE" or key.startswith(("GROUND_", "GRID_", "MIN_", "DTM_", "LAS_", "IDW_", "LOCAL_", "NOISE_"))
         },
         "evaluation_parameters": {
             "EVAL_REQUIRE_VALID_DTM": bool(config["EVAL_REQUIRE_VALID_DTM"]),
@@ -249,6 +252,7 @@ def build_common_metadata_payload(
     pred_counts: Dict[int, int],
     classification_reason: np.ndarray,
     point_density_pts_m3: np.ndarray,
+    density_source: str,
 ) -> Dict[str, Any]:
     density = np.asarray(point_density_pts_m3, dtype=np.float64)
     density_finite = np.isfinite(density)
@@ -277,6 +281,7 @@ def build_common_metadata_payload(
             "density_valid_count": int(np.count_nonzero(density_finite)),
             "density_valid_fraction": float(np.mean(density_finite)),
         },
+        "density_source": str(density_source),
         "density_summary": summarize_values(density),
     }
 
@@ -706,6 +711,10 @@ def classify_points_baseline(
     point_density_pts_m3: np.ndarray,
     config: Dict[str, Any],
 ) -> Dict[str, np.ndarray]:
+    mode = str(config.get("CLASSIFIER_MODE", "height_density_pre_ground"))
+    density_threshold = config.get("NOISE_DENSITY_MAX_PTS_M3")
+    max_hag = float(config.get("NOISE_HAG_MAX_M", 40.0))
+
     hag = np.full(z.shape[0], np.nan, dtype=np.float64)
     valid = np.asarray(dtm_sample_valid, dtype=bool)
     hag[valid] = z[valid] - local_ground_z_m[valid]
@@ -719,30 +728,76 @@ def classify_points_baseline(
 
     valid_mask = valid
     density = np.asarray(point_density_pts_m3, dtype=np.float64)
-    low_density = valid_mask & np.isfinite(density) & (density < float(config["NOISE_DENSITY_MAX_PTS_M3"]))
-    ground = valid_mask & np.isfinite(hag) & (np.abs(hag) <= float(config["GROUND_RESID_TOL_M"])) & ~low_density
-    below_ground = valid_mask & np.isfinite(hag) & (hag < 0.0) & ~(low_density | ground)
-    above_40m = valid_mask & np.isfinite(hag) & (hag > 40.0) & ~(low_density | ground | below_ground)
-    processed = valid_mask & np.isfinite(hag) & ~(low_density | ground | below_ground | above_40m)
+    valid_hag = valid_mask & np.isfinite(hag)
     nonfinite_hag = valid_mask & ~np.isfinite(hag)
-
-    pred[low_density] = 7
-    reason[low_density] = 6
-
-    pred[ground] = 2
-    reason[ground] = 1
-
-    pred[below_ground] = 7
-    reason[below_ground] = 3
-
-    pred[above_40m] = 7
-    reason[above_40m] = 4
-
-    pred[processed] = 1
-    reason[processed] = 5
-
     pred[nonfinite_hag] = 7
     reason[nonfinite_hag] = 2
+
+    density_enabled = density_threshold is not None and mode != "height_only"
+    if density_enabled:
+        low_density = valid_hag & np.isfinite(density) & (density < float(density_threshold))
+    else:
+        low_density = np.zeros(z.shape[0], dtype=bool)
+
+    ground = valid_hag & (np.abs(hag) <= float(config["GROUND_RESID_TOL_M"]))
+    below_ground = valid_hag & (hag < 0.0)
+    above_max = valid_hag & (hag > max_hag)
+
+    if mode == "height_only":
+        ground_final = ground
+        below_final = below_ground & ~ground_final
+        above_final = above_max & ~(ground_final | below_final)
+        processed_final = valid_hag & ~(ground_final | below_final | above_final)
+        density_reason_code = None
+    elif mode == "height_density_pre_ground":
+        ground_final = ground & ~low_density
+        below_final = below_ground & ~(low_density | ground_final)
+        above_final = above_max & ~(low_density | ground_final | below_final)
+        processed_final = valid_hag & ~(low_density | ground_final | below_final | above_final)
+        density_reason_code = 6
+    elif mode == "height_density_post_ground":
+        ground_final = ground
+        low_density = low_density & ~ground_final
+        below_final = below_ground & ~(ground_final | low_density)
+        above_final = above_max & ~(ground_final | low_density | below_final)
+        processed_final = valid_hag & ~(ground_final | low_density | below_final | above_final)
+        density_reason_code = 8
+    elif mode == "height_density_processed_only":
+        ground_final = ground
+        below_final = below_ground & ~ground_final
+        above_final = above_max & ~(ground_final | below_final)
+        processed_candidates = valid_hag & ~(ground_final | below_final | above_final)
+        low_density = low_density & processed_candidates
+        processed_final = processed_candidates & ~low_density
+        density_reason_code = 9
+    elif mode == "height_no_below_noise":
+        ground_final = ground
+        below_final = np.zeros(z.shape[0], dtype=bool)
+        above_final = above_max & ~ground_final
+        processed_final = valid_hag & ~(ground_final | above_final)
+        density_reason_code = None
+    else:
+        raise ValueError(f"Unsupported CLASSIFIER_MODE: {mode}")
+
+    pred[ground_final] = 2
+    reason[ground_final] = 1
+
+    if density_reason_code is not None:
+        pred[low_density] = 7
+        reason[low_density] = int(density_reason_code)
+
+    pred[below_final] = 7
+    reason[below_final] = 3
+
+    pred[above_final] = 7
+    reason[above_final] = 4
+
+    pred[processed_final] = 1
+    reason[processed_final] = 5
+
+    if mode == "height_no_below_noise":
+        negative_processed = processed_final & (hag < 0.0)
+        reason[negative_processed] = 7
 
     return {
         "pred_class_baseline": pred.astype(np.uint8),
@@ -994,7 +1049,28 @@ def compute_evaluation_metrics(
         )
         macro = precision_recall_fscore_support(y_true, y_pred, labels=LABEL_ORDER, average="macro", zero_division=0)
         weighted = precision_recall_fscore_support(y_true, y_pred, labels=LABEL_ORDER, average="weighted", zero_division=0)
+        present_labels = sorted(int(v) for v in np.unique(np.concatenate([y_true, y_pred])) if int(v) in LABEL_ORDER)
+        if present_labels:
+            macro_present = precision_recall_fscore_support(
+                y_true,
+                y_pred,
+                labels=present_labels,
+                average="macro",
+                zero_division=0,
+            )
+            weighted_present = precision_recall_fscore_support(
+                y_true,
+                y_pred,
+                labels=present_labels,
+                average="weighted",
+                zero_division=0,
+            )
+        else:
+            macro_present = (np.nan, np.nan, np.nan, None)
+            weighted_present = (np.nan, np.nan, np.nan, None)
         accuracy = float(accuracy_score(y_true, y_pred))
+        nonzero_support = [int(v) for v in support if int(v) > 0]
+        support_min = min(nonzero_support) if nonzero_support else 0
 
         report_rows: list[Dict[str, Any]] = []
         for i, cls in enumerate(LABEL_ORDER):
@@ -1051,6 +1127,19 @@ def compute_evaluation_metrics(
             "weighted_precision": float(weighted[0]),
             "weighted_recall": float(weighted[1]),
             "weighted_f1": float(weighted[2]),
+            "present_labels": present_labels,
+            "present_label_names": [CLASS_NAME_MAP[int(v)] for v in present_labels],
+            "macro_precision_present": None if not np.isfinite(macro_present[0]) else float(macro_present[0]),
+            "macro_recall_present": None if not np.isfinite(macro_present[1]) else float(macro_present[1]),
+            "macro_f1_present": None if not np.isfinite(macro_present[2]) else float(macro_present[2]),
+            "weighted_precision_present": None if not np.isfinite(weighted_present[0]) else float(weighted_present[0]),
+            "weighted_recall_present": None if not np.isfinite(weighted_present[1]) else float(weighted_present[1]),
+            "weighted_f1_present": None if not np.isfinite(weighted_present[2]) else float(weighted_present[2]),
+            "n_present_labels": int(len(present_labels)),
+            "support_min": int(support_min),
+            "support_1": int(support[0]),
+            "support_2": int(support[1]),
+            "support_7": int(support[2]),
             "confusion_matrix": cm.astype(int).tolist(),
             "report_rows": report_rows,
             "confusion_rows": confusion_rows,
@@ -1069,6 +1158,17 @@ def compute_evaluation_metrics(
             "weighted_precision": float(weighted[0]),
             "weighted_recall": float(weighted[1]),
             "weighted_f1": float(weighted[2]),
+            "macro_precision_present": None if not np.isfinite(macro_present[0]) else float(macro_present[0]),
+            "macro_recall_present": None if not np.isfinite(macro_present[1]) else float(macro_present[1]),
+            "macro_f1_present": None if not np.isfinite(macro_present[2]) else float(macro_present[2]),
+            "weighted_precision_present": None if not np.isfinite(weighted_present[0]) else float(weighted_present[0]),
+            "weighted_recall_present": None if not np.isfinite(weighted_present[1]) else float(weighted_present[1]),
+            "weighted_f1_present": None if not np.isfinite(weighted_present[2]) else float(weighted_present[2]),
+            "n_present_labels": int(len(present_labels)),
+            "support_min": int(support_min),
+            "support_1": int(support[0]),
+            "support_2": int(support[1]),
+            "support_7": int(support[2]),
         })
 
         if subset_name == "all_matched":
@@ -1294,6 +1394,10 @@ def process_one_pair(input_pair: Dict[str, Path], config: Dict[str, Any]) -> Dic
             raise FileNotFoundError(h5_path)
         if not reference_laz_path.exists():
             raise FileNotFoundError(reference_laz_path)
+        if "CLASSIFIER_MODE" not in config:
+            metadata["warnings"].append(
+                "CLASSIFIER_MODE missing in config; using backward-compatible height_density_pre_ground behavior."
+            )
 
         casals = read_casals_h5_refh_points(h5_path)
         print(f"Read CASALS points: {casals['point_index'].size:,}")
@@ -1309,10 +1413,21 @@ def process_one_pair(input_pair: Dict[str, Path], config: Dict[str, Any]) -> Dic
         print(f"Valid ground grid cells: {ground_grid['valid_cell_count']:,}")
 
         local_ground_z_m, dtm_sample_valid = sample_ground_grid_idw(x, y, ground_grid, config)
-        density_result = compute_local_point_density(x, y, casals["z"], config)
-        local_neighbor_count = density_result["local_neighbor_count"]
-        point_density_pts_m3 = density_result["point_density_pts_m3"]
-        print("Density source: computed_internal")
+        classifier_mode = str(config.get("CLASSIFIER_MODE", "height_density_pre_ground"))
+        density_enabled = (
+            classifier_mode != "height_only"
+            and config.get("NOISE_DENSITY_MAX_PTS_M3") is not None
+        )
+        if density_enabled:
+            density_result = compute_local_point_density(x, y, casals["z"], config)
+            local_neighbor_count = density_result["local_neighbor_count"]
+            point_density_pts_m3 = density_result["point_density_pts_m3"]
+            density_source = "computed_internal"
+        else:
+            local_neighbor_count = np.zeros(np.asarray(x).shape[0], dtype=np.uint32)
+            point_density_pts_m3 = np.full(np.asarray(x).shape[0], np.nan, dtype=np.float64)
+            density_source = "disabled"
+        print(f"Density source: {density_source}")
         classification_result = classify_points_baseline(
             casals["z"],
             local_ground_z_m,
@@ -1338,6 +1453,7 @@ def process_one_pair(input_pair: Dict[str, Path], config: Dict[str, Any]) -> Dic
             pred_counts=pred_counts,
             classification_reason=classification_reason,
             point_density_pts_m3=point_density_pts_m3,
+            density_source=density_source,
         )
         common_laz_kwargs = {
             "output_path": output_paths["classified_laz"],
@@ -1462,6 +1578,8 @@ def process_one_pair(input_pair: Dict[str, Path], config: Dict[str, Any]) -> Dic
             "2": "ground",
             "7": "noise",
         }
+        metadata["classifier_mode"] = str(config.get("CLASSIFIER_MODE", "height_density_pre_ground"))
+        metadata["density_enabled"] = bool(density_enabled)
         metadata["scientific_notes"] = {
             "baseline_classifier": "rule-based baseline on CASALS refh points",
             "pseudo_ground_truth": "transferred 3DEP labels are used for evaluation and are not absolute ground truth",
@@ -1616,8 +1734,22 @@ def write_all_files_outputs(
         if y_true.size == 0:
             continue
         cm = confusion_matrix(y_true, y_pred, labels=LABEL_ORDER)
+        per_class = precision_recall_fscore_support(y_true, y_pred, labels=LABEL_ORDER, zero_division=0)
         macro = precision_recall_fscore_support(y_true, y_pred, labels=LABEL_ORDER, average="macro", zero_division=0)
         weighted = precision_recall_fscore_support(y_true, y_pred, labels=LABEL_ORDER, average="weighted", zero_division=0)
+        present_labels = sorted(int(v) for v in np.unique(np.concatenate([y_true, y_pred])) if int(v) in LABEL_ORDER)
+        if present_labels:
+            macro_present = precision_recall_fscore_support(
+                y_true, y_pred, labels=present_labels, average="macro", zero_division=0
+            )
+            weighted_present = precision_recall_fscore_support(
+                y_true, y_pred, labels=present_labels, average="weighted", zero_division=0
+            )
+        else:
+            macro_present = (np.nan, np.nan, np.nan, None)
+            weighted_present = (np.nan, np.nan, np.nan, None)
+        support = per_class[3]
+        nonzero_support = [int(v) for v in support if int(v) > 0]
         evaluation_summary_rows.append({
             "h5_stem": "__all__",
             "subset_name": subset_name,
@@ -1629,6 +1761,17 @@ def write_all_files_outputs(
             "weighted_precision": float(weighted[0]),
             "weighted_recall": float(weighted[1]),
             "weighted_f1": float(weighted[2]),
+            "macro_precision_present": None if not np.isfinite(macro_present[0]) else float(macro_present[0]),
+            "macro_recall_present": None if not np.isfinite(macro_present[1]) else float(macro_present[1]),
+            "macro_f1_present": None if not np.isfinite(macro_present[2]) else float(macro_present[2]),
+            "weighted_precision_present": None if not np.isfinite(weighted_present[0]) else float(weighted_present[0]),
+            "weighted_recall_present": None if not np.isfinite(weighted_present[1]) else float(weighted_present[1]),
+            "weighted_f1_present": None if not np.isfinite(weighted_present[2]) else float(weighted_present[2]),
+            "n_present_labels": int(len(present_labels)),
+            "support_min": int(min(nonzero_support)) if nonzero_support else 0,
+            "support_1": int(support[0]),
+            "support_2": int(support[1]),
+            "support_7": int(support[2]),
         })
         for row_i, true_cls in enumerate(LABEL_ORDER):
             confusion_rows.append({
@@ -1655,6 +1798,17 @@ def write_all_files_outputs(
             "weighted_precision",
             "weighted_recall",
             "weighted_f1",
+            "macro_precision_present",
+            "macro_recall_present",
+            "macro_f1_present",
+            "weighted_precision_present",
+            "weighted_recall_present",
+            "weighted_f1_present",
+            "n_present_labels",
+            "support_min",
+            "support_1",
+            "support_2",
+            "support_7",
         ],
     ).to_csv(evaluation_summary_path, index=False)
     pd.DataFrame(
@@ -1693,19 +1847,21 @@ def main() -> None:
 
     CONFIG: Dict[str, Any] = {
         "OUTPUT_ROOT": Path("./outputs/classify_and_evaluate_casals_refh"),
+        "CLASSIFIER_MODE": "height_only",
         "GROUND_SNR_MIN": 5.0,
-        "GRID_RES_M": 10.0,
+        "GRID_RES_M": 15.0,
         "MIN_POINTS_PER_CELL": 1,
         "GROUND_CELL_PERCENTILE": 2,
         "DTM_IDW_K": 12,
         "DTM_IDW_POWER": 2.0,
         "DTM_MAX_SEARCH_RADIUS_M": 30.0,
-        "GROUND_RESID_TOL_M": 1.0,
-        "LOCAL_FEATURE_RADIUS_M": 5.0,
+        "GROUND_RESID_TOL_M": 1.5,
+        "NOISE_HAG_MAX_M": 30.0,
+        "LOCAL_FEATURE_RADIUS_M": None,
         "LOCAL_FEATURE_MAX_NEIGHBORS": 24,
         "LOCAL_FEATURE_MIN_NEIGHBORS": 6,
         "LOCAL_FEATURE_QUERY_CHUNK_SIZE": 100_000,
-        "NOISE_DENSITY_MAX_PTS_M3": 0.04,
+        "NOISE_DENSITY_MAX_PTS_M3": None,
         "EVAL_REQUIRE_VALID_DTM": False,
         "EVAL_IGNORE_REFERENCE_NOISE": False,
         "EVAL_REQUIRE_TRANSFER_STATUS": None,

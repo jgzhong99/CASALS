@@ -1,11 +1,9 @@
 """
-Baseline CASALS refh point-cloud classification and pseudo-ground-truth evaluation.
+Deterministic CASALS refh classification and pseudo-reference evaluation.
 
-This is a baseline rule-based CASALS refh classifier.
-CASALS L1B provides one official refh point per pulse, not an official multi-return
-classified point cloud.
-The transferred 3DEP LAZ is used as pseudo-ground-truth for evaluation, not absolute
-ground truth.
+This script keeps the existing CASALS refh classification workflow and adds
+optional deterministic, non-learning rule enhancements and diagnostics.
+Transferred 3DEP labels are used only as pseudo-reference labels for evaluation.
 No vertical datum correction is applied by this script.
 """
 
@@ -17,7 +15,7 @@ import re
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, Optional, Sequence
 
 import h5py
 import laspy
@@ -47,6 +45,123 @@ CLASS_REASON_MAP = {
     7: "processed_negative_hag_allowed",
     8: "noise_low_density_post_ground",
     9: "noise_low_density_processed_only",
+    10: "ground_rejected_low_signal_to_processed",
+    11: "ground_rejected_weak_dtm_to_processed",
+    12: "ground_rejected_low_density_to_processed",
+    13: "noise_low_signal_low_density",
+    14: "noise_low_amp_low_density",
+    15: "noise_scanline_hag_outlier",
+    16: "shallow_negative_hag_kept_processed",
+    17: "weak_dtm_shallow_negative_kept_processed",
+}
+SUPPORTED_CLASSIFIER_MODES = {
+    "height_only",
+    "height_density_pre_ground",
+    "height_density_post_ground",
+    "height_density_processed_only",
+    "height_no_below_noise",
+    "rule_combined_v1",
+}
+RULE_SWITCH_KEYS = [
+    "USE_NEAR_GROUND_GUARD",
+    "USE_SIGNAL_DENSITY_NOISE",
+    "USE_BELOW_GROUND_REFINEMENT",
+    "USE_DTM_SUPPORT_CONFIDENCE",
+    "USE_SCANLINE_OUTLIER_NOISE",
+]
+RULE_THRESHOLD_KEYS = [
+    "GROUND_SNR_MIN",
+    "GRID_RES_M",
+    "GROUND_CELL_PERCENTILE",
+    "GROUND_RESID_TOL_M",
+    "NOISE_HAG_MAX_M",
+    "LOCAL_FEATURE_RADIUS_M",
+    "NOISE_DENSITY_MAX_PTS_M3",
+    "NEAR_GROUND_GUARD_LOW_SNR_MAX",
+    "NEAR_GROUND_GUARD_LOW_DENSITY_MAX",
+    "NEAR_GROUND_GUARD_HAG_ABS_MAX_M",
+    "NOISE_LOW_DENSITY_MAX_PTS_M3",
+    "NOISE_LOW_SNR_MAX",
+    "NOISE_LOW_AMP_ROBUST_Z_MAX",
+    "NOISE_MIN_ABS_HAG_FOR_SIGNAL_RULE_M",
+    "BELOW_GROUND_NOISE_MIN_DEPTH_M",
+    "BELOW_GROUND_SHALLOW_TO_PROCESSED_M",
+    "DTM_SUPPORT_DIST_MAX_FOR_GROUND_M",
+    "SCANLINE_USE_TRACK_HAG_Z",
+    "SCANLINE_USE_SWEEP_HAG_Z",
+    "SCANLINE_HAG_ZSCORE_MIN",
+    "SCANLINE_HAG_ZSCORE_MAX",
+    "SCANLINE_HAG_MIN_M",
+    "SCANLINE_HAG_MAX_M",
+    "SCANLINE_DENSITY_MIN_PTS_M3",
+    "SCANLINE_MIN_GROUP_SIZE",
+    "ROBUST_Z_NMAD_EPS",
+]
+DEFAULT_CONFIG: Dict[str, Any] = {
+    "OUTPUT_ROOT": Path("./outputs/classify_and_evaluate_casals_refh"),
+    "CLASSIFIER_MODE": "rule_combined_v1",
+    "GROUND_SNR_MIN": 5.0,
+    "GRID_RES_M": 15.0,
+    "MIN_POINTS_PER_CELL": 1,
+    "GROUND_CELL_PERCENTILE": 2,
+    "DTM_IDW_K": 12,
+    "DTM_IDW_POWER": 2.0,
+    "DTM_MAX_SEARCH_RADIUS_M": 30.0,
+    "GROUND_RESID_TOL_M": 1.5,
+    "NOISE_HAG_MAX_M": 30.0,
+    "LOCAL_FEATURE_RADIUS_M": 5.0,
+    "LOCAL_FEATURE_MAX_NEIGHBORS": 24,
+    "LOCAL_FEATURE_MIN_NEIGHBORS": 6,
+    "LOCAL_FEATURE_QUERY_CHUNK_SIZE": 100_000,
+    "NOISE_DENSITY_MAX_PTS_M3": 0.02,
+    "USE_NEAR_GROUND_GUARD": False,
+    "USE_SIGNAL_DENSITY_NOISE": False,
+    "USE_BELOW_GROUND_REFINEMENT": False,
+    "USE_DTM_SUPPORT_CONFIDENCE": False,
+    "USE_SCANLINE_OUTLIER_NOISE": True,
+    "NEAR_GROUND_GUARD_LOW_SNR_MAX": 2.5,
+    "NEAR_GROUND_GUARD_LOW_DENSITY_MAX": 0.01,
+    "NEAR_GROUND_GUARD_HAG_ABS_MAX_M": 1.5,
+    "NEAR_GROUND_GUARD_ACTION": "ground_to_processed",
+    "NOISE_LOW_DENSITY_MAX_PTS_M3": 0.02,
+    "NOISE_LOW_SNR_MAX": 2.5,
+    "NOISE_LOW_AMP_ROBUST_Z_MAX": -1.0,
+    "NOISE_MIN_ABS_HAG_FOR_SIGNAL_RULE_M": 1.0,
+    "NOISE_SIGNAL_DENSITY_ACTION": "processed_to_noise",
+    "BELOW_GROUND_NOISE_MIN_DEPTH_M": 0.0,
+    "BELOW_GROUND_SHALLOW_TO_PROCESSED_M": None,
+    "BELOW_GROUND_REQUIRE_LOW_DENSITY": False,
+    "BELOW_GROUND_REQUIRE_LOW_SNR": False,
+    "COMPUTE_DTM_SUPPORT_FEATURES": False,
+    "DTM_SUPPORT_DIST_MAX_FOR_GROUND_M": 30.0,
+    "DTM_SUPPORT_WEAK_GROUND_ACTION": "ground_to_processed",
+    "DTM_SUPPORT_WEAK_SHALLOW_NEGATIVE_ACTION": "processed",
+    "COMPUTE_SCANLINE_FEATURES": False,
+    "SCANLINE_USE_TRACK_HAG_Z": True,
+    "SCANLINE_USE_SWEEP_HAG_Z": False,
+    "SCANLINE_HAG_ZSCORE_MIN": 35.0,
+    "SCANLINE_HAG_ZSCORE_MAX": 55.0,
+    "SCANLINE_HAG_MIN_M": 8.0,
+    "SCANLINE_HAG_MAX_M": 15.0,
+    "SCANLINE_DENSITY_MIN_PTS_M3": 2.0,
+    "SCANLINE_REQUIRE_LOW_DENSITY": False,
+    "SCANLINE_REQUIRE_NON_GROUND": True,
+    "SCANLINE_MIN_GROUP_SIZE": 30,
+    "ROBUST_Z_NMAD_EPS": 1e-6,
+    "WRITE_ERROR_FEATURE_SUMMARY": True,
+    "WRITE_ERROR_SUBSET_SAMPLES": False,
+    "MAX_ERROR_SUBSET_SAMPLE_POINTS": 100_000,
+    "EVAL_REQUIRE_VALID_DTM": False,
+    "EVAL_IGNORE_REFERENCE_NOISE": False,
+    "EVAL_REQUIRE_TRANSFER_STATUS": None,
+    "HIGH_CONF_NEAREST3DEP_DIST_M": 1.0,
+    "HIGH_CONF_CLASS_VOTE_RATIO_MIN": 0.5,
+    "ROW_ALIGN_XY_TOL_M": 0.01,
+    "ROW_ALIGN_LONLAT_TOL_DEG": 1e-7,
+    "ROW_ALIGN_CHECK_INDICES": (0.0, 0.25, 0.5, 0.75, 1.0),
+    "WRITE_DIAGNOSTIC_PNG": True,
+    "LAS_XYZ_SCALE_M": 0.001,
+    "IDW_QUERY_CHUNK_SIZE": 500_000,
 }
 EPSG_RE = re.compile(r"EPSG[:\s]*([0-9]{4,6})", re.IGNORECASE)
 UTM_RE = re.compile(r"UTM(?:\s+ZONE)?[:\s]*([0-9]{1,2})([NS])?", re.IGNORECASE)
@@ -94,6 +209,44 @@ def finite_mask(*arrays: np.ndarray) -> np.ndarray:
     return mask
 
 
+def robust_median_nmad(values: np.ndarray, eps: float = 1e-6) -> tuple[float, float]:
+    arr = np.asarray(values, dtype=np.float64)
+    arr = arr[np.isfinite(arr)]
+    if arr.size == 0:
+        return np.nan, np.nan
+    median = float(np.median(arr))
+    nmad = float(1.4826 * np.median(np.abs(arr - median)))
+    return median, max(nmad, float(eps))
+
+
+def robust_zscore(values: np.ndarray, eps: float = 1e-6) -> np.ndarray:
+    arr = np.asarray(values, dtype=np.float64)
+    out = np.full(arr.shape, np.nan, dtype=np.float64)
+    finite = np.isfinite(arr)
+    if not np.any(finite):
+        return out
+    median, nmad = robust_median_nmad(arr[finite], eps=eps)
+    if not np.isfinite(median) or not np.isfinite(nmad):
+        return out
+    out[finite] = (arr[finite] - median) / nmad
+    return out
+
+
+def safe_field_array(
+    fields: Dict[str, np.ndarray],
+    name: str,
+    n: int,
+    default: Any = np.nan,
+    dtype: Any = np.float64,
+) -> np.ndarray:
+    if name not in fields:
+        return np.full(n, default, dtype=dtype)
+    arr = np.asarray(fields[name], dtype=dtype).reshape(-1)
+    if arr.size != n:
+        raise ValueError(f"Field {name} has size {arr.size}, expected {n}")
+    return arr
+
+
 def summarize_values(values: np.ndarray) -> Dict[str, Any]:
     arr = np.asarray(values, dtype=np.float64)
     finite = np.isfinite(arr)
@@ -128,10 +281,100 @@ def maybe_quantiles(values: np.ndarray) -> tuple[Optional[float], Optional[float
     return float(np.percentile(arr, 5)), float(np.median(arr)), float(np.percentile(arr, 95))
 
 
-def print_console_metrics_table(
-    h5_stem: str,
-    evaluation_metrics: Dict[str, Any],
-) -> None:
+def quantile_summary(values: np.ndarray) -> Dict[str, Any]:
+    arr = np.asarray(values, dtype=np.float64)
+    finite = np.isfinite(arr)
+    summary = {
+        "count": int(arr.size),
+        "n_finite": int(np.count_nonzero(finite)),
+        "min": None,
+        "p05": None,
+        "p25": None,
+        "median": None,
+        "p75": None,
+        "p95": None,
+        "max": None,
+    }
+    if not np.any(finite):
+        return summary
+    arr = arr[finite]
+    summary.update({
+        "min": float(np.min(arr)),
+        "p05": float(np.percentile(arr, 5)),
+        "p25": float(np.percentile(arr, 25)),
+        "median": float(np.median(arr)),
+        "p75": float(np.percentile(arr, 75)),
+        "p95": float(np.percentile(arr, 95)),
+        "max": float(np.max(arr)),
+    })
+    return summary
+
+
+def scalar_attr_to_text(value: object) -> Optional[str]:
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    if isinstance(value, str):
+        return value
+    if np.isscalar(value):
+        return str(value)
+    arr = np.asarray(value)
+    if arr.ndim == 0:
+        item = arr.item()
+        if isinstance(item, bytes):
+            return item.decode("utf-8", errors="replace")
+        return str(item)
+    return None
+
+
+def iter_scalar_attr_strings(h5: h5py.File) -> Iterable[tuple[str, str]]:
+    for key, value in h5.attrs.items():
+        text = scalar_attr_to_text(value)
+        if text is not None:
+            yield f"/@{key}", text
+
+
+def normalize_config(config: Dict[str, Any]) -> tuple[Dict[str, Any], list[str]]:
+    merged = dict(DEFAULT_CONFIG)
+    merged.update(config)
+    warnings: list[str] = []
+    if "CLASSIFIER_MODE" not in config:
+        warnings.append(
+            f"CLASSIFIER_MODE missing in config; defaulting to {DEFAULT_CONFIG['CLASSIFIER_MODE']}."
+        )
+    mode = str(merged.get("CLASSIFIER_MODE", DEFAULT_CONFIG["CLASSIFIER_MODE"]))
+    if mode not in SUPPORTED_CLASSIFIER_MODES:
+        raise ValueError(f"Unsupported CLASSIFIER_MODE: {mode}")
+    merged["CLASSIFIER_MODE"] = mode
+    return merged, warnings
+
+
+def needs_density_features(config: Dict[str, Any]) -> bool:
+    mode = str(config["CLASSIFIER_MODE"])
+    if mode in {"height_density_pre_ground", "height_density_post_ground", "height_density_processed_only", "rule_combined_v1"}:
+        return config.get("NOISE_DENSITY_MAX_PTS_M3") is not None
+    if bool(config["USE_SIGNAL_DENSITY_NOISE"]):
+        return True
+    if bool(config["USE_NEAR_GROUND_GUARD"]):
+        return True
+    if bool(config["USE_SCANLINE_OUTLIER_NOISE"]):
+        if bool(config["SCANLINE_REQUIRE_LOW_DENSITY"]):
+            return True
+        if config.get("SCANLINE_DENSITY_MIN_PTS_M3") is not None:
+            return True
+    if bool(config["USE_BELOW_GROUND_REFINEMENT"]) and bool(config["BELOW_GROUND_REQUIRE_LOW_DENSITY"]):
+        return True
+    return False
+
+
+def needs_dtm_support_features(config: Dict[str, Any]) -> bool:
+    return bool(config["COMPUTE_DTM_SUPPORT_FEATURES"]) or bool(config["USE_DTM_SUPPORT_CONFIDENCE"])
+
+
+def needs_scanline_features(config: Dict[str, Any]) -> bool:
+    return bool(config["COMPUTE_SCANLINE_FEATURES"]) or bool(config["USE_SCANLINE_OUTLIER_NOISE"])
+
+
+def print_console_metrics_table(h5_stem: str, evaluation_metrics: Dict[str, Any]) -> None:
     report_df = evaluation_metrics["primary_report_df"]
     confusion_df = evaluation_metrics["primary_confusion_df"]
     if report_df.empty:
@@ -150,9 +393,8 @@ def print_console_metrics_table(
 
     print(f"Classification report: {h5_stem}")
     print(metrics_df.to_string(index=False))
-
     if not confusion_df.empty:
-        print("Confusion matrix (rows=true, cols=pred):")
+        print("Confusion matrix (rows=pseudo-reference, cols=prediction):")
         print(confusion_df.to_string(index=False))
 
 
@@ -174,10 +416,7 @@ def print_value_counts_table(
     print(pd.DataFrame(rows).to_string(index=False))
 
 
-def print_density_quantiles_table(
-    pred_class_baseline: np.ndarray,
-    point_density_pts_m3: np.ndarray,
-) -> None:
+def print_density_quantiles_table(pred_class_baseline: np.ndarray, point_density_pts_m3: np.ndarray) -> None:
     rows = []
     for cls in LABEL_ORDER:
         mask = np.asarray(pred_class_baseline, dtype=np.uint8) == cls
@@ -206,6 +445,9 @@ def build_output_paths(output_root: Path, h5_stem: str) -> Dict[str, Path]:
         "class_count_png": root / f"{h5_stem}_class_count_bar.png",
         "hag_hist_png": root / f"{h5_stem}_height_above_ground_hist_by_predicted_class.png",
         "confusion_heatmap_png": root / f"{h5_stem}_confusion_matrix_heatmap.png",
+        "error_feature_summary_csv": root / f"{h5_stem}_error_feature_summary.csv",
+        "true7_pred1_samples_csv": root / f"{h5_stem}_true7_pred1_samples.csv",
+        "true1_pred2_samples_csv": root / f"{h5_stem}_true1_pred2_samples.csv",
     }
 
 
@@ -228,7 +470,25 @@ def build_initial_run_metadata(
         "classification_parameters": {
             key: json_safe(value)
             for key, value in config.items()
-            if key == "CLASSIFIER_MODE" or key.startswith(("GROUND_", "GRID_", "MIN_", "DTM_", "LAS_", "IDW_", "LOCAL_", "NOISE_"))
+            if key == "CLASSIFIER_MODE"
+            or key.startswith(
+                (
+                    "GROUND_",
+                    "GRID_",
+                    "MIN_",
+                    "DTM_",
+                    "LAS_",
+                    "IDW_",
+                    "LOCAL_",
+                    "NOISE_",
+                    "USE_",
+                    "WRITE_",
+                    "SCANLINE_",
+                    "COMPUTE_",
+                    "BELOW_",
+                    "ROBUST_",
+                )
+            )
         },
         "evaluation_parameters": {
             "EVAL_REQUIRE_VALID_DTM": bool(config["EVAL_REQUIRE_VALID_DTM"]),
@@ -256,6 +516,7 @@ def build_common_metadata_payload(
 ) -> Dict[str, Any]:
     density = np.asarray(point_density_pts_m3, dtype=np.float64)
     density_finite = np.isfinite(density)
+    density_reason_codes = {6, 8, 9, 13, 14}
     return {
         "crs": {
             "chosen_projected_crs": projected_crs.to_string(),
@@ -277,36 +538,15 @@ def build_common_metadata_payload(
             "classification_reason_counts": {
                 str(k): int(v) for k, v in collect_class_counts(classification_reason).items()
             },
-            "density_noise_count": int(np.count_nonzero(np.asarray(classification_reason, dtype=np.uint8) == 6)),
+            "density_noise_count": int(
+                np.count_nonzero(np.isin(np.asarray(classification_reason, dtype=np.uint8), list(density_reason_codes)))
+            ),
             "density_valid_count": int(np.count_nonzero(density_finite)),
             "density_valid_fraction": float(np.mean(density_finite)),
         },
         "density_source": str(density_source),
         "density_summary": summarize_values(density),
     }
-
-
-def scalar_attr_to_text(value: object) -> Optional[str]:
-    if isinstance(value, bytes):
-        return value.decode("utf-8", errors="replace")
-    if isinstance(value, str):
-        return value
-    if np.isscalar(value):
-        return str(value)
-    arr = np.asarray(value)
-    if arr.ndim == 0:
-        item = arr.item()
-        if isinstance(item, bytes):
-            return item.decode("utf-8", errors="replace")
-        return str(item)
-    return None
-
-
-def iter_scalar_attr_strings(h5: h5py.File) -> Iterable[tuple[str, str]]:
-    for key, value in h5.attrs.items():
-        text = scalar_attr_to_text(value)
-        if text is not None:
-            yield f"/@{key}", text
 
 
 def find_dataset_path(h5: h5py.File, candidates: Sequence[str], required: bool = True) -> Optional[str]:
@@ -475,7 +715,9 @@ def infer_or_choose_projected_crs(
             "crs": chosen,
             "source": "reference_laz_header",
             "reference_crs": reference_crs.to_string(),
-            "h5_detected_attr_crs": casals_points["detected_attr_crs"].to_string() if casals_points["detected_attr_crs"] else None,
+            "h5_detected_attr_crs": (
+                casals_points["detected_attr_crs"].to_string() if casals_points["detected_attr_crs"] else None
+            ),
             "h5_detected_attr_crs_source": casals_points["detected_attr_crs_source"],
         }
 
@@ -515,6 +757,13 @@ def compute_local_point_density(
     local_neighbor_count = np.zeros(np.asarray(x).shape[0], dtype=np.uint32)
     point_density_pts_m3 = np.full(np.asarray(x).shape[0], np.nan, dtype=np.float64)
 
+    radius_m = config.get("LOCAL_FEATURE_RADIUS_M")
+    if radius_m is None or float(radius_m) <= 0.0:
+        return {
+            "local_neighbor_count": local_neighbor_count,
+            "point_density_pts_m3": point_density_pts_m3,
+        }
+
     valid_xyz = finite_mask(x, y, z)
     if not np.any(valid_xyz):
         return {
@@ -522,7 +771,7 @@ def compute_local_point_density(
             "point_density_pts_m3": point_density_pts_m3,
         }
 
-    radius_m = float(config["LOCAL_FEATURE_RADIUS_M"])
+    radius_m = float(radius_m)
     chunk_size = max(1, int(config["LOCAL_FEATURE_QUERY_CHUNK_SIZE"]))
     sphere_volume_m3 = float((4.0 / 3.0) * np.pi * radius_m**3)
     xyz_valid = np.column_stack((
@@ -704,106 +953,351 @@ def sample_ground_grid_idw(
     return local_ground_z, dtm_valid
 
 
+def compute_signal_features(fields: Dict[str, np.ndarray], n: int, config: Dict[str, Any]) -> Dict[str, np.ndarray]:
+    eps = float(config["ROBUST_Z_NMAD_EPS"])
+    refh_snr = safe_field_array(fields, "refh_snr", n)
+    refh_amp = safe_field_array(fields, "refh_amp", n)
+    bg_mean = safe_field_array(fields, "bg_mean", n)
+    bg_std = safe_field_array(fields, "bg_std", n)
+    track_num = safe_field_array(fields, "track_num", n)
+    sweep_num = safe_field_array(fields, "sweep_num", n)
+    amp_snr_like = np.full(n, np.nan, dtype=np.float64)
+    valid_amp_snr_like = np.isfinite(refh_amp) & np.isfinite(bg_mean) & np.isfinite(bg_std) & (bg_std > 0.0)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        amp_snr_like[valid_amp_snr_like] = (
+            (refh_amp[valid_amp_snr_like] - bg_mean[valid_amp_snr_like]) / bg_std[valid_amp_snr_like]
+        )
+    return {
+        "refh_snr": refh_snr,
+        "refh_amp": refh_amp,
+        "bg_mean": bg_mean,
+        "bg_std": bg_std,
+        "track_num": track_num,
+        "sweep_num": sweep_num,
+        "refh_amp_robust_z": robust_zscore(refh_amp, eps=eps),
+        "refh_snr_robust_z": robust_zscore(refh_snr, eps=eps),
+        "amp_snr_like": amp_snr_like,
+    }
+
+
+def compute_dtm_support_features(x: np.ndarray, y: np.ndarray, ground_grid: Dict[str, Any], config: Dict[str, Any]) -> Dict[str, np.ndarray]:
+    n = x.shape[0]
+    nearest_ground_cell_dist_m = np.full(n, np.nan, dtype=np.float64)
+    idw_neighbor_count_within_search_radius = np.zeros(n, dtype=np.int32)
+    nearest_ground_cell_support_count = np.full(n, np.nan, dtype=np.float64)
+
+    finite_xy = np.isfinite(x) & np.isfinite(y)
+    centers = np.asarray(ground_grid["valid_centers_xy"], dtype=np.float64)
+    if not np.any(finite_xy) or centers.size == 0:
+        return {
+            "nearest_ground_cell_dist_m": nearest_ground_cell_dist_m,
+            "idw_neighbor_count_within_search_radius": idw_neighbor_count_within_search_radius,
+            "nearest_ground_cell_support_count": nearest_ground_cell_support_count,
+        }
+
+    search_radius = max(
+        float(config["DTM_MAX_SEARCH_RADIUS_M"]),
+        float(config["DTM_SUPPORT_DIST_MAX_FOR_GROUND_M"]),
+    )
+    tree = cKDTree(centers)
+    query_xy = np.column_stack((x[finite_xy], y[finite_xy]))
+    dists, idx = tree.query(query_xy, k=1, workers=-1)
+    nearest_ground_cell_dist_m[finite_xy] = np.asarray(dists, dtype=np.float64)
+    cell_counts = np.asarray(ground_grid["valid_cell_counts"], dtype=np.float64)
+    nearest_ground_cell_support_count[finite_xy] = cell_counts[np.asarray(idx, dtype=np.int64)]
+    try:
+        counts = tree.query_ball_point(query_xy, r=search_radius, return_length=True, workers=-1)
+    except TypeError:
+        counts = [len(ids) for ids in tree.query_ball_point(query_xy, r=search_radius, workers=-1)]
+    idw_neighbor_count_within_search_radius[finite_xy] = np.asarray(counts, dtype=np.int32)
+    return {
+        "nearest_ground_cell_dist_m": nearest_ground_cell_dist_m,
+        "idw_neighbor_count_within_search_radius": idw_neighbor_count_within_search_radius,
+        "nearest_ground_cell_support_count": nearest_ground_cell_support_count,
+    }
+
+
+def compute_group_robust_z(values: np.ndarray, groups: np.ndarray, config: Dict[str, Any]) -> np.ndarray:
+    arr = np.asarray(values, dtype=np.float64)
+    grp = np.asarray(groups, dtype=np.float64)
+    out = np.full(arr.shape, np.nan, dtype=np.float64)
+    finite = np.isfinite(arr) & np.isfinite(grp)
+    if not np.any(finite):
+        return out
+
+    min_group_size = int(config["SCANLINE_MIN_GROUP_SIZE"])
+    eps = float(config["ROBUST_Z_NMAD_EPS"])
+
+    finite_idx = np.flatnonzero(finite)
+    order = np.argsort(grp[finite_idx], kind="mergesort")
+    sorted_idx = finite_idx[order]
+    sorted_groups = grp[sorted_idx]
+    sorted_values = arr[sorted_idx]
+    _, start_idx, counts = np.unique(sorted_groups, return_index=True, return_counts=True)
+
+    for start, count in zip(start_idx, counts):
+        if int(count) < min_group_size:
+            continue
+        group_slice = slice(int(start), int(start + count))
+        group_values = sorted_values[group_slice]
+        median, nmad = robust_median_nmad(group_values, eps=eps)
+        if not np.isfinite(median) or not np.isfinite(nmad) or nmad <= 0.0:
+            continue
+        out[sorted_idx[group_slice]] = np.abs(group_values - median) / nmad
+    return out
+
+
+def compute_scanline_features(
+    height_above_ground_m: np.ndarray,
+    track_num: np.ndarray,
+    sweep_num: np.ndarray,
+    config: Dict[str, Any],
+) -> Dict[str, np.ndarray]:
+    n = np.asarray(height_above_ground_m).shape[0]
+    track_hag_robust_z = np.full(n, np.nan, dtype=np.float64)
+    sweep_hag_robust_z = np.full(n, np.nan, dtype=np.float64)
+    if bool(config.get("SCANLINE_USE_TRACK_HAG_Z", True)):
+        track_hag_robust_z = compute_group_robust_z(height_above_ground_m, track_num, config)
+    if bool(config.get("SCANLINE_USE_SWEEP_HAG_Z", True)):
+        sweep_hag_robust_z = compute_group_robust_z(height_above_ground_m, sweep_num, config)
+    return {
+        "track_hag_robust_z": track_hag_robust_z,
+        "sweep_hag_robust_z": sweep_hag_robust_z,
+    }
+
+
 def classify_points_baseline(
     z: np.ndarray,
     local_ground_z_m: np.ndarray,
     dtm_sample_valid: np.ndarray,
     point_density_pts_m3: np.ndarray,
     config: Dict[str, Any],
+    *,
+    refh_snr: Optional[np.ndarray] = None,
+    refh_amp: Optional[np.ndarray] = None,
+    bg_mean: Optional[np.ndarray] = None,
+    bg_std: Optional[np.ndarray] = None,
+    track_num: Optional[np.ndarray] = None,
+    sweep_num: Optional[np.ndarray] = None,
+    local_neighbor_count: Optional[np.ndarray] = None,
+    dtm_support_features: Optional[Dict[str, np.ndarray]] = None,
+    scanline_features: Optional[Dict[str, np.ndarray]] = None,
 ) -> Dict[str, np.ndarray]:
-    mode = str(config.get("CLASSIFIER_MODE", "height_density_pre_ground"))
-    density_threshold = config.get("NOISE_DENSITY_MAX_PTS_M3")
-    max_hag = float(config.get("NOISE_HAG_MAX_M", 40.0))
+    del bg_mean, bg_std, track_num, sweep_num, local_neighbor_count
 
-    hag = np.full(z.shape[0], np.nan, dtype=np.float64)
-    valid = np.asarray(dtm_sample_valid, dtype=bool)
-    hag[valid] = z[valid] - local_ground_z_m[valid]
+    config = {**DEFAULT_CONFIG, **config}
+    mode = str(config.get("CLASSIFIER_MODE", "height_density_processed_only"))
+    if mode not in SUPPORTED_CLASSIFIER_MODES:
+        raise ValueError(f"Unsupported CLASSIFIER_MODE: {mode}")
+    base_mode = "height_density_processed_only" if mode == "rule_combined_v1" else mode
 
-    pred = np.full(z.shape[0], 7, dtype=np.uint8)
-    reason = np.full(z.shape[0], 0, dtype=np.uint8)
+    n = z.shape[0]
+    density = np.asarray(point_density_pts_m3, dtype=np.float64)
+    hag = np.full(n, np.nan, dtype=np.float64)
+    valid_dtm = np.asarray(dtm_sample_valid, dtype=bool)
+    hag[valid_dtm] = np.asarray(z, dtype=np.float64)[valid_dtm] - np.asarray(local_ground_z_m, dtype=np.float64)[valid_dtm]
 
-    invalid_dtm = ~valid
+    pred = np.full(n, 7, dtype=np.uint8)
+    reason = np.full(n, 0, dtype=np.uint8)
+    invalid_dtm = ~valid_dtm
     pred[invalid_dtm] = 7
     reason[invalid_dtm] = 2
 
-    valid_mask = valid
-    density = np.asarray(point_density_pts_m3, dtype=np.float64)
-    valid_hag = valid_mask & np.isfinite(hag)
-    nonfinite_hag = valid_mask & ~np.isfinite(hag)
+    valid_hag = valid_dtm & np.isfinite(hag)
+    nonfinite_hag = valid_dtm & ~np.isfinite(hag)
     pred[nonfinite_hag] = 7
     reason[nonfinite_hag] = 2
 
-    density_enabled = density_threshold is not None and mode != "height_only"
+    density_threshold = config.get("NOISE_DENSITY_MAX_PTS_M3")
+    density_enabled = density_threshold is not None and base_mode != "height_only"
+    low_density_baseline = np.zeros(n, dtype=bool)
     if density_enabled:
-        low_density = valid_hag & np.isfinite(density) & (density < float(density_threshold))
-    else:
-        low_density = np.zeros(z.shape[0], dtype=bool)
+        low_density_baseline = valid_hag & np.isfinite(density) & (density < float(density_threshold))
 
     ground = valid_hag & (np.abs(hag) <= float(config["GROUND_RESID_TOL_M"]))
-    below_ground = valid_hag & (hag < 0.0)
-    above_max = valid_hag & (hag > max_hag)
+    below_ground = valid_hag & (hag < -float(config["BELOW_GROUND_NOISE_MIN_DEPTH_M"]))
+    above_max = valid_hag & (hag > float(config["NOISE_HAG_MAX_M"]))
+    density_reason_code: Optional[int] = None
+    low_density = np.zeros(n, dtype=bool)
 
-    if mode == "height_only":
+    if base_mode == "height_only":
         ground_final = ground
         below_final = below_ground & ~ground_final
         above_final = above_max & ~(ground_final | below_final)
         processed_final = valid_hag & ~(ground_final | below_final | above_final)
-        density_reason_code = None
-    elif mode == "height_density_pre_ground":
+    elif base_mode == "height_density_pre_ground":
+        low_density = low_density_baseline.copy()
         ground_final = ground & ~low_density
         below_final = below_ground & ~(low_density | ground_final)
         above_final = above_max & ~(low_density | ground_final | below_final)
         processed_final = valid_hag & ~(low_density | ground_final | below_final | above_final)
         density_reason_code = 6
-    elif mode == "height_density_post_ground":
+    elif base_mode == "height_density_post_ground":
         ground_final = ground
-        low_density = low_density & ~ground_final
+        low_density = low_density_baseline & ~ground_final
         below_final = below_ground & ~(ground_final | low_density)
         above_final = above_max & ~(ground_final | low_density | below_final)
         processed_final = valid_hag & ~(ground_final | low_density | below_final | above_final)
         density_reason_code = 8
-    elif mode == "height_density_processed_only":
+    elif base_mode in {"height_density_processed_only", "rule_combined_v1"}:
         ground_final = ground
         below_final = below_ground & ~ground_final
         above_final = above_max & ~(ground_final | below_final)
         processed_candidates = valid_hag & ~(ground_final | below_final | above_final)
-        low_density = low_density & processed_candidates
+        low_density = low_density_baseline & processed_candidates
         processed_final = processed_candidates & ~low_density
         density_reason_code = 9
-    elif mode == "height_no_below_noise":
+    elif base_mode == "height_no_below_noise":
         ground_final = ground
-        below_final = np.zeros(z.shape[0], dtype=bool)
+        below_final = np.zeros(n, dtype=bool)
         above_final = above_max & ~ground_final
         processed_final = valid_hag & ~(ground_final | above_final)
-        density_reason_code = None
     else:
         raise ValueError(f"Unsupported CLASSIFIER_MODE: {mode}")
 
     pred[ground_final] = 2
     reason[ground_final] = 1
-
     if density_reason_code is not None:
         pred[low_density] = 7
         reason[low_density] = int(density_reason_code)
-
     pred[below_final] = 7
     reason[below_final] = 3
-
     pred[above_final] = 7
     reason[above_final] = 4
-
     pred[processed_final] = 1
     reason[processed_final] = 5
-
-    if mode == "height_no_below_noise":
+    if base_mode == "height_no_below_noise":
         negative_processed = processed_final & (hag < 0.0)
         reason[negative_processed] = 7
 
-    return {
+    low_density_rule_mask = np.isfinite(density) & (density < float(config["NOISE_LOW_DENSITY_MAX_PTS_M3"]))
+    low_snr_mask = np.zeros(n, dtype=bool)
+    if refh_snr is not None:
+        low_snr_mask = np.isfinite(refh_snr) & (np.asarray(refh_snr, dtype=np.float64) <= float(config["NOISE_LOW_SNR_MAX"]))
+    low_amp_mask = np.zeros(n, dtype=bool)
+    if refh_amp is not None:
+        low_amp_mask = np.isfinite(refh_amp) & (
+            robust_zscore(np.asarray(refh_amp, dtype=np.float64), eps=float(config["ROBUST_Z_NMAD_EPS"]))
+            <= float(config["NOISE_LOW_AMP_ROBUST_Z_MAX"])
+        )
+    rule_signal_low = low_snr_mask | low_amp_mask
+
+    weak_dtm_mask = np.zeros(n, dtype=bool)
+    if dtm_support_features is not None and "nearest_ground_cell_dist_m" in dtm_support_features:
+        nearest_dist = np.asarray(dtm_support_features["nearest_ground_cell_dist_m"], dtype=np.float64)
+        weak_dtm_mask = np.isfinite(nearest_dist) & (
+            nearest_dist > float(config["DTM_SUPPORT_DIST_MAX_FOR_GROUND_M"])
+        )
+
+    rule_scanline_outlier = np.zeros(n, dtype=bool)
+    if scanline_features is not None:
+        z_min = float(config["SCANLINE_HAG_ZSCORE_MIN"])
+        z_max_config = config.get("SCANLINE_HAG_ZSCORE_MAX")
+        z_max = None if z_max_config is None else float(z_max_config)
+
+        track_z = np.asarray(
+            scanline_features.get("track_hag_robust_z", np.full(n, np.nan, dtype=np.float64)),
+            dtype=np.float64,
+        )
+        sweep_z = np.asarray(
+            scanline_features.get("sweep_hag_robust_z", np.full(n, np.nan, dtype=np.float64)),
+            dtype=np.float64,
+        )
+        if bool(config.get("SCANLINE_USE_TRACK_HAG_Z", True)):
+            track_outlier = np.isfinite(track_z) & (track_z >= z_min)
+            if z_max is not None:
+                track_outlier &= track_z <= z_max
+            rule_scanline_outlier |= track_outlier
+        if bool(config.get("SCANLINE_USE_SWEEP_HAG_Z", True)):
+            sweep_outlier = np.isfinite(sweep_z) & (sweep_z >= z_min)
+            if z_max is not None:
+                sweep_outlier &= sweep_z <= z_max
+            rule_scanline_outlier |= sweep_outlier
+
+    if bool(config["USE_NEAR_GROUND_GUARD"]):
+        near_ground = (pred == 2) & np.isfinite(hag) & (np.abs(hag) <= float(config["NEAR_GROUND_GUARD_HAG_ABS_MAX_M"]))
+        signal_guard = near_ground & low_snr_mask
+        weak_guard = near_ground & ~signal_guard & weak_dtm_mask
+        density_guard = near_ground & ~signal_guard & ~weak_guard & low_density_rule_mask
+        if str(config["NEAR_GROUND_GUARD_ACTION"]) == "ground_to_processed":
+            pred[signal_guard] = 1
+            reason[signal_guard] = 10
+            pred[weak_guard] = 1
+            reason[weak_guard] = 11
+            pred[density_guard] = 1
+            reason[density_guard] = 12
+
+    if bool(config["USE_DTM_SUPPORT_CONFIDENCE"]):
+        weak_ground = (pred == 2) & weak_dtm_mask
+        if str(config["DTM_SUPPORT_WEAK_GROUND_ACTION"]) == "ground_to_processed":
+            pred[weak_ground] = 1
+            reason[weak_ground] = 11
+
+    if bool(config["USE_SIGNAL_DENSITY_NOISE"]):
+        processed = pred == 1
+        signal_density_candidate = (
+            processed
+            & np.isfinite(hag)
+            & (np.abs(hag) >= float(config["NOISE_MIN_ABS_HAG_FOR_SIGNAL_RULE_M"]))
+            & low_density_rule_mask
+        )
+        low_signal_noise = signal_density_candidate & low_snr_mask
+        low_amp_noise = signal_density_candidate & ~low_signal_noise & low_amp_mask
+        if str(config["NOISE_SIGNAL_DENSITY_ACTION"]) == "processed_to_noise":
+            pred[low_signal_noise] = 7
+            reason[low_signal_noise] = 13
+            pred[low_amp_noise] = 7
+            reason[low_amp_noise] = 14
+
+    if bool(config["USE_SCANLINE_OUTLIER_NOISE"]):
+        processed = pred == 1
+        scanline_candidate = processed & rule_scanline_outlier
+        if config.get("SCANLINE_HAG_MIN_M") is not None:
+            scanline_candidate &= np.isfinite(hag) & (hag >= float(config["SCANLINE_HAG_MIN_M"]))
+        if config.get("SCANLINE_HAG_MAX_M") is not None:
+            scanline_candidate &= np.isfinite(hag) & (hag <= float(config["SCANLINE_HAG_MAX_M"]))
+        if config.get("SCANLINE_DENSITY_MIN_PTS_M3") is not None:
+            scanline_candidate &= (
+                np.isfinite(density)
+                & (density >= float(config["SCANLINE_DENSITY_MIN_PTS_M3"]))
+            )
+        if bool(config["SCANLINE_REQUIRE_LOW_DENSITY"]):
+            scanline_candidate &= low_density_rule_mask
+        if bool(config["SCANLINE_REQUIRE_NON_GROUND"]):
+            scanline_candidate &= pred != 2
+        pred[scanline_candidate] = 7
+        reason[scanline_candidate] = 15
+
+    if bool(config["USE_BELOW_GROUND_REFINEMENT"]) and config["BELOW_GROUND_SHALLOW_TO_PROCESSED_M"] is not None:
+        shallow_limit = float(config["BELOW_GROUND_SHALLOW_TO_PROCESSED_M"])
+        shallow_negative = (pred == 7) & (reason == 3) & np.isfinite(hag) & (hag < 0.0) & (np.abs(hag) <= shallow_limit)
+        if bool(config["BELOW_GROUND_REQUIRE_LOW_DENSITY"]):
+            shallow_negative &= low_density_rule_mask
+        elif np.any(np.isfinite(density)):
+            shallow_negative &= ~low_density_rule_mask
+        if bool(config["BELOW_GROUND_REQUIRE_LOW_SNR"]):
+            shallow_negative &= low_snr_mask
+        elif refh_snr is not None and np.any(np.isfinite(refh_snr)):
+            shallow_negative &= ~low_snr_mask
+
+        weak_shallow = shallow_negative & weak_dtm_mask
+        general_shallow = shallow_negative & ~weak_shallow
+        pred[general_shallow] = 1
+        reason[general_shallow] = 16
+        if str(config["DTM_SUPPORT_WEAK_SHALLOW_NEGATIVE_ACTION"]) == "processed":
+            pred[weak_shallow] = 1
+            reason[weak_shallow] = 17
+
+    result = {
         "pred_class_baseline": pred.astype(np.uint8),
         "classification_reason": reason.astype(np.uint8),
         "height_above_ground_m": hag.astype(np.float64),
     }
+    result["rule_signal_low"] = rule_signal_low.astype(np.uint8)
+    result["rule_density_low"] = low_density_rule_mask.astype(np.uint8)
+    result["rule_scanline_outlier"] = rule_scanline_outlier.astype(np.uint8)
+    result["rule_dtm_support_weak"] = weak_dtm_mask.astype(np.uint8)
+    return result
 
 
 def read_reference_labels(reference_laz_path: Path) -> Dict[str, Any]:
@@ -820,7 +1314,6 @@ def read_reference_labels(reference_laz_path: Path) -> Dict[str, Any]:
         "z": np.asarray(las.z, dtype=np.float64),
         "available_extra_dims": sorted(dims),
     }
-
     for name in [
         "point_index",
         "longitude",
@@ -831,8 +1324,9 @@ def read_reference_labels(reference_laz_path: Path) -> Dict[str, Any]:
     ]:
         if name in dims:
             ref[name] = np.asarray(las[name])
-
     return ref
+
+
 def align_prediction_to_reference(
     prediction: Dict[str, np.ndarray],
     reference: Dict[str, Any],
@@ -869,7 +1363,11 @@ def align_prediction_to_reference(
 
         for name in ["transfer_status", "nearest3dep_dist_m", "class_vote_ratio"]:
             if name in reference:
-                aligned = np.full(n_pred, np.nan, dtype=np.float64) if name != "transfer_status" else np.full(n_pred, -1, dtype=np.int16)
+                aligned = (
+                    np.full(n_pred, np.nan, dtype=np.float64)
+                    if name != "transfer_status"
+                    else np.full(n_pred, -1, dtype=np.int16)
+                )
                 aligned[ref_idx] = np.asarray(reference[name])
                 if name == "transfer_status":
                     result["reference_transfer_status"] = aligned.astype(np.int16)
@@ -880,17 +1378,10 @@ def align_prediction_to_reference(
         return result
 
     if n_ref != n_pred:
-        raise RuntimeError(
-            "Reference has no point_index and point counts differ; row-order alignment is not safe."
-        )
+        raise RuntimeError("Reference has no point_index and point counts differ; row-order alignment is not safe.")
 
     fractions = tuple(config["ROW_ALIGN_CHECK_INDICES"])
-    sample_idx = sorted(
-        {
-            int(np.clip(round(frac * (n_pred - 1)), 0, n_pred - 1))
-            for frac in fractions
-        }
-    )
+    sample_idx = sorted({int(np.clip(round(frac * (n_pred - 1)), 0, n_pred - 1)) for frac in fractions})
     checks: Dict[str, Any] = {"sample_indices": sample_idx}
 
     if "longitude" in reference and "latitude" in reference:
@@ -939,6 +1430,30 @@ def map_reference_labels_to_baseline_classes(reference_class_raw: np.ndarray) ->
     return out
 
 
+def compute_main_error_counts(y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, Any]:
+    y_true = np.asarray(y_true, dtype=np.uint8)
+    y_pred = np.asarray(y_pred, dtype=np.uint8)
+    true1 = y_true == 1
+    true2 = y_true == 2
+    true7 = y_true == 7
+    true1_pred2_count = int(np.count_nonzero(true1 & (y_pred == 2)))
+    true7_pred1_count = int(np.count_nonzero(true7 & (y_pred == 1)))
+    true2_pred1_count = int(np.count_nonzero(true2 & (y_pred == 1)))
+    true2_pred7_count = int(np.count_nonzero(true2 & (y_pred == 7)))
+    return {
+        "true1_pred2_count": true1_pred2_count,
+        "true7_pred1_count": true7_pred1_count,
+        "true2_pred1_count": true2_pred1_count,
+        "true2_pred7_count": true2_pred7_count,
+        "true1_pred2_fraction_of_true1": (
+            None if not np.any(true1) else float(true1_pred2_count / np.count_nonzero(true1))
+        ),
+        "true7_pred1_fraction_of_true7": (
+            None if not np.any(true7) else float(true7_pred1_count / np.count_nonzero(true7))
+        ),
+    }
+
+
 def build_classification_summary_row(
     h5_stem: str,
     pred_class_baseline: np.ndarray,
@@ -952,6 +1467,7 @@ def build_classification_summary_row(
     point_density_pts_m3: np.ndarray,
     classification_reason: np.ndarray,
 ) -> Dict[str, Any]:
+    density_reason_codes = {6, 8, 9, 13, 14}
     row: Dict[str, Any] = {
         "h5_stem": h5_stem,
         "point_count": int(pred_class_baseline.size),
@@ -960,25 +1476,24 @@ def build_classification_summary_row(
         "dtm_invalid_count": int(np.count_nonzero(np.asarray(dtm_sample_valid) == 0)),
         "ground_support_candidate_count": int(ground_support_candidate_count),
         "valid_dtm_cell_count": int(valid_dtm_cell_count),
-        "density_noise_count": int(np.count_nonzero(np.asarray(classification_reason, dtype=np.uint8) == 6)),
+        "density_noise_count": int(
+            np.count_nonzero(np.isin(np.asarray(classification_reason, dtype=np.uint8), list(density_reason_codes)))
+        ),
     }
     pred_counts = collect_class_counts(pred_class_baseline)
     ref_counts = collect_class_counts(eval_gt_class[np.asarray(eval_match_valid, dtype=bool)])
     for cls in LABEL_ORDER:
         row[f"pred_count_{cls}"] = int(pred_counts.get(cls, 0))
         row[f"ref_count_{cls}"] = int(ref_counts.get(cls, 0))
-
         pred_mask = np.asarray(pred_class_baseline, dtype=np.uint8) == cls
         p05, median, p95 = maybe_quantiles(np.asarray(height_above_ground_m, dtype=np.float64)[pred_mask])
         row[f"hag_pred_{cls}_p05"] = p05
         row[f"hag_pred_{cls}_median"] = median
         row[f"hag_pred_{cls}_p95"] = p95
-
         s05, smed, s95 = maybe_quantiles(np.asarray(refh_snr, dtype=np.float64)[pred_mask])
         row[f"refh_snr_pred_{cls}_p05"] = s05
         row[f"refh_snr_pred_{cls}_median"] = smed
         row[f"refh_snr_pred_{cls}_p95"] = s95
-
         d05, dmed, d95 = maybe_quantiles(np.asarray(point_density_pts_m3, dtype=np.float64)[pred_mask])
         row[f"density_pred_{cls}_p05"] = d05
         row[f"density_pred_{cls}_median"] = dmed
@@ -1029,7 +1544,6 @@ def compute_evaluation_metrics(
     for subset_name, subset_mask in subset_masks.items():
         y_true = np.asarray(eval_gt_class, dtype=np.uint8)[subset_mask]
         y_pred = np.asarray(pred_class_baseline, dtype=np.uint8)[subset_mask]
-
         subset_result: Dict[str, Any] = {
             "subset_name": subset_name,
             "n_points": int(y_true.size),
@@ -1071,9 +1585,17 @@ def compute_evaluation_metrics(
         accuracy = float(accuracy_score(y_true, y_pred))
         nonzero_support = [int(v) for v in support if int(v) > 0]
         support_min = min(nonzero_support) if nonzero_support else 0
+        error_counts = compute_main_error_counts(y_true, y_pred)
 
         report_rows: list[Dict[str, Any]] = []
+        per_class_metrics: Dict[int, Dict[str, Any]] = {}
         for i, cls in enumerate(LABEL_ORDER):
+            per_class_metrics[cls] = {
+                "precision": float(precision[i]),
+                "recall": float(recall[i]),
+                "f1": float(f1[i]),
+                "support": int(support[i]),
+            }
             report_rows.append({
                 "row_name": CLASS_NAME_MAP[cls],
                 "class_code": cls,
@@ -1082,30 +1604,32 @@ def compute_evaluation_metrics(
                 "f1_score": float(f1[i]),
                 "support": int(support[i]),
             })
-        report_rows.append({
-            "row_name": "macro avg",
-            "class_code": "",
-            "precision": float(macro[0]),
-            "recall": float(macro[1]),
-            "f1_score": float(macro[2]),
-            "support": int(np.sum(support)),
-        })
-        report_rows.append({
-            "row_name": "weighted avg",
-            "class_code": "",
-            "precision": float(weighted[0]),
-            "recall": float(weighted[1]),
-            "f1_score": float(weighted[2]),
-            "support": int(np.sum(support)),
-        })
-        report_rows.append({
-            "row_name": "accuracy",
-            "class_code": "",
-            "precision": None,
-            "recall": None,
-            "f1_score": accuracy,
-            "support": int(np.sum(support)),
-        })
+        report_rows.extend([
+            {
+                "row_name": "macro avg",
+                "class_code": "",
+                "precision": float(macro[0]),
+                "recall": float(macro[1]),
+                "f1_score": float(macro[2]),
+                "support": int(np.sum(support)),
+            },
+            {
+                "row_name": "weighted avg",
+                "class_code": "",
+                "precision": float(weighted[0]),
+                "recall": float(weighted[1]),
+                "f1_score": float(weighted[2]),
+                "support": int(np.sum(support)),
+            },
+            {
+                "row_name": "accuracy",
+                "class_code": "",
+                "precision": None,
+                "recall": None,
+                "f1_score": accuracy,
+                "support": int(np.sum(support)),
+            },
+        ])
 
         confusion_rows = []
         for row_i, true_cls in enumerate(LABEL_ORDER):
@@ -1143,11 +1667,12 @@ def compute_evaluation_metrics(
             "confusion_matrix": cm.astype(int).tolist(),
             "report_rows": report_rows,
             "confusion_rows": confusion_rows,
+            "per_class_metrics": per_class_metrics,
             "y_true": y_true,
             "y_pred": y_pred,
+            **error_counts,
         })
         subset_results[subset_name] = subset_result
-
         evaluation_summary_rows.append({
             "subset_name": subset_name,
             "n_points": int(y_true.size),
@@ -1169,6 +1694,7 @@ def compute_evaluation_metrics(
             "support_1": int(support[0]),
             "support_2": int(support[1]),
             "support_7": int(support[2]),
+            **error_counts,
         })
 
         if subset_name == "all_matched":
@@ -1178,6 +1704,8 @@ def compute_evaluation_metrics(
                 "accuracy": accuracy,
                 "macro_f1": float(macro[2]),
                 "weighted_f1": float(weighted[2]),
+                "per_class_metrics": per_class_metrics,
+                **error_counts,
             }
 
     return {
@@ -1187,6 +1715,79 @@ def compute_evaluation_metrics(
         "primary_confusion_df": primary_confusion_df,
         "primary_metrics": primary_metrics,
     }
+
+
+def build_error_subset_masks(
+    eval_gt_class: np.ndarray,
+    pred_class_baseline: np.ndarray,
+    eval_match_valid: np.ndarray,
+) -> Dict[str, np.ndarray]:
+    matched = np.asarray(eval_match_valid, dtype=bool)
+    y_true = np.asarray(eval_gt_class, dtype=np.uint8)
+    y_pred = np.asarray(pred_class_baseline, dtype=np.uint8)
+    return {
+        "true7_pred1": matched & (y_true == 7) & (y_pred == 1),
+        "true1_pred2": matched & (y_true == 1) & (y_pred == 2),
+        "correct_ground": matched & (y_true == 2) & (y_pred == 2),
+        "correct_noise": matched & (y_true == 7) & (y_pred == 7),
+        "correct_processed": matched & (y_true == 1) & (y_pred == 1),
+    }
+
+
+def build_error_feature_rows(
+    h5_stem: str,
+    subset_masks: Dict[str, np.ndarray],
+    feature_map: Dict[str, Optional[np.ndarray]],
+) -> tuple[list[Dict[str, Any]], Dict[str, Dict[str, np.ndarray]]]:
+    rows: list[Dict[str, Any]] = []
+    cache: Dict[str, Dict[str, np.ndarray]] = {}
+    for subset_name, mask in subset_masks.items():
+        subset_cache: Dict[str, np.ndarray] = {}
+        subset_count = int(np.count_nonzero(mask))
+        for feature_name, values in feature_map.items():
+            if values is None:
+                continue
+            subset_values = np.asarray(values)[mask]
+            subset_cache[feature_name] = subset_values
+            summary = quantile_summary(subset_values)
+            rows.append({
+                "h5_stem": h5_stem,
+                "subset_name": subset_name,
+                "feature_name": feature_name,
+                "subset_count": subset_count,
+                **summary,
+            })
+        cache[subset_name] = subset_cache
+    return rows, cache
+
+
+def maybe_write_error_subset_samples(
+    output_paths: Dict[str, Path],
+    subset_masks: Dict[str, np.ndarray],
+    config: Dict[str, Any],
+    sample_fields: Dict[str, np.ndarray],
+) -> list[str]:
+    if not bool(config["WRITE_ERROR_SUBSET_SAMPLES"]):
+        return []
+    written: list[str] = []
+    max_points = int(config["MAX_ERROR_SUBSET_SAMPLE_POINTS"])
+    output_specs = {
+        "true7_pred1": output_paths["true7_pred1_samples_csv"],
+        "true1_pred2": output_paths["true1_pred2_samples_csv"],
+    }
+    for subset_name, output_path in output_specs.items():
+        mask = subset_masks[subset_name]
+        indices = np.flatnonzero(mask)
+        if indices.size == 0:
+            continue
+        indices = indices[:max_points]
+        frame = pd.DataFrame({
+            key: np.asarray(values)[indices]
+            for key, values in sample_fields.items()
+        })
+        frame.to_csv(output_path, index=False)
+        written.append(str(output_path))
+    return written
 
 
 def write_classified_laz(
@@ -1211,6 +1812,7 @@ def write_classified_laz(
     eval_gt_class: Optional[np.ndarray],
     eval_match_valid: np.ndarray,
     config: Dict[str, Any],
+    optional_extra_arrays: Optional[Dict[str, np.ndarray]] = None,
 ) -> None:
     ensure_dir(output_path.parent)
     header = laspy.LasHeader(point_format=6, version="1.4")
@@ -1237,8 +1839,8 @@ def write_classified_laz(
         ExtraBytesParams(name="local_neighbor_count", type=np.uint32, description="3D neighbor count"),
         ExtraBytesParams(name="point_density_pts_m3", type=np.float32, description="3D point density"),
         ExtraBytesParams(name="dtm_sample_valid", type=np.uint8, description="1 if DTM valid"),
-        ExtraBytesParams(name="classification_reason", type=np.uint8, description="Baseline reason"),
-        ExtraBytesParams(name="pred_class_baseline", type=np.uint8, description="Baseline class"),
+        ExtraBytesParams(name="classification_reason", type=np.uint8, description="Deterministic class reason"),
+        ExtraBytesParams(name="pred_class_baseline", type=np.uint8, description="Deterministic class"),
         ExtraBytesParams(name="eval_match_valid", type=np.uint8, description="1 if eval matched"),
     ]
     optional_specs = {
@@ -1256,8 +1858,17 @@ def write_classified_laz(
     for name, dtype in optional_specs.items():
         if name in fields:
             extra_dims.append(ExtraBytesParams(name=name, type=dtype, description=name[:32]))
+    optional_extra_arrays = optional_extra_arrays or {}
+    optional_extra_specs = {
+        "nearest_ground_cell_dist_m": np.float32,
+        "track_hag_robust_z": np.float32,
+        "sweep_hag_robust_z": np.float32,
+    }
+    for name, dtype in optional_extra_specs.items():
+        if name in optional_extra_arrays:
+            extra_dims.append(ExtraBytesParams(name=name, type=dtype, description=name[:32]))
     if eval_gt_class is not None:
-        extra_dims.append(ExtraBytesParams(name="eval_gt_class", type=np.uint8, description="Pseudo GT class"))
+        extra_dims.append(ExtraBytesParams(name="eval_gt_class", type=np.uint8, description="Pseudo-reference class"))
 
     las = laspy.LasData(header)
     las.add_extra_dims(extra_dims)
@@ -1282,7 +1893,6 @@ def write_classified_laz(
     las["eval_match_valid"] = np.asarray(eval_match_valid, dtype=np.uint8)
     if eval_gt_class is not None:
         las["eval_gt_class"] = np.asarray(eval_gt_class, dtype=np.uint8)
-
     for name, dtype in optional_specs.items():
         if name not in fields:
             continue
@@ -1297,7 +1907,14 @@ def write_classified_laz(
             las[name] = arr.astype(np.float32)
         else:
             las[name] = arr.astype(np.float64)
-
+    for name, dtype in optional_extra_specs.items():
+        if name not in optional_extra_arrays:
+            continue
+        arr = np.asarray(optional_extra_arrays[name])
+        if dtype == np.float32:
+            las[name] = arr.astype(np.float32)
+        else:
+            las[name] = arr.astype(np.float64)
     las.write(str(output_path))
 
 
@@ -1310,71 +1927,81 @@ def write_summary_outputs(
     metadata: Dict[str, Any],
     pred_class_baseline: np.ndarray,
     height_above_ground_m: np.ndarray,
+    error_feature_rows: list[Dict[str, Any]],
 ) -> None:
     pd.DataFrame([classification_summary_row]).to_csv(output_paths["classification_summary_csv"], index=False)
     evaluation_metrics["primary_report_df"].to_csv(output_paths["classification_report_csv"], index=False)
     evaluation_metrics["primary_confusion_df"].to_csv(output_paths["confusion_matrix_csv"], index=False)
+    if bool(config["WRITE_ERROR_FEATURE_SUMMARY"]):
+        pd.DataFrame(error_feature_rows).to_csv(output_paths["error_feature_summary_csv"], index=False)
+
+    subset_json = {}
+    for subset_name, subset_result in evaluation_metrics["subset_results"].items():
+        subset_copy = {k: v for k, v in subset_result.items() if k not in {"y_true", "y_pred"}}
+        subset_json[subset_name] = subset_copy
 
     evaluation_json = {
         "h5_stem": h5_stem,
         "label_order": LABEL_ORDER,
-        "subsets": {
-            key: {
-                sub_key: json_safe(sub_value)
-                for sub_key, sub_value in value.items()
-                if sub_key not in {"y_true", "y_pred"}
-            }
-            for key, value in evaluation_metrics["subset_results"].items()
-        },
+        "class_name_map": CLASS_NAME_MAP,
+        "subset_results": subset_json,
+        "evaluation_summary_rows": evaluation_metrics["evaluation_summary_rows"],
+        "true1_pred2_count": metadata.get("true1_pred2_count"),
+        "true7_pred1_count": metadata.get("true7_pred1_count"),
+        "true2_pred1_count": metadata.get("true2_pred1_count"),
+        "true2_pred7_count": metadata.get("true2_pred7_count"),
+        "true1_pred2_fraction_of_true1": metadata.get("true1_pred2_fraction_of_true1"),
+        "true7_pred1_fraction_of_true7": metadata.get("true7_pred1_fraction_of_true7"),
+        "reference_type": "3dep_transferred_pseudo_reference",
     }
     safe_json_dump(evaluation_json, output_paths["evaluation_summary_json"])
     safe_json_dump(metadata, output_paths["run_metadata_json"])
 
-    if not bool(config["WRITE_DIAGNOSTIC_PNG"]):
-        return
-
-    pred_counts = collect_class_counts(pred_class_baseline)
-    fig, ax = plt.subplots(figsize=(6.5, 4.0))
-    ax.bar([CLASS_NAME_MAP[c] for c in LABEL_ORDER], [pred_counts.get(c, 0) for c in LABEL_ORDER], color=["#4c78a8", "#59a14f", "#e15759"])
-    ax.set_title(f"{h5_stem} predicted class counts")
-    ax.set_ylabel("count")
-    fig.tight_layout()
-    fig.savefig(output_paths["class_count_png"], dpi=160)
-    plt.close(fig)
-
-    fig, ax = plt.subplots(figsize=(7.0, 4.2))
-    valid_hag = np.isfinite(height_above_ground_m)
-    for cls, color in zip(LABEL_ORDER, ["#4c78a8", "#59a14f", "#e15759"]):
-        mask = valid_hag & (pred_class_baseline == cls)
-        if np.any(mask):
-            ax.hist(height_above_ground_m[mask], bins=100, alpha=0.45, label=CLASS_NAME_MAP[cls], color=color)
-    ax.set_title(f"{h5_stem} height_above_ground_m by predicted class")
-    ax.set_xlabel("meters")
-    ax.set_ylabel("count")
-    ax.legend()
-    fig.tight_layout()
-    fig.savefig(output_paths["hag_hist_png"], dpi=160)
-    plt.close(fig)
-
-    if not evaluation_metrics["primary_confusion_df"].empty:
-        cm_rows = evaluation_metrics["primary_confusion_df"]
-        cm = cm_rows[["pred_1", "pred_2", "pred_7"]].to_numpy(dtype=np.int64)
-        fig, ax = plt.subplots(figsize=(5.0, 4.2))
-        im = ax.imshow(cm, cmap="Blues")
-        ax.set_xticks(range(len(LABEL_ORDER)))
-        ax.set_xticklabels([CLASS_NAME_MAP[c] for c in LABEL_ORDER], rotation=25, ha="right")
-        ax.set_yticks(range(len(LABEL_ORDER)))
-        ax.set_yticklabels([CLASS_NAME_MAP[c] for c in LABEL_ORDER])
-        ax.set_xlabel("Predicted")
-        ax.set_ylabel("Pseudo-GT")
-        ax.set_title(f"{h5_stem} confusion matrix")
-        for i in range(cm.shape[0]):
-            for j in range(cm.shape[1]):
-                ax.text(j, i, f"{cm[i, j]}", ha="center", va="center", color="black")
-        fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    if bool(config["WRITE_DIAGNOSTIC_PNG"]):
+        pred_counts = collect_class_counts(pred_class_baseline)
+        fig, ax = plt.subplots(figsize=(6.0, 4.0))
+        ax.bar([CLASS_NAME_MAP[c] for c in LABEL_ORDER], [pred_counts.get(c, 0) for c in LABEL_ORDER], color=["#b98b27", "#4477aa", "#cc6677"])
+        ax.set_title(f"{h5_stem} predicted class counts")
+        ax.set_ylabel("Count")
         fig.tight_layout()
-        fig.savefig(output_paths["confusion_heatmap_png"], dpi=160)
+        fig.savefig(output_paths["class_count_png"], dpi=160)
         plt.close(fig)
+
+        fig, ax = plt.subplots(figsize=(6.0, 4.0))
+        for cls in LABEL_ORDER:
+            mask = np.asarray(pred_class_baseline, dtype=np.uint8) == cls
+            values = np.asarray(height_above_ground_m, dtype=np.float64)[mask]
+            values = values[np.isfinite(values)]
+            if values.size == 0:
+                continue
+            ax.hist(values, bins=120, histtype="step", linewidth=1.2, label=CLASS_NAME_MAP[cls])
+        ax.set_title(f"{h5_stem} height above ground by predicted class")
+        ax.set_xlabel("Height above ground (m)")
+        ax.set_ylabel("Count")
+        ax.legend()
+        fig.tight_layout()
+        fig.savefig(output_paths["hag_hist_png"], dpi=160)
+        plt.close(fig)
+
+        cm_rows = evaluation_metrics["primary_confusion_df"]
+        if not cm_rows.empty:
+            cm = cm_rows[["pred_1", "pred_2", "pred_7"]].to_numpy(dtype=np.int64)
+            fig, ax = plt.subplots(figsize=(5.0, 4.2))
+            im = ax.imshow(cm, cmap="Blues")
+            ax.set_xticks(range(len(LABEL_ORDER)))
+            ax.set_xticklabels([CLASS_NAME_MAP[c] for c in LABEL_ORDER], rotation=25, ha="right")
+            ax.set_yticks(range(len(LABEL_ORDER)))
+            ax.set_yticklabels([CLASS_NAME_MAP[c] for c in LABEL_ORDER])
+            ax.set_xlabel("Predicted")
+            ax.set_ylabel("Pseudo-reference")
+            ax.set_title(f"{h5_stem} confusion matrix")
+            for i in range(cm.shape[0]):
+                for j in range(cm.shape[1]):
+                    ax.text(j, i, f"{cm[i, j]}", ha="center", va="center", color="black")
+            fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+            fig.tight_layout()
+            fig.savefig(output_paths["confusion_heatmap_png"], dpi=160)
+            plt.close(fig)
 
 
 def process_one_pair(input_pair: Dict[str, Path], config: Dict[str, Any]) -> Dict[str, Any]:
@@ -1386,7 +2013,6 @@ def process_one_pair(input_pair: Dict[str, Path], config: Dict[str, Any]) -> Dic
     ensure_dir(output_paths["run_metadata_json"].parent)
 
     metadata = build_initial_run_metadata(h5_stem, h5_path, reference_laz_path, output_paths, config)
-
     print(f"Processing: {h5_stem}")
 
     try:
@@ -1394,10 +2020,6 @@ def process_one_pair(input_pair: Dict[str, Path], config: Dict[str, Any]) -> Dic
             raise FileNotFoundError(h5_path)
         if not reference_laz_path.exists():
             raise FileNotFoundError(reference_laz_path)
-        if "CLASSIFIER_MODE" not in config:
-            metadata["warnings"].append(
-                "CLASSIFIER_MODE missing in config; using backward-compatible height_density_pre_ground behavior."
-            )
 
         casals = read_casals_h5_refh_points(h5_path)
         print(f"Read CASALS points: {casals['point_index'].size:,}")
@@ -1407,43 +2029,78 @@ def process_one_pair(input_pair: Dict[str, Path], config: Dict[str, Any]) -> Dic
         projected_crs = crs_info["crs"]
         x, y = project_lonlat_to_xy(casals["lon"], casals["lat"], projected_crs)
 
-        refh_snr = np.asarray(casals["fields"]["refh_snr"], dtype=np.float64)
+        n_points = casals["point_index"].size
+        signal_features = compute_signal_features(casals["fields"], n_points, config)
+        refh_snr = np.asarray(signal_features["refh_snr"], dtype=np.float64)
+        refh_amp = np.asarray(signal_features["refh_amp"], dtype=np.float64)
+        track_num = np.asarray(signal_features["track_num"], dtype=np.float64)
+        sweep_num = np.asarray(signal_features["sweep_num"], dtype=np.float64)
+
         ground_grid = build_ground_grid(x, y, casals["z"], refh_snr, config)
         print(f"Ground support candidates: {ground_grid['support_count']:,}")
         print(f"Valid ground grid cells: {ground_grid['valid_cell_count']:,}")
 
         local_ground_z_m, dtm_sample_valid = sample_ground_grid_idw(x, y, ground_grid, config)
-        classifier_mode = str(config.get("CLASSIFIER_MODE", "height_density_pre_ground"))
-        density_enabled = (
-            classifier_mode != "height_only"
-            and config.get("NOISE_DENSITY_MAX_PTS_M3") is not None
-        )
+        density_enabled = needs_density_features(config)
         if density_enabled:
             density_result = compute_local_point_density(x, y, casals["z"], config)
             local_neighbor_count = density_result["local_neighbor_count"]
             point_density_pts_m3 = density_result["point_density_pts_m3"]
             density_source = "computed_internal"
         else:
-            local_neighbor_count = np.zeros(np.asarray(x).shape[0], dtype=np.uint32)
-            point_density_pts_m3 = np.full(np.asarray(x).shape[0], np.nan, dtype=np.float64)
+            local_neighbor_count = np.zeros(n_points, dtype=np.uint32)
+            point_density_pts_m3 = np.full(n_points, np.nan, dtype=np.float64)
             density_source = "disabled"
-        print(f"Density source: {density_source}")
+
+        dtm_support_features = None
+        if needs_dtm_support_features(config):
+            dtm_support_features = compute_dtm_support_features(x, y, ground_grid, config)
+
+        pre_hag = np.full(n_points, np.nan, dtype=np.float64)
+        valid_dtm = np.asarray(dtm_sample_valid, dtype=bool)
+        pre_hag[valid_dtm] = np.asarray(casals["z"], dtype=np.float64)[valid_dtm] - local_ground_z_m[valid_dtm]
+
+        scanline_features = None
+        if needs_scanline_features(config):
+            scanline_features = compute_scanline_features(pre_hag, track_num, sweep_num, config)
+
         classification_result = classify_points_baseline(
             casals["z"],
             local_ground_z_m,
             dtm_sample_valid,
             point_density_pts_m3,
             config,
+            refh_snr=signal_features["refh_snr"],
+            refh_amp=signal_features["refh_amp"],
+            bg_mean=signal_features["bg_mean"],
+            bg_std=signal_features["bg_std"],
+            track_num=signal_features["track_num"],
+            sweep_num=signal_features["sweep_num"],
+            local_neighbor_count=local_neighbor_count,
+            dtm_support_features=dtm_support_features,
+            scanline_features=scanline_features,
         )
         pred_class_baseline = classification_result["pred_class_baseline"]
         classification_reason = classification_result["classification_reason"]
         height_above_ground_m = classification_result["height_above_ground_m"]
         pred_counts = collect_class_counts(pred_class_baseline)
+
+        print(f"Classifier mode: {config['CLASSIFIER_MODE']}")
+        print(f"Density source: {density_source}")
+        print(
+            "Rule switches: "
+            f"near_ground={bool(config['USE_NEAR_GROUND_GUARD'])}, "
+            f"signal_density={bool(config['USE_SIGNAL_DENSITY_NOISE'])}, "
+            f"dtm_support={bool(config['USE_DTM_SUPPORT_CONFIDENCE'])}, "
+            f"scanline={bool(config['USE_SCANLINE_OUTLIER_NOISE'])}, "
+            f"below_ground={bool(config['USE_BELOW_GROUND_REFINEMENT'])}"
+        )
         print(f"Predicted class counts: {pred_counts}")
         print_value_counts_table("Predicted class counts table", pred_counts, CLASS_NAME_MAP)
         print_value_counts_table("Classification reason counts", collect_class_counts(classification_reason), CLASS_REASON_MAP)
         print(f"Density valid fraction: {float(np.isfinite(point_density_pts_m3).mean()):.6f}")
         print_density_quantiles_table(pred_class_baseline, point_density_pts_m3)
+
         common_metadata = build_common_metadata_payload(
             projected_crs=projected_crs,
             crs_info=crs_info,
@@ -1455,6 +2112,14 @@ def process_one_pair(input_pair: Dict[str, Path], config: Dict[str, Any]) -> Dic
             point_density_pts_m3=point_density_pts_m3,
             density_source=density_source,
         )
+        optional_extra_arrays: Dict[str, np.ndarray] = {}
+        if dtm_support_features is not None and "nearest_ground_cell_dist_m" in dtm_support_features:
+            optional_extra_arrays["nearest_ground_cell_dist_m"] = dtm_support_features["nearest_ground_cell_dist_m"]
+        if scanline_features is not None and "track_hag_robust_z" in scanline_features:
+            optional_extra_arrays["track_hag_robust_z"] = scanline_features["track_hag_robust_z"]
+        if scanline_features is not None and "sweep_hag_robust_z" in scanline_features:
+            optional_extra_arrays["sweep_hag_robust_z"] = scanline_features["sweep_hag_robust_z"]
+
         common_laz_kwargs = {
             "output_path": output_paths["classified_laz"],
             "projected_crs": projected_crs,
@@ -1475,6 +2140,7 @@ def process_one_pair(input_pair: Dict[str, Path], config: Dict[str, Any]) -> Dic
             "pred_class_baseline": pred_class_baseline,
             "fields": casals["fields"],
             "config": config,
+            "optional_extra_arrays": optional_extra_arrays,
         }
 
         eval_match_valid = np.zeros(pred_class_baseline.shape[0], dtype=np.uint8)
@@ -1486,6 +2152,9 @@ def process_one_pair(input_pair: Dict[str, Path], config: Dict[str, Any]) -> Dic
         alignment_checks = {}
         evaluation_metrics = None
         classification_summary_row = None
+        error_feature_rows: list[Dict[str, Any]] = []
+        error_feature_cache: Dict[str, Dict[str, np.ndarray]] = {}
+        error_subset_masks: Dict[str, np.ndarray] = {}
 
         try:
             alignment = align_prediction_to_reference(
@@ -1522,6 +2191,16 @@ def process_one_pair(input_pair: Dict[str, Path], config: Dict[str, Any]) -> Dic
             print(f"Overall accuracy: {primary.get('accuracy', float('nan')):.6f}")
             print(f"Macro F1: {primary.get('macro_f1', float('nan')):.6f}")
             print(f"Weighted F1: {primary.get('weighted_f1', float('nan')):.6f}")
+            for cls in LABEL_ORDER:
+                per_class = primary.get("per_class_metrics", {}).get(cls, {})
+                print(
+                    f"Class {cls} F1 / recall: "
+                    f"{float(per_class.get('f1', float('nan'))):.6f} / "
+                    f"{float(per_class.get('recall', float('nan'))):.6f}"
+                )
+            print("Main error counts:")
+            print(f"  true1 -> pred2: {primary.get('true1_pred2_count', 0)}")
+            print(f"  true7 -> pred1: {primary.get('true7_pred1_count', 0)}")
             print_console_metrics_table(h5_stem, evaluation_metrics)
 
             classification_summary_row = build_classification_summary_row(
@@ -1537,6 +2216,42 @@ def process_one_pair(input_pair: Dict[str, Path], config: Dict[str, Any]) -> Dic
                 point_density_pts_m3=point_density_pts_m3,
                 classification_reason=classification_reason,
             )
+
+            error_subset_masks = build_error_subset_masks(eval_gt_class, pred_class_baseline, eval_match_valid)
+            error_feature_map = {
+                "height_above_ground_m": height_above_ground_m,
+                "refh_snr": signal_features["refh_snr"],
+                "refh_amp": signal_features["refh_amp"],
+                "point_density_pts_m3": point_density_pts_m3,
+                "nearest_ground_cell_dist_m": None if dtm_support_features is None else dtm_support_features["nearest_ground_cell_dist_m"],
+                "track_hag_robust_z": None if scanline_features is None else scanline_features["track_hag_robust_z"],
+                "sweep_hag_robust_z": None if scanline_features is None else scanline_features["sweep_hag_robust_z"],
+            }
+            error_feature_rows, error_feature_cache = build_error_feature_rows(h5_stem, error_subset_masks, error_feature_map)
+            sample_output_paths = maybe_write_error_subset_samples(
+                output_paths=output_paths,
+                subset_masks=error_subset_masks,
+                config=config,
+                sample_fields={
+                    "point_index": casals["point_index"],
+                    "longitude": casals["lon"],
+                    "latitude": casals["lat"],
+                    "x": x,
+                    "y": y,
+                    "z": casals["z"],
+                    "pred_class": pred_class_baseline,
+                    "pseudo_reference_class": eval_gt_class,
+                    "height_above_ground_m": height_above_ground_m,
+                    "refh_snr": signal_features["refh_snr"],
+                    "refh_amp": signal_features["refh_amp"],
+                    "point_density_pts_m3": point_density_pts_m3,
+                    "classification_reason": classification_reason,
+                    "track_num": signal_features["track_num"],
+                    "sweep_num": signal_features["sweep_num"],
+                },
+            )
+            if sample_output_paths:
+                metadata["error_subset_sample_outputs"] = sample_output_paths
         except Exception as eval_exc:
             print(f"[ERROR] Evaluation failed for {h5_stem}: {eval_exc}")
             metadata["warnings"].append(f"Evaluation failed after classification: {eval_exc}")
@@ -1572,19 +2287,36 @@ def process_one_pair(input_pair: Dict[str, Path], config: Dict[str, Any]) -> Dic
             "matched_count": int(np.count_nonzero(eval_match_valid)),
             "unmatched_count": int(pred_class_baseline.size - np.count_nonzero(eval_match_valid)),
         })
-        metadata["classification_reason_codes"] = CLASS_REASON_MAP
-        metadata["class_semantics"] = {
-            "1": "processed_unclassified",
-            "2": "ground",
-            "7": "noise",
-        }
-        metadata["classifier_mode"] = str(config.get("CLASSIFIER_MODE", "height_density_pre_ground"))
+        primary_errors = evaluation_metrics["primary_metrics"]
+        metadata["true1_pred2_count"] = int(primary_errors.get("true1_pred2_count", 0))
+        metadata["true7_pred1_count"] = int(primary_errors.get("true7_pred1_count", 0))
+        metadata["true2_pred1_count"] = int(primary_errors.get("true2_pred1_count", 0))
+        metadata["true2_pred7_count"] = int(primary_errors.get("true2_pred7_count", 0))
+        metadata["true1_pred2_fraction_of_true1"] = primary_errors.get("true1_pred2_fraction_of_true1")
+        metadata["true7_pred1_fraction_of_true7"] = primary_errors.get("true7_pred1_fraction_of_true7")
+        metadata["reason_code_map"] = CLASS_REASON_MAP
+        metadata["classifier_mode"] = str(config["CLASSIFIER_MODE"])
+        metadata["rule_switches"] = {key: bool(config[key]) for key in RULE_SWITCH_KEYS}
+        metadata["rule_thresholds"] = {key: json_safe(config.get(key)) for key in RULE_THRESHOLD_KEYS}
         metadata["density_enabled"] = bool(density_enabled)
+        metadata["density_source"] = density_source
+        metadata["dtm_support_features_computed"] = bool(dtm_support_features is not None)
+        metadata["scanline_features_computed"] = bool(scanline_features is not None)
+        metadata["reference_type"] = "3dep_transferred_pseudo_reference"
+        metadata["learning_based_methods_used"] = False
+        metadata["supervised_training_used"] = False
+        metadata["pseudo_reference_used_only_for_evaluation"] = True
+        metadata["selected_rules_must_be_visually_validated"] = True
         metadata["scientific_notes"] = {
-            "baseline_classifier": "rule-based baseline on CASALS refh points",
-            "pseudo_ground_truth": "transferred 3DEP labels are used for evaluation and are not absolute ground truth",
+            "baseline_classifier": "deterministic rule-based CASALS refh classifier",
+            "pseudo_reference": "transferred 3DEP labels are used only for evaluation and are not ground truth",
             "vertical_datum": "no vertical datum correction is applied; output Z remains CASALS refh height",
         }
+        metadata["missing_optional_laz_dimensions"] = [
+            name
+            for name in ["nearest_ground_cell_dist_m", "track_hag_robust_z", "sweep_hag_robust_z"]
+            if name not in optional_extra_arrays
+        ]
 
         write_summary_outputs(
             h5_stem=h5_stem,
@@ -1595,6 +2327,7 @@ def process_one_pair(input_pair: Dict[str, Path], config: Dict[str, Any]) -> Dic
             metadata=metadata,
             pred_class_baseline=pred_class_baseline,
             height_above_ground_m=height_above_ground_m,
+            error_feature_rows=error_feature_rows,
         )
 
         print(f"Wrote: {output_paths['classified_laz']}")
@@ -1628,6 +2361,8 @@ def process_one_pair(input_pair: Dict[str, Path], config: Dict[str, Any]) -> Dic
                 for subset_name, subset_result in evaluation_metrics["subset_results"].items()
                 if subset_result.get("status") == "ok"
             },
+            "error_feature_rows": error_feature_rows,
+            "error_feature_cache": error_feature_cache,
             "metadata_path": output_paths["run_metadata_json"],
         }
     except Exception as exc:
@@ -1658,6 +2393,7 @@ def write_all_files_outputs(
     classification_summary_path = output_root / "all_files_classification_summary.csv"
     evaluation_summary_path = output_root / "all_files_evaluation_summary.csv"
     confusion_summary_path = output_root / "all_files_confusion_matrix.csv"
+    error_feature_summary_path = output_root / "all_files_error_feature_summary.csv"
     metadata_path = output_root / "all_files_run_metadata.json"
 
     classification_rows = [result["classification_summary_row"] for result in successful_results]
@@ -1750,6 +2486,7 @@ def write_all_files_outputs(
             weighted_present = (np.nan, np.nan, np.nan, None)
         support = per_class[3]
         nonzero_support = [int(v) for v in support if int(v) > 0]
+        error_counts = compute_main_error_counts(y_true, y_pred)
         evaluation_summary_rows.append({
             "h5_stem": "__all__",
             "subset_name": subset_name,
@@ -1772,6 +2509,7 @@ def write_all_files_outputs(
             "support_1": int(support[0]),
             "support_2": int(support[1]),
             "support_7": int(support[2]),
+            **error_counts,
         })
         for row_i, true_cls in enumerate(LABEL_ORDER):
             confusion_rows.append({
@@ -1809,6 +2547,12 @@ def write_all_files_outputs(
             "support_1",
             "support_2",
             "support_7",
+            "true1_pred2_count",
+            "true7_pred1_count",
+            "true2_pred1_count",
+            "true2_pred7_count",
+            "true1_pred2_fraction_of_true1",
+            "true7_pred1_fraction_of_true7",
         ],
     ).to_csv(evaluation_summary_path, index=False)
     pd.DataFrame(
@@ -1825,6 +2569,30 @@ def write_all_files_outputs(
         ],
     ).to_csv(confusion_summary_path, index=False)
 
+    all_error_feature_rows = []
+    aggregate_error_cache: Dict[str, Dict[str, list[np.ndarray]]] = {}
+    for result in successful_results:
+        all_error_feature_rows.extend(result["error_feature_rows"])
+        for subset_name, feature_map in result["error_feature_cache"].items():
+            aggregate_error_cache.setdefault(subset_name, {})
+            for feature_name, values in feature_map.items():
+                aggregate_error_cache[subset_name].setdefault(feature_name, []).append(np.asarray(values))
+    for subset_name, feature_map in aggregate_error_cache.items():
+        subset_count = None
+        for feature_name, arrays in feature_map.items():
+            merged = np.concatenate(arrays) if arrays else np.array([], dtype=np.float64)
+            subset_count = int(merged.size) if subset_count is None else subset_count
+            summary = quantile_summary(merged)
+            all_error_feature_rows.append({
+                "h5_stem": "__all__",
+                "subset_name": subset_name,
+                "feature_name": feature_name,
+                "subset_count": subset_count,
+                **summary,
+            })
+    if bool(config["WRITE_ERROR_FEATURE_SUMMARY"]):
+        pd.DataFrame(all_error_feature_rows).to_csv(error_feature_summary_path, index=False)
+
     all_metadata["totals"] = {
         "n_input_pairs": len(input_pairs),
         "n_successful_pairs": len(successful_results),
@@ -1834,7 +2602,7 @@ def write_all_files_outputs(
 
 
 def main() -> None:
-    INPUT_PAIRS = [
+    input_pairs = [
         {
             "h5_path": Path("./casals_h5_downloads/casals_l1b_20241112T165718_001_02.h5"),
             "reference_laz_path": Path("./outputs/transfer_3dep_labels_to_casals/casals_l1b_20241112T165718_001_02.laz"),
@@ -1845,58 +2613,36 @@ def main() -> None:
         },
     ]
 
-    CONFIG: Dict[str, Any] = {
-        "OUTPUT_ROOT": Path("./outputs/classify_and_evaluate_casals_refh"),
-        "CLASSIFIER_MODE": "height_only",
-        "GROUND_SNR_MIN": 5.0,
-        "GRID_RES_M": 15.0,
-        "MIN_POINTS_PER_CELL": 1,
-        "GROUND_CELL_PERCENTILE": 2,
-        "DTM_IDW_K": 12,
-        "DTM_IDW_POWER": 2.0,
-        "DTM_MAX_SEARCH_RADIUS_M": 30.0,
-        "GROUND_RESID_TOL_M": 1.5,
-        "NOISE_HAG_MAX_M": 30.0,
-        "LOCAL_FEATURE_RADIUS_M": None,
-        "LOCAL_FEATURE_MAX_NEIGHBORS": 24,
-        "LOCAL_FEATURE_MIN_NEIGHBORS": 6,
-        "LOCAL_FEATURE_QUERY_CHUNK_SIZE": 100_000,
-        "NOISE_DENSITY_MAX_PTS_M3": None,
-        "EVAL_REQUIRE_VALID_DTM": False,
-        "EVAL_IGNORE_REFERENCE_NOISE": False,
-        "EVAL_REQUIRE_TRANSFER_STATUS": None,
-        "HIGH_CONF_NEAREST3DEP_DIST_M": 1.0,
-        "HIGH_CONF_CLASS_VOTE_RATIO_MIN": 0.5,
-        "ROW_ALIGN_XY_TOL_M": 0.01,
-        "ROW_ALIGN_LONLAT_TOL_DEG": 1e-7,
-        "ROW_ALIGN_CHECK_INDICES": (0.0, 0.25, 0.5, 0.75, 1.0),
-        "WRITE_DIAGNOSTIC_PNG": True,
-        "LAS_XYZ_SCALE_M": 0.001,
-        "IDW_QUERY_CHUNK_SIZE": 500_000,
-    }
-
-    ensure_dir(Path(CONFIG["OUTPUT_ROOT"]))
+    config_overrides: Dict[str, Any] = {}
+    config, config_warnings = normalize_config(config_overrides)
+    ensure_dir(Path(config["OUTPUT_ROOT"]))
 
     successful_results = []
     failed_results = []
     all_metadata = {
         "runtime_timestamp_utc": datetime.now(timezone.utc).isoformat(),
-        "config": json_safe(CONFIG),
-        "input_pairs": json_safe(INPUT_PAIRS),
+        "config": json_safe(config),
+        "input_pairs": json_safe(input_pairs),
         "successful_files": [],
         "failed_files": [],
-        "warnings": [],
+        "warnings": config_warnings,
         "outputs": {
-            "all_files_classification_summary_csv": str(Path(CONFIG["OUTPUT_ROOT"]) / "all_files_classification_summary.csv"),
-            "all_files_evaluation_summary_csv": str(Path(CONFIG["OUTPUT_ROOT"]) / "all_files_evaluation_summary.csv"),
-            "all_files_confusion_matrix_csv": str(Path(CONFIG["OUTPUT_ROOT"]) / "all_files_confusion_matrix.csv"),
-            "all_files_run_metadata_json": str(Path(CONFIG["OUTPUT_ROOT"]) / "all_files_run_metadata.json"),
+            "all_files_classification_summary_csv": str(Path(config["OUTPUT_ROOT"]) / "all_files_classification_summary.csv"),
+            "all_files_evaluation_summary_csv": str(Path(config["OUTPUT_ROOT"]) / "all_files_evaluation_summary.csv"),
+            "all_files_confusion_matrix_csv": str(Path(config["OUTPUT_ROOT"]) / "all_files_confusion_matrix.csv"),
+            "all_files_error_feature_summary_csv": str(Path(config["OUTPUT_ROOT"]) / "all_files_error_feature_summary.csv"),
+            "all_files_run_metadata_json": str(Path(config["OUTPUT_ROOT"]) / "all_files_run_metadata.json"),
         },
+        "reference_type": "3dep_transferred_pseudo_reference",
+        "learning_based_methods_used": False,
+        "supervised_training_used": False,
+        "pseudo_reference_used_only_for_evaluation": True,
+        "selected_rules_must_be_visually_validated": True,
     }
 
-    for input_pair in INPUT_PAIRS:
+    for input_pair in input_pairs:
         print(f"\n=== Processing pair: {input_pair['h5_path'].stem} ===")
-        result = process_one_pair(input_pair, CONFIG)
+        result = process_one_pair(input_pair, config)
         if result["status"] == "success":
             successful_results.append(result)
             all_metadata["successful_files"].append({
@@ -1910,11 +2656,12 @@ def main() -> None:
                 "metadata_path": str(result["metadata_path"]),
                 "error": result.get("error"),
             })
+
     write_all_files_outputs(
         successful_results=successful_results,
         failed_results=failed_results,
-        config=CONFIG,
-        input_pairs=INPUT_PAIRS,
+        config=config,
+        input_pairs=input_pairs,
         all_metadata=all_metadata,
     )
 

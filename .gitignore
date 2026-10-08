@@ -1,87 +1,35 @@
-# Byte-compiled / optimized / DLL files
+# Python and test artifacts
 __pycache__/
 *.py[cod]
-
-# C extensions
-*.so
-
-# Distribution / packaging
-.Python
-env/
-venv/
-ENV/
 *.egg-info/
-*.egg
 build/
 dist/
-*.manifest
-*.spec
-
-# Installer logs
-debug.log
-
-# Unit test / coverage reports
-htmlcov/
-.tox/
-.nox/
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-.hypothesis/
 .pytest_cache/
+.coverage*
+htmlcov/
+.mypy_cache/
+.ruff_cache/
 
-# Jupyter Notebook
-.ipynb_checkpoints
-
-# pyenv
-.python-version
-
-# Environments
+# Local environments and editor files
+.venv/
+venv/
+env/
 .env
 .env.*
-.venv
-.venv.*
-.compile_tmp
-
-Archive/
-tdms/
-
-# IDEs and editors
 .idea/
 .vscode/
 *.swp
 *.swo
 
-# Local files
-*.log
-*.bak
-*.tmp
-*.old
-*.orig
-*.rej
+# Local inputs, reusable data, and generated outputs are not source files
+/data/
+/outputs/
+/tdms/
+/Archive/
+/config/local/
+/casals_gui_settings.json
 
-# Windows
+# OS metadata
 Thumbs.db
 Desktop.ini
-$RECYCLE.BIN/
-*.lnk
-
-# macOS
 .DS_Store
-.AppleDouble
-.LSOverride
-
-# Temporary files
-*.tmp
-*.temp
-*.~
-
-*downloads
-drive-*
-*outputs*
-*data
-
-*mp4

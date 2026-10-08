@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "casals-research"
+version = "0.1.0"
+description = "CASALS L1B waveform, reference-height, geolocation, and 3DEP research workflows"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "h5py>=3.9",
+  "laspy[lazrs]>=2.5",
+  "matplotlib>=3.8",
+  "numpy>=1.24",
+  "pandas>=2.0",
+  "pyarrow>=14",
+  "pyproj>=3.6",
+  "rasterio>=1.3",
+  "requests>=2.31",
+  "scikit-learn>=1.3",
+  "scipy>=1.11",
+  "tabulate>=0.9",
+  "tqdm>=4.66",
+  "urllib3>=2.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+notebooks = ["ipykernel>=6.29", "ipywidgets>=8.1", "jupyterlab>=4.1", "plotly>=5.20", "seaborn>=0.13"]
+gui = ["nptdms>=1.10", "PyOpenGL>=3.1.7", "PyQt5>=5.15", "pyqtgraph>=0.13", "pyvista>=0.46", "pyvistaqt>=0.11"]
+visualization = ["opencv-python>=4.9", "open3d>=0.18"]
+
+[project.scripts]
+casals-export-refh = "scripts.export_refh_las:main"
+casals-filter-refh = "scripts.filter_refh_points:main"
+casals-waveform-features = "scripts.extract_waveform_features:main"
+casals-make-dsm = "scripts.make_refh_dsm:main"
+casals-extract-ground = "scripts.extract_refh_ground:main"
+casals-transfer-3dep = "scripts.transfer_3dep_labels_to_casals:main"
+casals-classify-refh = "scripts.classify_and_evaluate_refh:main"
+casals-diagnose-3dep = "scripts.diagnose_3dep_offsets:main"
+casals-detect-utm = "scripts.detect_h5_utm_zone:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["casals_l1b*", "scripts*", "experiments*", "casals_gui_app*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

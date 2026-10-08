@@ -89,7 +89,8 @@ class CASALSQtMainWindow(
 
         super().__init__()
         self.setWindowTitle("CASALS TDMS Viewer (Qt + PyVistaQt)")
-        self._settings_path = Path.cwd() / self.SETTINGS_FILENAME
+        project_root = Path(__file__).resolve().parents[1]
+        self._settings_path = project_root / "config" / "local" / self.SETTINGS_FILENAME
         self._settings_cache = self._load_settings()
         self._auto_layout_enabled = bool(
             self._settings_cache.get("qt_auto_layout", self.AUTO_LAYOUT_DEFAULT)

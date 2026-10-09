@@ -1,0 +1,54 @@
+[
+  {
+    "path": "data\\reference\\3dep\\casals_l1b_20241112T165718_001_02_MD_Southeast_1_2019_EPSG6347_39a068a77804.laz",
+    "size_bytes": 48263708,
+    "point_count": 9081045,
+    "crs": "PROJCS[\"NAD83(2011) / UTM zone 18N\",GEOGCS[\"NAD83(2011)\",DATUM[\"NAD83_National_Spatial_Reference_System_2011\",SPHEROID[\"GRS 1980\",6378137,298.257222101]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"6318\"]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",-75],PARAMETER[\"scale_factor\",0.9996],PARAMETER[\"false_easting\",500000],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH],AUTHORITY[\"EPSG\",\"6347\"]]",
+    "vlrs": [
+      {
+        "user_id": "LASF_Projection",
+        "record_id": 2112,
+        "description": "OGC Transformation Record"
+      },
+      {
+        "user_id": "liblas",
+        "record_id": 2112,
+        "description": "OGR variant of OpenGIS WKT SRS"
+      },
+      {
+        "user_id": "laszip encoded",
+        "record_id": 22204,
+        "description": "http://laszip.org"
+      }
+    ],
+    "creation_date": "2026-06-17",
+    "system_identifier": "PDAL",
+    "generating_software": "PDAL 2.10.0 (Releas)"
+  },
+  {
+    "path": "data\\reference\\3dep\\casals_l1b_20241118T171757_001_02_NC_HurricaneFlorence_9_2020_EPSG6347_f50533a04725.laz",
+    "size_bytes": 595959424,
+    "point_count": 117530910,
+    "crs": "PROJCS[\"NAD83(2011) / UTM zone 18N\",GEOGCS[\"NAD83(2011)\",DATUM[\"NAD83_National_Spatial_Reference_System_2011\",SPHEROID[\"GRS 1980\",6378137,298.257222101]],PRIMEM[\"Greenwich\",0],UNIT[\"degree\",0.0174532925199433,AUTHORITY[\"EPSG\",\"9122\"]],AUTHORITY[\"EPSG\",\"6318\"]],PROJECTION[\"Transverse_Mercator\"],PARAMETER[\"latitude_of_origin\",0],PARAMETER[\"central_meridian\",-75],PARAMETER[\"scale_factor\",0.9996],PARAMETER[\"false_easting\",500000],PARAMETER[\"false_northing\",0],UNIT[\"metre\",1],AXIS[\"Easting\",EAST],AXIS[\"Northing\",NORTH],AUTHORITY[\"EPSG\",\"6347\"]]",
+    "vlrs": [
+      {
+        "user_id": "LASF_Projection",
+        "record_id": 2112,
+        "description": "OGC Transformation Record"
+      },
+      {
+        "user_id": "liblas",
+        "record_id": 2112,
+        "description": "OGR variant of OpenGIS WKT SRS"
+      },
+      {
+        "user_id": "laszip encoded",
+        "record_id": 22204,
+        "description": "http://laszip.org"
+      }
+    ],
+    "creation_date": "2026-06-17",
+    "system_identifier": "PDAL",
+    "generating_software": "PDAL 2.10.0 (Releas)"
+  }
+]

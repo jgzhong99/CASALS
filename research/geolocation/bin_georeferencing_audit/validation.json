@@ -1,0 +1,50 @@
+{
+  "pytest": {
+    "command": "python -m pytest -q",
+    "exit_code": 0,
+    "stdout": ".................................                                        [100%]\n33 passed in 4.46s",
+    "stderr": ""
+  },
+  "compileall": {
+    "command": "python -m compileall -q research/geolocation/bin_georeferencing_audit tests",
+    "exit_code": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  "notebook": {
+    "executed_code_cells": 7,
+    "errors": 0
+  },
+  "full_audits": {
+    "casals_l1b_20241112T165718_001_02": {
+      "input_pulses": 3604480,
+      "parquet_rows": 3604480,
+      "no_missing_pulse_indices": true,
+      "required_output_schema": true,
+      "continuity_max_m": 1.8082284558573747e-09,
+      "h5_sha256_before_after_equal": true
+    },
+    "casals_l1b_20241118T171757_001_02": {
+      "input_pulses": 3604480,
+      "parquet_rows": 3604480,
+      "no_missing_pulse_indices": true,
+      "required_output_schema": true,
+      "continuity_max_m": 1.3590088221437924e-09,
+      "h5_sha256_before_after_equal": true
+    }
+  },
+  "production_diff_empty": true,
+  "smoke_completed_root": "outputs/research/bin_georeferencing_audit/smoke_20261009_v2",
+  "initial_smoke_attempt": "smoke_20261009 failed during boolean percentile summary; preserved, not accepted",
+  "evidence_level": 1,
+  "external_absolute_accuracy": "NOT VERIFIED",
+  "visual_qa": {
+    "inspected": "both reviewed morphology contact sheets, per-granule geometry/timing/beam and sweep/track residual figures, cross-granule figure",
+    "status": "PASS"
+  },
+  "source_hashes": {
+    "research\\geolocation\\bin_georeferencing_audit\\run_audit.py": "c79e1d25f25d8d472bbb39fe0b6243f5ae1456592f8de026997222c1d5621947",
+    "research\\geolocation\\bin_georeferencing_audit\\complete_report.py": "cd623accea9258e84498992c7295a8cc2c998b6e9f8ea7030726c023f1cf6516",
+    "tests\\test_bin_georeferencing_audit.py": "0edd25ee03f9480b44a4f5399817ae0de62eb7a202e38d1a99e60ae12c0b1108"
+  }
+}

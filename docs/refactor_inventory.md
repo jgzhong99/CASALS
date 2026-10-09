@@ -59,6 +59,6 @@ in total and exactly four active notebooks under `notebooks/`.
 ## Local-only and preserved material
 
 - Removed obsolete `backup.bat`, empty `.agents/` and `casals_l1b/docs/`, and the empty former `scripts/` and `experiments/` shells. The third round also removed the redundant Open3D LAS/LAZ viewer. Original and large data were preserved.
-- `.compile_tmp/` is ignored and untracked. Its local `casals_gui_3d_surface.html` remains in place; the obsolete `.pyc` was removed.
+- `.compile_tmp/` and `backup/` are ignored and untracked. Historical output trees are collected under `backup/outputs/`; `.compile_tmp/` remains local scratch, including `casals_gui_3d_surface.html`.
 - `config/local/casals_gui_settings.json` remains on disk but is untracked so workstation-specific settings are not published.
-- Original H5, TDMS, 3DEP reference inputs, `Archive/`, archived notebooks, and baseline outputs remain preserved.
+- Original H5, TDMS, 3DEP reference inputs, `Archive/`, archived notebooks, and baseline outputs remain preserved; prior output trees are under `backup/outputs/`.

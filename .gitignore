@@ -25,6 +25,7 @@ env/
 # Local inputs, reusable data, and generated outputs are not source files
 /data/
 /outputs/
+/backup/
 /tdms/
 /Archive/
 /config/local/

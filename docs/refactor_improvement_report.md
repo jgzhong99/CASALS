@@ -6,6 +6,13 @@ Scope: simplify the research CLI and shared code, separate prediction from
 evaluation, add peak geolocation and validation, rebuild the four active
 notebooks, and document verified behavior. No commit was created.
 
+Follow-up on 2026-10-09: historical output runs were moved under
+`backup/outputs/`. The active `outputs/` tree now contains current notebook
+products and current-code validation results only. Both directories remain
+local and ignored by Git. The move preserved 456 historical files
+(12,218,506,105 bytes); `outputs/` retains 80 current files
+(1,133,580,222 bytes).
+
 ## 1. Problems addressed
 
 - The command-line entry point had a wide flat surface and stale command

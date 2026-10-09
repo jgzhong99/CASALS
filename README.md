@@ -14,6 +14,7 @@ notebooks/        Four current real-data research notebooks
 casals_gui_app/   Qt TDMS viewer implementation; casals_gui.py is its launcher
 data/             Local raw and reference data (ignored by Git)
 outputs/          Local workflow results (ignored by Git)
+backup/           Archived results from earlier code (ignored by Git)
 docs/             Workflow, data, experiment, and refactor notes
 tests/            Small numerical and interface regression tests
 ```

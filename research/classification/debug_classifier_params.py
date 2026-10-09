@@ -1971,11 +1971,11 @@ def main(argv: Optional[list[str]] = None) -> None:
     default_pairs = [
         {
             "h5_path": Path("data/raw/casals_l1b/casals_l1b_20241112T165718_001_02.h5"),
-            "reference_laz_path": Path("outputs/baseline_pre_refactor/l1b_outputs/transfer_3dep_labels_to_casals/casals_l1b_20241112T165718_001_02.laz"),
+            "reference_laz_path": Path("backup/outputs/baseline_pre_refactor/l1b_outputs/transfer_3dep_labels_to_casals/casals_l1b_20241112T165718_001_02.laz"),
         },
         {
             "h5_path": Path("data/raw/casals_l1b/casals_l1b_20241118T171757_001_02.h5"),
-            "reference_laz_path": Path("outputs/baseline_pre_refactor/l1b_outputs/transfer_3dep_labels_to_casals/casals_l1b_20241118T171757_001_02.laz"),
+            "reference_laz_path": Path("backup/outputs/baseline_pre_refactor/l1b_outputs/transfer_3dep_labels_to_casals/casals_l1b_20241118T171757_001_02.laz"),
         },
     ]
 

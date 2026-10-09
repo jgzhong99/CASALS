@@ -3,6 +3,9 @@
 This inventory records the repository and local research assets before the
 refactor. Files below `data/`, `outputs/`, `tdms/`, `Archive/`, and the old
 `CASALS_L1B` data folders are local and ignored by Git unless stated otherwise.
+On 2026-10-09, historical root output trees were moved intact from `outputs/`
+to `backup/outputs/`; paths recorded inside historical metadata still identify
+where each run was originally written.
 
 ## Source baseline
 
@@ -22,6 +25,7 @@ refactor. Files below `data/`, `outputs/`, `tdms/`, `Archive/`, and the old
 | `CASALS_L1B/casals_h5_downloads/` | Two original CASALS L1B H5 files (14,082,437,919 and 14,039,701,685 bytes) | 2 | 28,122,139,604 | Preserve as raw inputs; do not rewrite. |
 | `tdms/` | Two original TDMS files, indexes, and local viewer support files | 9 | 37,904,264,158 | Preserve; move only the source TDMS assets. |
 | `CASALS_L1B/point_cloud_data/` | 13 LAS/LAZ files, including downloaded 3DEP clips and reusable refh/classification products | 13 | 1,817,693,012 | Preserve; distinguish 3DEP references from generated derived products. |
+| `CASALS_L1B/outputs/` | Existing workflow outputs, including tables, metadata, rasters, LAS/LAZ, and videos | 180 | 9,212,210,800 | Preserve until corresponding workflows have been rerun and compared. |
 | `CASALS_L1B/outputs/` | Existing workflow outputs, including tables, metadata, rasters, LAS/LAZ, and videos | 180 | 9,212,210,800 | Preserve until corresponding workflows have been rerun and compared. |
 | `outputs/` | Older root-level reports, metadata, tables, and visualization legend | 11 | 164,928 | Preserve as baseline evidence. |
 | `CASALS_L1B/beam_geolocation_rule_audit_outputs_revised/` | Geolocation audit tables and point-cloud exports | 18 | 35,846,036 | Preserve as research evidence. |

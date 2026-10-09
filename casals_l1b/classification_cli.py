@@ -440,6 +440,7 @@ def write_classified_laz(
     eval_match_valid: Optional[np.ndarray],
     config: Dict[str, Any],
     optional_extra_arrays: Optional[Dict[str, np.ndarray]] = None,
+    source_h5: Optional[Path] = None,
 ) -> None:
     ensure_dir(output_path.parent)
     header = laspy.LasHeader(point_format=6, version="1.4")
@@ -449,6 +450,8 @@ def write_classified_laz(
         math.floor(float(np.nanmin(y))),
         math.floor(float(np.nanmin(z))),
     ], dtype=np.float64)
+    if source_h5 is not None:
+        header.vlrs.append(laspy.VLR(user_id="CASALS", record_id=1, record_data=json.dumps({"source_h5": str(source_h5.resolve())}).encode()))
     header.system_identifier = "CASALS_L1B_REFH"
     header.generating_software = "classify_and_evaluate_casals_refh.py"
     try:
@@ -582,6 +585,8 @@ def write_summary_outputs(
         "true1_pred2_fraction_of_true1": metadata.get("true1_pred2_fraction_of_true1"),
         "true7_pred1_fraction_of_true7": metadata.get("true7_pred1_fraction_of_true7"),
         "reference_type": "3dep_transferred_pseudo_reference",
+        "metric_semantics": "pseudo-reference agreement",
+        "independent_accuracy_claim": False,
     }
     safe_json_dump(evaluation_json, output_paths["evaluation_summary_json"])
     safe_json_dump(metadata, output_paths["run_metadata_json"])
@@ -755,6 +760,7 @@ def classify_refh(
             optional_extra_arrays["sweep_hag_robust_z"] = scanline_features["sweep_hag_robust_z"]
 
         common_laz_kwargs = {
+            "source_h5": h5_path,
             "output_path": output_paths["classified_laz"],
             "projected_crs": projected_crs,
             "x": x,
@@ -850,6 +856,8 @@ def classify_refh(
         try:
             alignment = align_prediction_to_reference(
                 prediction={
+                    "source_h5": str(h5_path.resolve()),
+                    "refh_original_m": casals["z"],
                     "point_index": casals["point_index"],
                     "x": x,
                     "y": y,
@@ -878,11 +886,15 @@ def classify_refh(
                 reference_class_vote_ratio=reference_class_vote_ratio,
                 config=config,
             )
+            eval_match_valid = np.asarray(evaluation_metrics["primary_mask"], dtype=np.uint8)
             primary = evaluation_metrics["primary_metrics"]
-            print(f"Overall accuracy: {primary.get('accuracy', float('nan')):.6f}")
-            print(f"Macro F1: {primary.get('macro_f1', float('nan')):.6f}")
-            print(f"Weighted F1: {primary.get('weighted_f1', float('nan')):.6f}")
-            for cls in LABEL_ORDER:
+            if primary:
+                print(f"Pseudo-reference agreement: {primary['accuracy']:.6f}")
+                print(f"Macro F1: {primary['macro_f1']:.6f}")
+                print(f"Weighted F1: {primary['weighted_f1']:.6f}")
+            else:
+                print(f"Evaluation unavailable: {evaluation_metrics['subset_results']['strict']['reason']}")
+            for cls in LABEL_ORDER if primary else []:
                 per_class = primary.get("per_class_metrics", {}).get(cls, {})
                 print(
                     f"Class {cls} F1 / recall: "
@@ -996,6 +1008,8 @@ def classify_refh(
         metadata["reference_type"] = "3dep_transferred_pseudo_reference"
         metadata["learning_based_methods_used"] = False
         metadata["supervised_training_used"] = False
+        metadata["reference_alignment_mode"] = reference.get("alignment_mode", "unknown")
+        metadata["evaluation"] = {"status": evaluation_metrics["subset_results"]["strict"]["status"], "metric_semantics": "pseudo-reference agreement", "independent_accuracy_claim": False}
         metadata["pseudo_reference_used_only_for_evaluation"] = True
         metadata["selected_rules_must_be_visually_validated"] = True
         metadata["scientific_notes"] = {
@@ -1171,12 +1185,12 @@ def write_all_files_outputs(
             eval_gt_class=y_true,
             eval_match_valid=np.ones(y_true.size, dtype=np.uint8),
             dtm_sample_valid=np.ones(y_true.size, dtype=np.uint8),
-            reference_transfer_status=None,
+            reference_transfer_status=np.ones(y_true.size, dtype=np.uint8),
             reference_nearest3dep_dist_m=None,
             reference_class_vote_ratio=None,
             config=aggregate_config,
         )
-        subset = aggregate_metrics["subset_results"]["all_matched"]
+        subset = aggregate_metrics["subset_results"]["strict"]
         metric_names = (
             "n_points", "accuracy", "macro_precision", "macro_recall", "macro_f1",
             "weighted_precision", "weighted_recall", "weighted_f1",
@@ -1315,6 +1329,8 @@ def main(argv: Optional[list[str]] = None) -> None:
     if args.reference is not None:
         all_metadata.update({
             "reference_type": "3dep_transferred_pseudo_reference",
+        "metric_semantics": "pseudo-reference agreement",
+        "independent_accuracy_claim": False,
             "learning_based_methods_used": False,
             "supervised_training_used": False,
             "pseudo_reference_used_only_for_evaluation": True,

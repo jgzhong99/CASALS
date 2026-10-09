@@ -25,9 +25,10 @@ CLASS_NAME_MAP = {
 }
 
 CLASS_REASON_MAP = {
+    18: "noise_nonfinite_height",
     0: "unknown",
     1: "ground_abs_hag_within_tol",
-    2: "noise_invalid_dtm",
+    2: "unclassified_missing_dtm",
     3: "noise_below_ground",
     4: "noise_above_max_hag",
     5: "processed_unclassified_valid_hag",
@@ -807,13 +808,13 @@ def classify_points_baseline(
     pred = np.full(n, 7, dtype=np.uint8)
     reason = np.full(n, 0, dtype=np.uint8)
     invalid_dtm = ~valid_dtm
-    pred[invalid_dtm] = 7
+    pred[invalid_dtm] = 1
     reason[invalid_dtm] = 2
 
     valid_hag = valid_dtm & np.isfinite(hag)
     nonfinite_hag = valid_dtm & ~np.isfinite(hag)
     pred[nonfinite_hag] = 7
-    reason[nonfinite_hag] = 2
+    reason[nonfinite_hag] = 18
 
     density_threshold = config.get("NOISE_DENSITY_MAX_PTS_M3")
     density_enabled = density_threshold is not None and base_mode != "height_only"

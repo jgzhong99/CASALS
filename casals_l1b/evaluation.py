@@ -35,6 +35,8 @@ def read_reference_labels(reference_laz_path: Path) -> Dict[str, Any]:
         "y": np.asarray(las.y, dtype=np.float64),
         "z": np.asarray(las.z, dtype=np.float64),
         "available_extra_dims": sorted(dims),
+        "withheld": np.asarray(las.withheld, dtype=bool),
+        **point_source(las),
     }
     for name in [
         "point_index",
@@ -43,105 +45,67 @@ def read_reference_labels(reference_laz_path: Path) -> Dict[str, Any]:
         "transfer_status",
         "nearest3dep_dist_m",
         "class_vote_ratio",
+        "refh_original_m",
+        "z_original_m",
     ]:
         if name in dims:
             ref[name] = np.asarray(las[name])
+    if "z_original_m" in ref:
+        ref["refh_original_m"] = ref["z_original_m"]
     return ref
 
-def align_prediction_to_reference(
-    prediction: Dict[str, np.ndarray],
-    reference: Dict[str, Any],
-    config: Dict[str, Any],
-) -> Dict[str, Any]:
-    n_pred = int(prediction["point_index"].shape[0])
-    n_ref = int(reference["classification"].shape[0])
-    result: Dict[str, Any] = {
-        "eval_match_valid": np.zeros(n_pred, dtype=np.uint8),
-        "eval_gt_class_raw": np.zeros(n_pred, dtype=np.uint8),
-        "reference_transfer_status": None,
-        "reference_nearest3dep_dist_m": None,
-        "reference_class_vote_ratio": None,
-        "alignment_method": None,
-        "alignment_checks": {},
-    }
+def point_source(las) -> dict:
+    for vlr in las.header.vlrs:
+        if vlr.user_id == "CASALS" and vlr.record_id == 1:
+            return json.loads(vlr.record_data.decode("utf-8"))
+    return {}
 
-    if "point_index" in reference:
-        ref_idx = np.asarray(reference["point_index"], dtype=np.int64)
-        if ref_idx.shape[0] != n_ref:
-            raise ValueError("Reference point_index size does not match reference classification size.")
-        if np.any(ref_idx < 0) or np.any(ref_idx >= n_pred):
-            raise ValueError("Reference point_index contains values outside prediction range.")
-        ref_sorted = np.sort(ref_idx, kind="mergesort")
-        if np.any(ref_sorted[1:] == ref_sorted[:-1]):
-            raise ValueError("Reference point_index contains duplicates.")
 
-        match_valid = np.zeros(n_pred, dtype=np.uint8)
-        gt = np.zeros(n_pred, dtype=np.uint8)
-        gt[ref_idx] = np.asarray(reference["classification"], dtype=np.uint8)
-        match_valid[ref_idx] = 1
-        result["eval_match_valid"] = match_valid
-        result["eval_gt_class_raw"] = gt
-        result["alignment_method"] = "point_index"
+def align_prediction_to_reference(prediction, reference, config):
+    # Indices identify records only within the same original H5.
+    src = prediction.get("source_h5")
+    ref_src = reference.get("source_h5")
+    if not src or not ref_src or Path(src).resolve() != Path(ref_src).resolve():
+        raise ValueError("H5 provenance missing or different; evaluation unavailable.")
+    pi = np.asarray(prediction["point_index"], dtype=np.int64)
+    ri = np.asarray(reference.get("point_index", np.arange(len(reference["classification"]))), dtype=np.int64)
+    if len(np.unique(pi)) != len(pi) or len(np.unique(ri)) != len(ri):
+        raise ValueError("Duplicate point_index; identity ambiguous.")
+    order = np.argsort(pi)
+    pos = np.searchsorted(pi[order], ri)
+    if np.any(pos >= len(pi)) or np.any(pi[order][np.minimum(pos, len(pi)-1)] != ri):
+        raise ValueError("Reference indices absent from prediction.")
+    idx = order[pos]
+    checks = {}
+    for name, tolerance in (("longitude", config["ROW_ALIGN_LONLAT_TOL_DEG"]),
+                            ("latitude", config["ROW_ALIGN_LONLAT_TOL_DEG"]),
+                            ("refh_original_m", 0.001)):
+        if name not in prediction or name not in reference:
+            raise ValueError(f"Original {name} missing; coordinate identity unverified.")
+        left = np.asarray(prediction[name], dtype=float)[idx]
+        right = np.asarray(reference[name], dtype=float)
+        equal = np.isclose(left, right, rtol=0, atol=tolerance, equal_nan=True)
+        if not np.all(equal):
+            raise ValueError(f"Coordinate identity mismatch: {name}.")
+        checks[name] = "all_records_verified"
+    n = len(pi)
+    valid = np.zeros(n, dtype=np.uint8)
+    finite = np.isfinite(reference["longitude"]) & np.isfinite(reference["latitude"]) & np.isfinite(reference["refh_original_m"])
+    valid[idx] = finite & ~np.asarray(reference.get("withheld", np.zeros(len(ri))), dtype=bool)
+    gt = np.zeros(n, dtype=np.uint8)
+    gt[idx] = reference["classification"]
+    result = dict(eval_match_valid=valid, eval_gt_class_raw=gt,
+                  alignment_method="point_index_and_original_coordinates", alignment_checks=checks)
+    for field, output in (("transfer_status", "reference_transfer_status"),
+                          ("nearest3dep_dist_m", "reference_nearest3dep_dist_m"),
+                          ("class_vote_ratio", "reference_class_vote_ratio")):
+        result[output] = None
+        if field in reference:
+            values = np.full(n, -1 if field == "transfer_status" else np.nan)
+            values[idx] = reference[field]
+            result[output] = values
+    return result
 
-        for name in ["transfer_status", "nearest3dep_dist_m", "class_vote_ratio"]:
-            if name in reference:
-                aligned = (
-                    np.full(n_pred, np.nan, dtype=np.float64)
-                    if name != "transfer_status"
-                    else np.full(n_pred, -1, dtype=np.int16)
-                )
-                aligned[ref_idx] = np.asarray(reference[name])
-                if name == "transfer_status":
-                    result["reference_transfer_status"] = aligned.astype(np.int16)
-                elif name == "nearest3dep_dist_m":
-                    result["reference_nearest3dep_dist_m"] = aligned.astype(np.float64)
-                elif name == "class_vote_ratio":
-                    result["reference_class_vote_ratio"] = aligned.astype(np.float64)
-        return result
-
-    if n_ref != n_pred:
-        raise RuntimeError("Reference has no point_index and point counts differ; row-order alignment is not safe.")
-
-    fractions = tuple(config["ROW_ALIGN_CHECK_INDICES"])
-    sample_idx = sorted({int(np.clip(round(frac * (n_pred - 1)), 0, n_pred - 1)) for frac in fractions})
-    checks: Dict[str, Any] = {"sample_indices": sample_idx}
-
-    if "longitude" in reference and "latitude" in reference:
-        dlon = np.abs(np.asarray(reference["longitude"], dtype=np.float64)[sample_idx] - prediction["longitude"][sample_idx])
-        dlat = np.abs(np.asarray(reference["latitude"], dtype=np.float64)[sample_idx] - prediction["latitude"][sample_idx])
-        checks["max_abs_dlon_deg"] = float(np.max(dlon))
-        checks["max_abs_dlat_deg"] = float(np.max(dlat))
-        if float(np.max(dlon)) <= float(config["ROW_ALIGN_LONLAT_TOL_DEG"]) and float(np.max(dlat)) <= float(config["ROW_ALIGN_LONLAT_TOL_DEG"]):
-            result["eval_match_valid"] = np.ones(n_pred, dtype=np.uint8)
-            result["eval_gt_class_raw"] = np.asarray(reference["classification"], dtype=np.uint8)
-            result["alignment_method"] = "row_order_lonlat"
-            result["alignment_checks"] = checks
-            if "transfer_status" in reference:
-                result["reference_transfer_status"] = np.asarray(reference["transfer_status"], dtype=np.int16)
-            if "nearest3dep_dist_m" in reference:
-                result["reference_nearest3dep_dist_m"] = np.asarray(reference["nearest3dep_dist_m"], dtype=np.float64)
-            if "class_vote_ratio" in reference:
-                result["reference_class_vote_ratio"] = np.asarray(reference["class_vote_ratio"], dtype=np.float64)
-            return result
-
-    dx = np.abs(reference["x"][sample_idx] - prediction["x"][sample_idx])
-    dy = np.abs(reference["y"][sample_idx] - prediction["y"][sample_idx])
-    checks["max_abs_dx_m"] = float(np.max(dx))
-    checks["max_abs_dy_m"] = float(np.max(dy))
-    if float(np.max(dx)) <= float(config["ROW_ALIGN_XY_TOL_M"]) and float(np.max(dy)) <= float(config["ROW_ALIGN_XY_TOL_M"]):
-        result["eval_match_valid"] = np.ones(n_pred, dtype=np.uint8)
-        result["eval_gt_class_raw"] = np.asarray(reference["classification"], dtype=np.uint8)
-        result["alignment_method"] = "row_order_xy"
-        result["alignment_checks"] = checks
-        if "transfer_status" in reference:
-            result["reference_transfer_status"] = np.asarray(reference["transfer_status"], dtype=np.int16)
-        if "nearest3dep_dist_m" in reference:
-            result["reference_nearest3dep_dist_m"] = np.asarray(reference["nearest3dep_dist_m"], dtype=np.float64)
-        if "class_vote_ratio" in reference:
-            result["reference_class_vote_ratio"] = np.asarray(reference["class_vote_ratio"], dtype=np.float64)
-        return result
-
-    raise RuntimeError("Reference and prediction could not be aligned safely by row order.")
 
 def map_reference_labels_to_baseline_classes(reference_class_raw: np.ndarray) -> np.ndarray:
     ref = np.asarray(reference_class_raw, dtype=np.uint8)
@@ -230,28 +194,31 @@ def evaluate_classification(
     config: Dict[str, Any],
 ) -> Dict[str, Any]:
     matched = np.asarray(eval_match_valid, dtype=bool)
-    if config["EVAL_REQUIRE_TRANSFER_STATUS"] is not None and reference_transfer_status is None:
-        raise RuntimeError("EVAL_REQUIRE_TRANSFER_STATUS is set but reference transfer_status is unavailable.")
 
     base_mask = matched.copy()
     if bool(config["EVAL_REQUIRE_VALID_DTM"]):
         base_mask &= np.asarray(dtm_sample_valid, dtype=bool)
     if bool(config["EVAL_IGNORE_REFERENCE_NOISE"]):
         base_mask &= np.asarray(eval_gt_class, dtype=np.uint8) != 7
-    if config["EVAL_REQUIRE_TRANSFER_STATUS"] is not None:
+    if config["EVAL_REQUIRE_TRANSFER_STATUS"] is not None and reference_transfer_status is not None:
         required = config["EVAL_REQUIRE_TRANSFER_STATUS"]
         required_values = [int(required)] if np.isscalar(required) else [int(v) for v in required]
         base_mask &= np.isin(np.asarray(reference_transfer_status), required_values)
 
-    subset_masks: Dict[str, np.ndarray] = {"all_matched": base_mask}
-    if reference_nearest3dep_dist_m is not None and reference_class_vote_ratio is not None:
-        subset_masks["high_confidence_reference"] = (
-            base_mask
-            & np.isfinite(reference_nearest3dep_dist_m)
-            & np.isfinite(reference_class_vote_ratio)
-            & (reference_nearest3dep_dist_m <= float(config["HIGH_CONF_NEAREST3DEP_DIST_M"]))
-            & (reference_class_vote_ratio >= float(config["HIGH_CONF_CLASS_VOTE_RATIO_MIN"]))
-        )
+    statuses = np.full(matched.size, -1) if reference_transfer_status is None else np.asarray(reference_transfer_status)
+    if reference_nearest3dep_dist_m is not None:
+        base_mask &= np.isfinite(reference_nearest3dep_dist_m) & (reference_nearest3dep_dist_m >= 0)
+    if reference_class_vote_ratio is not None:
+        base_mask &= np.isfinite(reference_class_vote_ratio) & (reference_class_vote_ratio > 0) & (reference_class_vote_ratio <= 1)
+    subset_masks = {"strict": base_mask & (statuses == 1),
+                    "strict_plus_weak": base_mask & np.isin(statuses, [1, 2])}
+    population = {"total_points": int(matched.size), "aligned_points": int(matched.sum()),
+                  "valid_reference_points": int(np.count_nonzero(base_mask & (statuses == 1))),
+                  "strict_plus_weak_reference_points": int(np.count_nonzero(base_mask & np.isin(statuses, [1, 2]))),
+                  "match_status_counts": {str(int(v)): int(np.count_nonzero(statuses == v)) for v in np.unique(statuses)},
+                  "metric_semantics": "pseudo-reference agreement",
+                  "class_mapping": "vegetation/building and other non-ground/non-noise classes merged into unclassified",
+                  "independent_accuracy_claim": False}
 
     subset_results: Dict[str, Any] = {}
     evaluation_summary_rows: list[Dict[str, Any]] = []
@@ -268,7 +235,8 @@ def evaluate_classification(
             "mask_count": int(np.count_nonzero(subset_mask)),
         }
         if y_true.size == 0:
-            subset_result["status"] = "no_points_after_filtering"
+            subset_result.update(status="evaluation unavailable", reason="missing reliable transfer status" if reference_transfer_status is None else "no eligible reference points")
+            evaluation_summary_rows.append({**subset_result, **population, "coverage": 0.0})
             subset_results[subset_name] = subset_result
             continue
 
@@ -361,6 +329,7 @@ def evaluate_classification(
             })
 
         subset_result.update({
+            **population, "coverage": float(y_true.size / matched.size) if matched.size else 0.0,
             "status": "ok",
             "accuracy": accuracy,
             "macro_precision": float(macro[0]),
@@ -392,6 +361,7 @@ def evaluate_classification(
         })
         subset_results[subset_name] = subset_result
         evaluation_summary_rows.append({
+            **population, "status": "ok", "coverage": float(y_true.size / matched.size) if matched.size else 0.0,
             "subset_name": subset_name,
             "n_points": int(y_true.size),
             "accuracy": accuracy,
@@ -415,7 +385,7 @@ def evaluate_classification(
             **error_counts,
         })
 
-        if subset_name == "all_matched":
+        if subset_name == "strict":
             primary_report_df = pd.DataFrame(report_rows)
             primary_confusion_df = pd.DataFrame(confusion_rows)
             primary_metrics = {
@@ -427,6 +397,7 @@ def evaluate_classification(
             }
 
     return {
+        "primary_mask": subset_masks["strict"],
         "subset_results": subset_results,
         "evaluation_summary_rows": evaluation_summary_rows,
         "primary_report_df": primary_report_df,
@@ -448,6 +419,7 @@ def main(argv: list[str] | None = None) -> int:
     if "point_index" not in dims:
         parser.error("prediction LAS/LAZ must contain the point_index extra dimension")
     prediction: Dict[str, np.ndarray] = {
+        **point_source(prediction_las),
         "point_index": np.asarray(prediction_las.point_index, dtype=np.int64),
         "x": np.asarray(prediction_las.x, dtype=np.float64),
         "y": np.asarray(prediction_las.y, dtype=np.float64),
@@ -455,6 +427,8 @@ def main(argv: list[str] | None = None) -> int:
     if "longitude" in dims and "latitude" in dims:
         prediction["longitude"] = np.asarray(prediction_las.longitude, dtype=np.float64)
         prediction["latitude"] = np.asarray(prediction_las.latitude, dtype=np.float64)
+    if "refh_original_m" in dims:
+        prediction["refh_original_m"] = np.asarray(prediction_las.refh_original_m)
     reference = read_reference_labels(args.reference)
     config_overrides = {} if args.config is None else json.loads(args.config.read_text(encoding="utf-8"))
     config, _ = normalize_config({**DEFAULT_CONFIG, **config_overrides})
@@ -488,6 +462,8 @@ def main(argv: list[str] | None = None) -> int:
         "prediction": str(args.prediction.resolve()),
         "reference": str(args.reference.resolve()),
         "reference_type": "transferred_3dep_pseudo_reference",
+        "reference_alignment_mode": reference.get("alignment_mode", "unknown"),
+        "metric_semantics": "pseudo-reference agreement",
         "alignment_method": alignment["alignment_method"],
         "alignment_checks": alignment.get("alignment_checks", {}),
         "evaluation_population": {name: result.get("n_points", 0) for name, result in subsets.items()},

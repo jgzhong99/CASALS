@@ -244,6 +244,7 @@ class ClipPlan:
     las_scale_y: float
     las_scale_z: float
     output_format: str
+    ept_schema_json: str = "[]"
 
 
 @dataclass(frozen=True)
@@ -977,6 +978,7 @@ def build_clip_plan(cfg: Config, fp: H5Footprint, ref: WorkunitRef, ept: EptReso
         las_scale_y=float(ept.las_scale_y),
         las_scale_z=float(ept.las_scale_z),
         output_format=cfg.output_format,
+        ept_schema_json=ept.schema_json,
     )
 
 
@@ -992,6 +994,8 @@ def sidecar_payload(cfg: Config, fp: H5Footprint, plan: ClipPlan, result: ClipRe
             "3DEP clips here are EPT-derived clips, not archival source LAZ copies, and no vertical datum transform is applied.",
         ],
         "source_h5": fp.source_h5,
+        "casals_frame": {"horizontal": "WGS84", "vertical": "WGS84 ellipsoidal height", "status": "pending verification assumption"},
+        "crs_processing": {"source_wkt": plan.ept_srs_wkt, "output_wkt": plan.output_srs_wkt, "vertical_crs_workunit": plan.vert_crs or "vertical_crs_unknown", "geoid_workunit": plan.geoid or None, "operation": "explicit 2D horizontal reprojection; original source Z restored", "full_xyz_transformation": False, "historical_sidecars": "old vertical_datum_transform_applied flag was a declaration, not a measured Z audit"},
         "casals_footprint": asdict(fp),
         "clip_plan": asdict(plan),
         "config_subset": {
@@ -1080,6 +1084,51 @@ def run_pdal_info_summary(path: Path) -> tuple[str, int, str]:
         return "failed", -1, f"{type(exc).__name__}: {exc}"
 
 
+def build_clip_pipeline(cfg: Config, plan: ClipPlan, tmp_out: Path) -> list[dict[str, Any]]:
+    polygon_clause = f"{plan.clip_polygon_wkt}/{plan.clip_crs}"
+
+    writer: dict[str, Any] = {
+        "type": "writers.las",
+        "filename": str(tmp_out),
+        "minor_version": plan.las_minor_version,
+        "dataformat_id": plan.las_dataformat_id,
+        "extra_dims": "all",
+        "scale_x": plan.las_scale_x,
+        "scale_y": plan.las_scale_y,
+        "scale_z": plan.las_scale_z,
+        "offset_x": cfg.las_offset,
+        "offset_y": cfg.las_offset,
+        "offset_z": cfg.las_offset,
+        "compression": cfg.output_format == "laz",
+    }
+    if plan.output_srs_wkt:
+        writer["a_srs"] = plan.output_srs_wkt
+
+    pipeline_spec: list[dict[str, Any]] = [
+        {"type": "readers.ept", "filename": plan.ept_url, "polygon": polygon_clause},
+    ]
+    if plan.horizontal_reprojection_applied:
+        source = CRS.from_user_input(plan.ept_srs_wkt or plan.ept_srs_user_input).to_2d()
+        target = CRS.from_user_input(plan.output_srs_wkt or plan.output_crs_user_input).to_2d()
+        pipeline_spec.extend([
+            {"type": "filters.ferry", "dimensions": "Z=>CASALSOriginalZ"},
+            {"type": "filters.reprojection", "in_srs": source.to_wkt(), "out_srs": target.to_wkt()},
+            {"type": "filters.ferry", "dimensions": "CASALSOriginalZ=>Z"},
+        ])
+        # Keep source extras, but do not persist the temporary Z audit dimension.
+        standard = set("X Y Z Intensity ReturnNumber NumberOfReturns ScanDirectionFlag EdgeOfFlightLine Classification ScanAngleRank ScanAngle UserData PointSourceId GpsTime Red Green Blue Infrared ScanChannel ClassFlags Synthetic KeyPoint Withheld Overlap".split())
+        extras = []
+        for dim in json.loads(plan.ept_schema_json):
+            if dim["name"] not in standard:
+                kind = {"floating": "float", "signed": "int", "unsigned": "uint"}[dim["type"]]
+                dtype = "double" if kind == "float" and dim["size"] == 8 else "float" if kind == "float" else f"{kind}{dim['size'] * 8}"
+                extras.append(f"{dim['name']}={dtype}")
+        writer["extra_dims"] = ",".join(extras)
+    pipeline_spec.append(writer)
+
+    return pipeline_spec
+
+
 def extract_one_clip(cfg: Config, fp: H5Footprint, plan: ClipPlan) -> ClipResult:
     out = Path(plan.output_path)
     sidecar = Path(plan.sidecar_path)
@@ -1120,31 +1169,7 @@ def extract_one_clip(cfg: Config, fp: H5Footprint, plan: ClipPlan) -> ClipResult
     pdal = get_pdal_module()
     tmp_out = out.parent / f"{out.stem}.part{out.suffix}"
     tmp_sidecar = sidecar.with_suffix(sidecar.suffix + ".tmp")
-    polygon_clause = f"{plan.clip_polygon_wkt}/{plan.clip_crs}"
-
-    writer: dict[str, Any] = {
-        "type": "writers.las",
-        "filename": str(tmp_out),
-        "minor_version": plan.las_minor_version,
-        "dataformat_id": plan.las_dataformat_id,
-        "extra_dims": "all",
-        "scale_x": plan.las_scale_x,
-        "scale_y": plan.las_scale_y,
-        "scale_z": plan.las_scale_z,
-        "offset_x": cfg.las_offset,
-        "offset_y": cfg.las_offset,
-        "offset_z": cfg.las_offset,
-        "compression": cfg.output_format == "laz",
-    }
-    if plan.output_srs_wkt:
-        writer["a_srs"] = plan.output_srs_wkt
-
-    pipeline_spec: list[dict[str, Any]] = [
-        {"type": "readers.ept", "filename": plan.ept_url, "polygon": polygon_clause},
-    ]
-    if plan.horizontal_reprojection_applied:
-        pipeline_spec.append({"type": "filters.reprojection", "out_srs": plan.output_srs_wkt or plan.output_crs_user_input})
-    pipeline_spec.append(writer)
+    pipeline_spec = build_clip_pipeline(cfg, plan, tmp_out)
 
     try:
         if tmp_out.exists():
@@ -1172,13 +1197,23 @@ def extract_one_clip(cfg: Config, fp: H5Footprint, plan: ClipPlan) -> ClipResult
             pdal_info_point_count=pdal_count,
             error_message="",
         )
-        write_json(tmp_sidecar, sidecar_payload(cfg, fp, plan, result))
+        processing = sidecar_payload(cfg, fp, plan, result)
+        z_audit = {"status": "native Z retained without reprojection"}
+        if plan.horizontal_reprojection_applied:
+            max_change = max(float(np.max(np.abs(view["Z"] - view["CASALSOriginalZ"]))) for view in pipeline.arrays if len(view))
+            if not np.isfinite(max_change) or max_change != 0:
+                raise RuntimeError("Source Z restoration audit failed.")
+            z_audit = {"status": "source/output Z verified before LAS quantization", "max_abs_z_change_m": max_change}
+        processing["crs_processing"]["z_audit"] = z_audit
+        processing["crs_processing"].update(pdal_pipeline=pipeline_spec, pdal_metadata=pipeline.metadata, z_restoration="Z copied back from CASALSOriginalZ before writing; no datum conversion")
+        write_json(tmp_sidecar, processing)
         tmp_out.replace(out)
         tmp_sidecar.replace(sidecar)
         if cfg.run_pdal_info_postcheck:
             pdal_status, pdal_count, pdal_msg = run_pdal_info_summary(out)
             result = ClipResult(**{**asdict(result), "bytes_written": int(out.stat().st_size), "pdal_info_status": pdal_status, "pdal_info_point_count": pdal_count, "error_message": pdal_msg})
-            write_json(sidecar, sidecar_payload(cfg, fp, plan, result))
+            processing["clip_result"] = asdict(result)
+            write_json(sidecar, processing)
         return result
     except Exception as exc:
         try:

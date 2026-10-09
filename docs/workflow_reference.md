@@ -62,7 +62,7 @@ They use explicit local data paths and package APIs. Missing inputs produce an a
 
 ## 3DEP comparisons
 
-Downloaded clips are EPT-derived products, not archival copies of source USGS tiles. The label-transfer workflow estimates an empirical ground alignment term and stores match status, distance, and voting fields. Treat its labels as pseudo-reference. It does not modify source H5 inputs or certify vertical datum agreement.
+Downloaded clips are EPT-derived products, not archival copies of source USGS tiles. The label-transfer workflow defaults to `verified_crs` and requires confirmed complete source/target frames plus an available audited PROJ operation. Explicit `--alignment-mode empirical_diagnostic` permits exploratory ground dz alignment, marked `empirical_alignment`; it is not a datum transformation. Far/ambiguous points remain unclassified. Evaluation checks original H5 and coordinate identity, reports strict and strict+weak pseudo-reference agreement with coverage, and excludes unsupported points. Missing DTM alone leaves classifier points unclassified. See [3dep_reference.md](3dep_reference.md) for evidence, commands, limitations and smoke results.
 
 ## Research records
 

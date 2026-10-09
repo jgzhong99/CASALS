@@ -167,7 +167,7 @@ def test_classification_core_preserves_baseline_class_and_reason_mapping():
         point_density_pts_m3=np.full(6, np.nan),
         config=config,
     )
-    assert result["pred_class_baseline"].tolist() == [2, 2, 1, 7, 7, 7]
+    assert result["pred_class_baseline"].tolist() == [2, 2, 1, 7, 7, 1]
     assert result["classification_reason"].tolist() == [1, 1, 5, 4, 3, 2]
     assert np.allclose(
         result["height_above_ground_m"][:5], [0.0, 0.1, 1.5, 4.0, -3.0]

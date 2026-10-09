@@ -56,7 +56,7 @@ except Exception:
 
 
 FINAL_NOT_COMPUTED_MESSAGE = (
-    "Final CASALS accuracy against 3DEP was not computed because CASALS heights "
+    "Conditional reference residuals (not independent accuracy) against 3DEP was not computed because CASALS heights "
     "were not verified or converted into the 3DEP vertical reference frame."
 )
 FINAL_COMPUTED_MESSAGE = (
@@ -425,7 +425,7 @@ def build_3dep_reference_frame(
         vertical_crs = vertical_from_las
         vertical_source = "LAS compound CRS"
         reference_frame_status = "reference_frame_vertical_verified_from_las"
-    elif explicit_3dep_vertical_crs is not None:
+    elif explicit_3dep_vertical_crs is not None and not is_blank(explicit_3dep_vertical_crs_reason):
         vertical_crs = explicit_3dep_vertical_crs
         vertical_source = "explicit verified configuration"
         reference_frame_status = "reference_frame_vertical_verified_from_configuration"
@@ -454,6 +454,78 @@ def build_3dep_reference_frame(
         warnings=warnings_list,
     )
     return horizontal_crs, vertical_crs, info
+
+
+def resolve_reference_frame(dep_crs, sidecar_path=None, ept_metadata_path=None, workunit_metadata_path=None):
+    """Resolve evidence, never infer a vertical datum from a horizontal EPSG."""
+    evidence = []
+    legacy_clip = False
+    vertical_claims = []
+    geoid = None
+    for path in (sidecar_path, ept_metadata_path, workunit_metadata_path):
+        if path is None:
+            continue
+        payload = json.loads(Path(path).read_text(encoding="utf-8-sig"))
+        plan = payload.get("clip_plan", payload)
+        if "clip_plan" in payload and "crs_processing" not in payload:
+            legacy_clip = True
+        evidence.append(str(Path(path).resolve()))
+        output_wkt = plan.get("output_srs_wkt") or plan.get("output_crs_user_input")
+        if output_wkt and not CRS.from_user_input(output_wkt).to_2d().equals(dep_crs.to_2d()):
+            raise ValueError("Sidecar output horizontal CRS disagrees with LAS header.")
+        value = plan.get("vert_crs") or plan.get("vertical_crs")
+        if value:
+            vertical_claims.append(CRS.from_user_input(f"EPSG:{value}" if str(value).isdigit() else value))
+        geoid = plan.get("geoid") or plan.get("geoid_model") or geoid
+        srs = payload.get("srs", {})
+        if srs.get("wkt"):
+            _, v, _ = split_horizontal_vertical_crs(CRS.from_wkt(srs["wkt"]))
+            if v is not None:
+                vertical_claims.append(v)
+    _, header_vertical, _ = split_horizontal_vertical_crs(dep_crs)
+    if header_vertical is not None:
+        vertical_claims.append(header_vertical)
+    if vertical_claims and any(not v.equals(vertical_claims[0]) for v in vertical_claims):
+        raise ValueError("Conflicting vertical CRS evidence.")
+    vertical = vertical_claims[0] if vertical_claims else None
+    horizontal, vertical, info = build_3dep_reference_frame(dep_crs, vertical, "; ".join(evidence) or None)
+    info.geoid_model_or_source = geoid
+    if vertical is not None and header_vertical is None:
+        info.vertical_crs_source = "; ".join(evidence)
+        info.warnings.append("Work-unit vertical metadata describes source Z; historical clip Z preservation must be audited separately.")
+        if legacy_clip:
+            info.reference_frame_status = "source_vertical_confirmed_clip_processing_unverified"
+    return horizontal, vertical, info
+
+
+def transform_verified_xyz(xyz, source_crs, target_crs, *, source_verified, target_verified, bounds_lonlat=None):
+    """Use the exact audited PROJ operation; fail on missing required grids."""
+    source_crs, target_crs = CRS(source_crs), CRS(target_crs)
+    if not source_verified or not target_verified:
+        raise ValueError("Source/target CRS verification required; CASALS WGS84 ellipsoidal height remains an assumption unless confirmed.")
+    for crs in (source_crs, target_crs):
+        if len(crs.axis_info) < 3:
+            raise ValueError("vertical_crs_unknown: a 2D CRS is not a complete XYZ frame.")
+    group = build_transformer_group(source_crs, target_crs, bounds_lonlat)
+    missing = collect_missing_grids(group)
+    if not group.best_available or not group.transformers:
+        raise RuntimeError(f"Required transformation unavailable; missing grids: {missing}")
+    transformer = group.transformers[0]
+    if "ballpark" in transformer.description.lower():
+        raise RuntimeError("Ballpark operation is not a verified XYZ transform.")
+    xyz = np.asarray(xyz, dtype=float)
+    output = np.column_stack(transformer.transform(*xyz.T, errcheck=True))
+    if not np.all(np.isfinite(output)):
+        raise RuntimeError("Nonfinite transformed coordinates.")
+    delta = output[:, 2] - xyz[:, 2]
+    audit = {"operation": transformer.description, "pipeline": transformer.definition,
+             "accuracy_m": transformer.accuracy, "best_available": bool(group.best_available),
+             "unavailable_alternative_grids": missing,
+             "selected_grids": [{"name": g.short_name, "available": g.available} for op in transformer.operations for g in op.grids],
+             "source_crs": source_crs.to_wkt(), "target_crs": target_crs.to_wkt(),
+             "z_change_min_m": float(np.min(delta)), "z_change_max_m": float(np.max(delta)),
+             "z_change_median_m": float(np.median(delta)), "status": "verified_crs"}
+    return output, audit
 
 
 def list_h5_datasets(h5: h5py.File) -> list[str]:
@@ -1174,7 +1246,10 @@ def convert_casals_to_target_compound_crs_with_pyproj(
 
     out = df.copy()
     try:
-        transformer = build_transformer(CRS.from_epsg(4979), dst_crs, bounds_lonlat=bounds_lonlat)
+        group = build_transformer_group(CRS.from_epsg(4979), dst_crs, bounds_lonlat)
+        if not group.best_available or not group.transformers:
+            raise RuntimeError("Required compound transformation/grid unavailable.")
+        transformer = group.transformers[0]
         x_out, y_out, z_out = transformer.transform(
             out["lon"].to_numpy(dtype=np.float64),
             out["lat"].to_numpy(dtype=np.float64),
@@ -1200,8 +1275,6 @@ def enforce_pyproj_reference_audit(
         return
     if audit.best_available is False:
         raise RuntimeError("pyproj reports best_available=False for the CASALS-to-3DEP reference transform.")
-    if audit.missing_grids:
-        raise RuntimeError("pyproj reports missing grids for the CASALS-to-3DEP reference transform.")
     if audit.status in {
         "no_transformer_available",
         "best_transformation_unavailable",
@@ -2048,6 +2121,9 @@ def main(argv: Optional[list[str]] = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--h5", type=Path, required=True, help="CASALS L1B H5 input.")
     parser.add_argument("--reference", action="append", type=Path, required=True, help="3DEP reference LAS/LAZ; repeat to compare multiple clips.")
+    parser.add_argument("--reference-sidecar", type=Path)
+    parser.add_argument("--ept-metadata", type=Path)
+    parser.add_argument("--workunit-metadata", type=Path)
     parser.add_argument("--output-dir", type=Path, help="Output directory (default: outputs/reference/<h5-stem>/diagnose).")
     args = parser.parse_args(argv)
 
@@ -2153,10 +2229,8 @@ def main(argv: Optional[list[str]] = None) -> None:
     )
 
     log_step(3, total_steps, "Build 3DEP reference-frame contract")
-    dep_horizontal_crs, target_vertical_crs, reference_frame_info = build_3dep_reference_frame(
-        dep_crs,
-        explicit_3dep_vertical_crs=explicit_3dep_vertical_crs,
-        explicit_3dep_vertical_crs_reason=explicit_3dep_vertical_crs_reason,
+    dep_horizontal_crs, target_vertical_crs, reference_frame_info = resolve_reference_frame(
+        dep_crs, args.reference_sidecar, args.ept_metadata, args.workunit_metadata
     )
     if explicit_3dep_vertical_crs is not None and is_blank(explicit_3dep_vertical_crs_reason):
         if strict_reference_mode:
@@ -2356,7 +2430,7 @@ def main(argv: Optional[list[str]] = None) -> None:
         strict_block_reason = FINAL_NOT_COMPUTED_MESSAGE
 
     if final_accuracy_stats is not None:
-        reference_frame_info.geoid_model_or_source = matched.get("casals_height_conversion_formula", pd.Series(["unknown"])).iloc[0]
+        # Retain the geoid evidence rather than replacing it with a fitted formula.
         reference_frame_info.reference_frame_status = "final_reference_frame_available"
     else:
         if casals_height_conversion_mode in {"h5_geoid", "compare_h5_geoid_and_proj_grid"}:

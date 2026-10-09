@@ -9,16 +9,9 @@ Input:
   2. A clipped 3DEP LAS/LAZ file containing XYZ and LAS classification.
 
 Workflow:
-  1. Read CASALS refh points.
-  2. Read 3DEP points and classification.
-  3. Project CASALS lon/lat into the 3DEP horizontal CRS.
-  4. Use 3DEP class-2 ground and CASALS high-SNR local-low ground-like points
-     to estimate a single empirical vertical shift dz.
-  5. Apply dz to CASALS Z.
-  6. Transfer 3DEP labels to CASALS points by nearest-neighbor / kNN voting in
-     aligned 3D space.
-  7. If a CASALS point is too far from the 3DEP point cloud, write LAS class 7.
-  8. Export the labeled CASALS point cloud as LAS or LAZ.
+  Verified complete source/target CRS: audit and apply the PROJ XYZ operation.
+  Explicit empirical_diagnostic: project XY and fit exploratory ground dz.
+  Transfer reliable 3DEP classes; far/ambiguous points remain unclassified.
 
 Scientific notes
 ----------------
@@ -26,9 +19,9 @@ Scientific notes
   points, not a formal waveform-decomposed multi-return point cloud.
 - The estimated dz is an empirical ground-to-ground vertical alignment term.
   It is NOT a rigorous geoid/datum transformation.
-- The output LAS/LAZ coordinates are CASALS horizontal coordinates projected
-  into the 3DEP horizontal CRS, with Z shifted by the empirical dz. Treat this
-  as a pseudo-labeled analysis product, not as an official geodetic product.
+- Output coordinates use the audited target XYZ frame in verified_crs mode,
+  or projected XY plus exploratory dz in empirical_diagnostic mode. Transferred
+  labels remain pseudo-reference rather than independent ground truth.
 - LAS classification stores the transferred/evaluation class. Extra dimensions
   store transfer status, vote ratio, nearest 3DEP distance, and alignment audit
   fields so that labels can be filtered later.
@@ -60,19 +53,21 @@ import pandas as pd
 from pyproj import CRS, Transformer
 from scipy.spatial import cKDTree
 
-from casals_l1b.geo import infer_wgs84_utm_epsg
+from casals_l1b.geo import horizontal_crs_only
+from research.reference.diagnose_3dep_offsets import (resolve_reference_frame, build_target_compound_crs, transform_verified_xyz)
+from dataclasses import asdict
 
 
 LAS_CLASS_LOW_NOISE = 7
 
-STATUS_FAR_NO_MATCH_NOISE = 0
+STATUS_FAR_NO_MATCH = 0
 STATUS_STRICT = 1
 STATUS_WEAK = 2
 STATUS_AMBIGUOUS_NEAR = 3
 STATUS_NONFINITE_NOISE = 4
 
 STATUS_NAMES = {
-    STATUS_FAR_NO_MATCH_NOISE: "far_no_match_noise",
+    STATUS_FAR_NO_MATCH: "far_no_match",
     STATUS_STRICT: "strict_3dep_label",
     STATUS_WEAK: "weak_3dep_label",
     STATUS_AMBIGUOUS_NEAR: "ambiguous_near_3dep",
@@ -167,16 +162,6 @@ def collect_class_counts(cls: np.ndarray) -> Dict[int, int]:
     return {int(v): int(c) for v, c in zip(vals, counts)}
 
 
-def horizontal_crs_only(crs: CRS) -> CRS:
-    try:
-        if crs.is_compound:
-            for sub in crs.sub_crs_list:
-                if sub.is_projected or sub.is_geographic:
-                    return sub
-    except Exception:
-        pass
-    return crs
-
 
 def find_dataset_path(h5: h5py.File, candidates: Sequence[str], required: bool = True) -> Optional[str]:
     all_paths: List[str] = []
@@ -210,18 +195,18 @@ def find_dataset_path(h5: h5py.File, candidates: Sequence[str], required: bool =
     return None
 
 
-def read_optional_dataset(h5: h5py.File, candidates: Sequence[str], n: int) -> Tuple[Optional[np.ndarray], Optional[str]]:
+def read_optional_dataset(h5: h5py.File, candidates: Sequence[str], n: int, selection=slice(None)) -> Tuple[Optional[np.ndarray], Optional[str]]:
     path = find_dataset_path(h5, candidates, required=False)
     if path is None:
         return None, None
-    arr = np.asarray(h5[path][...]).reshape(-1)
+    arr = np.asarray(h5[path][selection]).reshape(-1)
     if arr.size != n:
         print(f"[WARN] Optional dataset {path} has size {arr.size}, expected {n}; ignored.")
         return None, None
     return arr, path
 
 
-def read_casals_h5(h5_path: Path) -> Dict[str, Any]:
+def read_casals_h5(h5_path: Path, selection=slice(None)) -> Dict[str, Any]:
     print(f"[INFO] Reading CASALS H5: {h5_path}")
     fields: Dict[str, np.ndarray] = {}
     source: Dict[str, str] = {}
@@ -231,14 +216,15 @@ def read_casals_h5(h5_path: Path) -> Dict[str, Any]:
         lat_path = find_dataset_path(h5, ["refh_latitude", "latitude", "lat"])
         z_path = find_dataset_path(h5, ["refh", "refh_height", "height", "elevation"])
 
-        lon = np.asarray(h5[lon_path][...], dtype=np.float64).reshape(-1)
-        lat = np.asarray(h5[lat_path][...], dtype=np.float64).reshape(-1)
-        z = np.asarray(h5[z_path][...], dtype=np.float64).reshape(-1)
+        lon = np.asarray(h5[lon_path][selection], dtype=np.float64).reshape(-1)
+        lat = np.asarray(h5[lat_path][selection], dtype=np.float64).reshape(-1)
+        z = np.asarray(h5[z_path][selection], dtype=np.float64).reshape(-1)
 
         if lat.size != lon.size or z.size != lon.size:
             raise ValueError(f"CASALS lon/lat/z sizes differ: {lon.size}, {lat.size}, {z.size}")
 
         source.update({"lon": lon_path, "lat": lat_path, "z": z_path})
+        point_index = np.arange(h5[lon_path].size, dtype=np.uint32)[selection]
         n = lon.size
 
         optional_specs = {
@@ -257,7 +243,7 @@ def read_casals_h5(h5_path: Path) -> Dict[str, Any]:
         }
 
         for out_name, candidates in optional_specs.items():
-            arr, path = read_optional_dataset(h5, candidates, n)
+            arr, path = read_optional_dataset(h5, candidates, n, selection)
             if arr is not None:
                 fields[out_name] = arr
                 source[out_name] = path
@@ -298,49 +284,41 @@ def read_casals_h5(h5_path: Path) -> Dict[str, Any]:
         "z": z,
         "fields": fields,
         "source_datasets": source,
+        "source_h5": str(h5_path.resolve()),
+        "point_index": point_index,
     }
 
 
-def read_3dep_las(las_path: Path) -> Dict[str, Any]:
-    print(f"[INFO] Reading 3DEP LAS/LAZ: {las_path}")
-    las = laspy.read(str(las_path))
-    xyz = np.column_stack((
-        np.asarray(las.x, dtype=np.float64),
-        np.asarray(las.y, dtype=np.float64),
-        np.asarray(las.z, dtype=np.float64),
-    ))
-    cls = np.asarray(las.classification, dtype=np.uint8)
-    crs = las.header.parse_crs()
-    header_summary = {
-        "version": str(las.header.version),
-        "point_format_id": int(las.header.point_format.id),
-        "point_count": int(las.header.point_count),
-        "mins": [float(v) for v in las.header.mins],
-        "maxs": [float(v) for v in las.header.maxs],
-        "scales": [float(v) for v in las.header.scales],
-        "offsets": [float(v) for v in las.header.offsets],
-    }
-    print(f"[INFO] 3DEP points: {xyz.shape[0]:,}")
-    print(f"[INFO] 3DEP CRS from header: {crs.to_string() if crs else 'None'}")
-    print(f"[INFO] 3DEP class counts: {collect_class_counts(cls)}")
-    return {
-        "xyz": xyz,
-        "classification": cls,
-        "crs": crs,
-        "header_summary": header_summary,
-    }
-
-
-def choose_target_horizontal_crs(casals: Dict[str, Any], dep3_crs: Optional[CRS], fallback_epsg: Optional[int]) -> CRS:
-    if dep3_crs is not None:
-        return horizontal_crs_only(dep3_crs)
-    if fallback_epsg is not None:
-        crs = CRS.from_epsg(int(fallback_epsg))
-        print(f"[WARN] 3DEP LAS has no parseable CRS; using fallback EPSG:{fallback_epsg}")
-        return horizontal_crs_only(crs)
-    crs = CRS.from_epsg(infer_wgs84_utm_epsg(casals["lon"], casals["lat"]))
-    print(f"[WARN] 3DEP LAS has no parseable CRS and no fallback EPSG; inferred {crs.to_string()} from CASALS lon/lat.")
-    return crs
+def read_3dep_las(las_path: Path, xy_bounds=None, max_points=None) -> Dict[str, Any]:
+    """Stream source clips; bounded selection is available for local smoke checks."""
+    arrays, classes = [], []
+    selected = scanned = 0
+    truncated = False
+    with laspy.open(las_path) as reader:
+        header = reader.header
+        for points in reader.chunk_iterator(500_000):
+            xyz = np.column_stack([points.x, points.y, points.z])
+            scanned += len(points)
+            keep = np.all(np.isfinite(xyz), axis=1) & ~np.asarray(points.withheld, dtype=bool)
+            if xy_bounds is not None:
+                xmin, ymin, xmax, ymax = xy_bounds
+                keep &= (xyz[:, 0] >= xmin) & (xyz[:, 0] <= xmax) & (xyz[:, 1] >= ymin) & (xyz[:, 1] <= ymax)
+            idx = np.flatnonzero(keep)
+            if max_points is not None and selected + len(idx) > max_points:
+                idx = idx[:max_points-selected]
+                truncated = True
+            if len(idx):
+                arrays.append(xyz[idx]); classes.append(np.asarray(points.classification)[idx])
+                selected += len(idx)
+            if truncated:
+                break
+    return {"xyz": np.concatenate(arrays) if arrays else np.empty((0, 3)),
+            "classification": np.concatenate(classes) if classes else np.empty(0, dtype=np.uint8),
+            "crs": header.parse_crs(),
+            "header_summary": {"point_count": int(header.point_count), "selected_count": selected,
+                               "scanned_count": scanned, "selection_truncated": truncated,
+                               "version": str(header.version), "point_format_id": header.point_format.id,
+                               "scales": header.scales.tolist(), "mins": header.mins.tolist(), "maxs": header.maxs.tolist()}}
 
 
 def project_casals_to_target(casals: Dict[str, Any], target_horizontal_crs: CRS) -> np.ndarray:
@@ -649,11 +627,11 @@ def transfer_labels_to_casals(
     tree = cKDTree(dep3_xyz_valid)
     observed_classes = np.unique(dep3_cls_valid).astype(np.uint8)
 
-    final_class = np.full(n, LAS_CLASS_LOW_NOISE, dtype=np.uint8)
-    transfer_status = np.full(n, STATUS_FAR_NO_MATCH_NOISE, dtype=np.uint8)
+    final_class = np.full(n, 1, dtype=np.uint8)
+    transfer_status = np.full(n, STATUS_FAR_NO_MATCH, dtype=np.uint8)
     nearest_dist = np.full(n, np.inf, dtype=np.float32)
-    nearest_class = np.full(n, LAS_CLASS_LOW_NOISE, dtype=np.uint8)
-    dominant_class = np.full(n, LAS_CLASS_LOW_NOISE, dtype=np.uint8)
+    nearest_class = np.full(n, 1, dtype=np.uint8)
+    dominant_class = np.full(n, 1, dtype=np.uint8)
     vote_ratio = np.zeros(n, dtype=np.float32)
     neighbor_count = np.zeros(n, dtype=np.uint16)
 
@@ -714,18 +692,13 @@ def transfer_labels_to_casals(
         weak = has_any & reliable_vote & (chunk_nearest_dist > strict_dist) & (chunk_nearest_dist <= max_dist)
         ambiguous = has_any & ~(strict | weak)
 
-        chunk_status = np.full(global_idx.size, STATUS_FAR_NO_MATCH_NOISE, dtype=np.uint8)
+        chunk_status = np.full(global_idx.size, STATUS_FAR_NO_MATCH, dtype=np.uint8)
         chunk_status[strict] = STATUS_STRICT
         chunk_status[weak] = STATUS_WEAK
         chunk_status[ambiguous] = STATUS_AMBIGUOUS_NEAR
 
-        chunk_final_class = np.full(global_idx.size, LAS_CLASS_LOW_NOISE, dtype=np.uint8)
+        chunk_final_class = np.full(global_idx.size, 1, dtype=np.uint8)
         chunk_final_class[strict | weak] = chunk_dominant_class[strict | weak]
-
-        if not bool(cfg["ambiguous_to_noise"]):
-            chunk_final_class[ambiguous] = chunk_dominant_class[ambiguous]
-        else:
-            chunk_final_class[ambiguous] = LAS_CLASS_LOW_NOISE
 
         final_class[global_idx] = chunk_final_class
         transfer_status[global_idx] = chunk_status
@@ -784,6 +757,7 @@ def write_labeled_las(
         math.floor(float(np.nanmin(casals_aligned_xyz[:, 2]))),
     ], dtype=np.float64)
     header.scales = np.array([0.001, 0.001, 0.001], dtype=np.float64)
+    header.vlrs.append(laspy.VLR(user_id="CASALS", record_id=1, record_data=json.dumps({"source_h5": casals["source_h5"], "alignment_mode": casals["alignment_mode"], "independent_accuracy_claim": False}).encode()))
 
     try:
         header.add_crs(target_horizontal_crs)
@@ -840,12 +814,12 @@ def write_labeled_las(
         las.intensity = np.clip(np.nan_to_num(amp, nan=0.0), 0, np.iinfo(np.uint16).max).astype(np.uint16)
 
     n = casals_aligned_xyz.shape[0]
-    las["point_index"] = np.arange(n, dtype=np.uint32)
+    las["point_index"] = casals.get("point_index", np.arange(n, dtype=np.uint32))
     las["longitude"] = np.asarray(casals["lon"], dtype=np.float64)
     las["latitude"] = np.asarray(casals["lat"], dtype=np.float64)
     las["x_original_m"] = casals_original_xyz[:, 0].astype(np.float64)
     las["y_original_m"] = casals_original_xyz[:, 1].astype(np.float64)
-    las["z_original_m"] = casals_original_xyz[:, 2].astype(np.float64)
+    las["z_original_m"] = np.asarray(casals["z"], dtype=np.float64)
     las["empirical_dz_m"] = np.full(n, float(dz_m), dtype=np.float32)
     las["quality_flag"] = quality_flags.astype(np.uint8)
     las["ground_align_inlier"] = ground_alignment_inlier.astype(np.uint8)
@@ -943,8 +917,8 @@ def build_summary(
         "script_scope": {
             "purpose": "Ground-align CASALS refh Z to 3DEP class-2 ground, transfer 3DEP LAS labels to CASALS, and write labeled CASALS LAS/LAZ.",
             "casals_point_semantics": "CASALS L1B refh/reference-return points, not formal waveform-decomposed multi-return lidar.",
-            "vertical_alignment_semantics": "single empirical dz from ground-like CASALS points to 3DEP class-2 ground; not rigorous geoid/datum transformation.",
-            "far_point_policy": "CASALS points without nearby 3DEP support are written as LAS class 7 low noise.",
+            "vertical_alignment_semantics": cfg["alignment_mode"],
+            "far_point_policy": "CASALS points without nearby 3DEP support are written as LAS class 1 unclassified.",
         },
         "inputs": {
             "casals_h5": str(Path(cfg["casals_h5"]).resolve()),
@@ -969,16 +943,16 @@ def build_summary(
             "label_strict_max_3d_distance_m": float(cfg["label_strict_max_3d_distance_m"]),
             "label_min_neighbors": int(cfg["label_min_neighbors"]),
             "label_min_vote_ratio": float(cfg["label_min_vote_ratio"]),
-            "ambiguous_to_noise": bool(cfg["ambiguous_to_noise"]),
+
             "nearest_3dep_distance_m_summary": summarize_values(nearest_finite),
             "class_vote_ratio_summary": summarize_values(transfer["class_vote_ratio"]),
             "n_3dep_neighbors_summary": summarize_values(transfer["n_3dep_neighbors"]),
         },
         "coordinate_output": {
-            "las_xyz": "CASALS projected horizontal coordinates plus empirical dz on Z",
+            "las_xyz": "audited PROJ XYZ in target CRS" if cfg["alignment_mode"] == "verified_crs" else "CASALS projected XY plus exploratory empirical dz",
             "empirical_dz_m_added_to_all_casals_z": float(dz_m),
-            "x_y_crs": target_horizontal_crs.to_string(),
-            "z_warning": "Z is empirically aligned for pseudo-label transfer and should not be interpreted as rigorous vertical datum transformation.",
+            "x_y_crs": target_horizontal_crs.to_2d().to_string(),
+            "z_warning": "empirical alignment is not a datum transformation" if cfg["alignment_mode"] == "empirical_diagnostic" else "declared verified CRS conversion is not independent accuracy validation",
         },
         "outputs": {
             "labeled_las_or_laz": str(output_las),
@@ -994,9 +968,6 @@ def build_summary(
 # -----------------------------------------------------------------------------
 
 CONFIG: Dict[str, Any] = {
-    # If the 3DEP LAS/LAZ header has no parseable CRS, use this EPSG code.
-    # Leave as None to infer WGS84 UTM from the CASALS lon/lat footprint.
-    "fallback_3dep_epsg": None,
 
     # Ground alignment settings.
     # 3DEP side uses LAS class 2 by default.
@@ -1035,7 +1006,7 @@ CONFIG: Dict[str, Any] = {
 
     # Label transfer settings.
     # For each aligned CASALS point, search nearby 3DEP points in 3D and assign
-    # the dominant 3DEP LAS class. No-match/far points are written as class 7.
+    # the dominant 3DEP LAS class. No-match/far points remain class 1.
     "label_knn": 12,
     "label_max_3d_distance_m": 3.0,
     "label_strict_max_3d_distance_m": 2.0,
@@ -1043,10 +1014,10 @@ CONFIG: Dict[str, Any] = {
     "label_min_vote_ratio": 0.65,
     "label_query_chunk_size": 200_000,
 
-    # If True, near-but-ambiguous CASALS points are also written as class 7.
-    # If False, they receive the dominant nearby 3DEP class but remain flagged
-    # as ambiguous_near_3dep in the transfer_status extra dimension.
-    "ambiguous_to_noise": False,
+    # Ambiguous points remain unclassified. Verified CRS is the default.
+    "alignment_mode": "verified_crs",
+    "casals_crs_evidence": None,
+    "reference_sidecar": None,
 
     "random_seed": 42,
 
@@ -1123,22 +1094,33 @@ def run_job(job_cfg: Dict[str, Any]) -> Dict[str, Any]:
     casals = read_casals_h5(h5_path)
     dep3 = read_3dep_las(las_path)
 
-    target_horizontal_crs = choose_target_horizontal_crs(casals, dep3["crs"], cfg["fallback_3dep_epsg"])
-    casals_xyz = project_casals_to_target(casals, target_horizontal_crs)
-
+    if dep3["crs"] is None:
+        raise ValueError("3DEP horizontal CRS unknown; provide documented CRS metadata.")
+    horizontal, vertical, frame = resolve_reference_frame(dep3["crs"], cfg.get("reference_sidecar"), cfg.get("ept_metadata"), cfg.get("workunit_metadata"))
+    mode = cfg["alignment_mode"]
+    casals["alignment_mode"] = mode
+    casals_xyz = project_casals_to_target(casals, horizontal)
     quality_flags = build_quality_flags(casals, casals_xyz, min_snr=float(cfg["min_ground_snr"]))
-
-    dz_m, ground_alignment_inlier, ground_summary = estimate_ground_vertical_shift(
-        casals=casals,
-        casals_xyz=casals_xyz,
-        dep3_xyz=dep3["xyz"],
-        dep3_cls=dep3["classification"],
-        cfg=cfg,
-        quality_flags=quality_flags,
-    )
-
-    casals_aligned_xyz = casals_xyz.copy()
-    casals_aligned_xyz[:, 2] += float(dz_m)
+    target_horizontal_crs = horizontal
+    if mode == "verified_crs":
+        if vertical is None:
+            raise ValueError("vertical_crs_unknown; explicitly choose empirical_diagnostic for exploratory labels.")
+        target_horizontal_crs = build_target_compound_crs(horizontal, vertical)
+        casals_aligned_xyz, operation = transform_verified_xyz(
+            np.column_stack([casals["lon"], casals["lat"], casals["z"]]), CRS.from_epsg(4979), target_horizontal_crs,
+            source_verified=bool(cfg.get("casals_crs_evidence")),
+            target_verified=frame.reference_frame_status.startswith("reference_frame_vertical_verified"))
+        dz_m = 0.0
+        ground_alignment_inlier = np.zeros(len(casals_xyz), dtype=np.uint8)
+        ground_summary = {"operation": operation, "empirical_alignment": False}
+    elif mode == "empirical_diagnostic":
+        dz_m, ground_alignment_inlier, ground_summary = estimate_ground_vertical_shift(
+            casals, casals_xyz, dep3["xyz"], dep3["classification"], cfg, quality_flags)
+        casals_aligned_xyz = casals_xyz.copy()
+        casals_aligned_xyz[:, 2] += dz_m
+        ground_summary.update(empirical_alignment=True, residual_semantics="fitting diagnostics only; no independent elevation validation")
+    else:
+        raise ValueError("alignment_mode must be verified_crs or empirical_diagnostic")
 
     transfer = transfer_labels_to_casals(
         casals_aligned_xyz=casals_aligned_xyz,
@@ -1184,6 +1166,7 @@ def run_job(job_cfg: Dict[str, Any]) -> Dict[str, Any]:
         output_csv=output_csv,
         output_json=output_json,
     )
+    summary.update(alignment_mode=mode, empirical_alignment=mode == "empirical_diagnostic", reference_frame=asdict(frame), casals_frame={"horizontal": "WGS84", "vertical": "WGS84 ellipsoidal height", "status": "verified by supplied evidence" if cfg.get("casals_crs_evidence") else "pending verification assumption", "evidence": cfg.get("casals_crs_evidence")}, independent_accuracy_claim=False)
     safe_json_dump(summary, output_json)
     print(f"[INFO] Wrote summary JSON: {output_json}")
     print("[INFO] Done.")
@@ -1202,6 +1185,9 @@ def main(argv: Optional[list[str]] = None) -> None:
     parser.add_argument("--dep3-las", action="append", type=Path, help="3DEP reference LAS/LAZ; repeat in pair order.")
     parser.add_argument("--output-dir", type=Path, help="Output root (default: outputs/reference/<h5-stem>/transfer).")
     parser.add_argument("--write-point-csv", action="store_true", help="Write a point-level CSV, which may be large.")
+    parser.add_argument("--alignment-mode", choices=["verified_crs", "empirical_diagnostic"], default="verified_crs")
+    parser.add_argument("--reference-sidecar", type=Path)
+    parser.add_argument("--casals-crs-evidence", help="Verified source frame evidence, not an empirical fit.")
     args = parser.parse_args(argv)
 
     if args.casals_h5 is None and args.dep3_las is None:
@@ -1224,6 +1210,9 @@ def main(argv: Optional[list[str]] = None) -> None:
 
     jobs = [
         {
+            "alignment_mode": args.alignment_mode,
+            "reference_sidecar": args.reference_sidecar,
+            "casals_crs_evidence": args.casals_crs_evidence,
             "casals_h5": h5_path,
             "dep3_las": dep3_path,
             "output_dir": args.output_dir or DEFAULT_OUTPUT_DIR / h5_path.stem / "transfer",

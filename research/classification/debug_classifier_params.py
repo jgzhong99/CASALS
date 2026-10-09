@@ -38,10 +38,10 @@ from casals_l1b.classification import (
     sample_ground_grid_idw,
 )
 from casals_l1b.geo import transform_xy
-from casals_l1b.classification_cli import (
+from casals_l1b.evaluation import (
     align_prediction_to_reference,
     build_classification_summary_row,
-    compute_evaluation_metrics,
+    evaluate_classification,
     json_safe,
     map_reference_labels_to_baseline_classes,
     read_reference_labels,
@@ -940,7 +940,7 @@ def run_one_config_on_cached_file(
     classification_reason = np.asarray(classification_result["classification_reason"], dtype=np.uint8)
     height_above_ground_m = np.asarray(classification_result["height_above_ground_m"], dtype=np.float64)
 
-    evaluation_metrics = compute_evaluation_metrics(
+    evaluation_metrics = evaluate_classification(
         pred_class_baseline=pred_class,
         eval_gt_class=np.asarray(cached_file["eval_gt_class"], dtype=np.uint8),
         eval_match_valid=np.asarray(cached_file["alignment"]["eval_match_valid"], dtype=np.uint8),
@@ -1882,7 +1882,8 @@ def maybe_write_best_laz(
         sys.executable,
         "-m",
         "casals_l1b",
-        "classify-refh",
+        "refh",
+        "classify",
         "--output-dir",
         str(writer_output_root),
         "--config",

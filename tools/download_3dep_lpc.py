@@ -27,7 +27,7 @@ conda install -c conda-forge h5py numpy pandas pyproj requests pdal python-pdal 
 
 Run
 ---
-python -m casals_l1b download-3dep --h5 data/raw/casals_l1b/<granule>.h5
+python -m casals_l1b reference download --h5 data/raw/casals_l1b/<granule>.h5
 """
 
 from __future__ import annotations

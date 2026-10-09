@@ -36,6 +36,7 @@ from .refh import (
     project_refh_points,
     read_refh_points,
     write_refh_las,
+    summarize_refh_array,
 )
 
 
@@ -123,48 +124,21 @@ def make_preview_png(
 
 
 
-def summarize_array(name: str, arr: np.ndarray) -> Dict[str, Any]:
-    """Basic summary for numeric arrays."""
-    vals = np.asarray(arr)
-    vals_float = vals.astype(np.float64, copy=False)
-    finite = np.isfinite(vals_float)
-
-    if not np.any(finite):
-        return {"name": name, "n": int(vals.size), "n_finite": 0,
-                "min": None, "p02": None, "p50": None, "p98": None, "max": None}
-
-    q = np.nanpercentile(vals_float[finite], [2, 50, 98])
-    return {
-        "name": name,
-        "n": int(vals.size),
-        "n_finite": int(np.sum(finite)),
-        "min": float(np.nanmin(vals_float[finite])),
-        "p02": float(q[0]),
-        "p50": float(q[1]),
-        "p98": float(q[2]),
-        "max": float(np.nanmax(vals_float[finite])),
-    }
-
-
 # =============================================================================
 # Main workflow
 # =============================================================================
 
-def main(argv: Optional[list[str]] = None) -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--h5", type=Path, required=True, help="CASALS L1B input H5 file")
-    parser.add_argument("--output-dir", type=Path, help="Output directory (default: outputs/refh/<h5-stem>/export).")
-    parser.add_argument(
-        "--point-cloud-dir",
-        type=Path,
-        help="Directory for LAS output (default: <output-dir>/point_clouds)",
-    )
-    parser.add_argument("--config", type=Path, help="Optional JSON object of Config fields")
-    args = parser.parse_args(argv)
-    output_dir = args.output_dir or Path("outputs/refh") / args.h5.stem / "export"
-    cfg = Config(
-        h5_path=args.h5,
-        point_cloud_dir=args.point_cloud_dir or output_dir / "point_clouds",
+def default_config(
+    h5_path: Path,
+    output_dir: Optional[Path] = None,
+    point_cloud_dir: Optional[Path] = None,
+) -> Config:
+    """Build the established export defaults for direct or CLI use."""
+    output_dir = output_dir or Path("outputs/refh") / h5_path.stem / "export"
+    point_cloud_dir = point_cloud_dir or output_dir / "point_clouds"
+    return Config(
+        h5_path=h5_path,
+        point_cloud_dir=point_cloud_dir,
         output_dir=output_dir,
         filter_good_snr_only=False,
         refh_snr_min=None,
@@ -179,6 +153,20 @@ def main(argv: Optional[list[str]] = None) -> None:
         random_seed=42,
         las_xyz_scale_m=0.001,
     )
+
+
+def main(argv: Optional[list[str]] = None) -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--h5", type=Path, required=True, help="CASALS L1B input H5 file")
+    parser.add_argument("--output-dir", type=Path, help="Output directory (default: outputs/refh/<h5-stem>/export).")
+    parser.add_argument(
+        "--point-cloud-dir",
+        type=Path,
+        help="Directory for LAS output (default: <output-dir>/point_clouds)",
+    )
+    parser.add_argument("--config", type=Path, help="Optional JSON object of Config fields")
+    args = parser.parse_args(argv)
+    cfg = default_config(args.h5, args.output_dir, args.point_cloud_dir)
     if args.config:
         overrides = json.loads(args.config.read_text(encoding="utf-8"))
         cfg = replace(
@@ -190,6 +178,10 @@ def main(argv: Optional[list[str]] = None) -> None:
             },
         )
 
+    export_refh(cfg)
+
+
+def export_refh(cfg: Config) -> Dict[str, Any]:
     # -------------------------------------------------------------------------
     # Workflow
     # -------------------------------------------------------------------------
@@ -258,15 +250,15 @@ def main(argv: Optional[list[str]] = None) -> None:
 
     print("Coordinate and attribute summaries after filtering:")
     for summary in [
-        summarize_array("longitude_deg",             lon_f),
-        summarize_array("latitude_deg",              lat_f),
-        summarize_array("easting_m",                 easting),
-        summarize_array("northing_m",                northing),
-        summarize_array("refh_ellipsoidal_height_m", z_f),
-        summarize_array("refh_amp",                  amp_f),
-        summarize_array("refh_snr",                  snr_f),
-        summarize_array("track_num",                 track_f),
-        summarize_array("sweep_num",                 sweep_f),
+        summarize_refh_array("longitude_deg",             lon_f),
+        summarize_refh_array("latitude_deg",              lat_f),
+        summarize_refh_array("easting_m",                 easting),
+        summarize_refh_array("northing_m",                northing),
+        summarize_refh_array("refh_ellipsoidal_height_m", z_f),
+        summarize_refh_array("refh_amp",                  amp_f),
+        summarize_refh_array("refh_snr",                  snr_f),
+        summarize_refh_array("track_num",                 track_f),
+        summarize_refh_array("sweep_num",                 sweep_f),
     ]:
         print(json.dumps(summary, indent=2))
     print()
@@ -412,6 +404,12 @@ def main(argv: Optional[list[str]] = None) -> None:
     print("Reminder:")
     print("  Z is CASALS refh WGS84 ellipsoidal height.")
     print("  This is not an orthometric DEM height and not a ground-classified point cloud.")
+
+    return {
+        "las_path": las_path if cfg.write_las else None,
+        "metadata_path": metadata_path if cfg.write_metadata_json else None,
+        "preview_path": preview_path if cfg.write_preview_png else None,
+    }
 
 
 if __name__ == "__main__":

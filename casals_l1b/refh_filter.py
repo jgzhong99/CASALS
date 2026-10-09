@@ -36,6 +36,7 @@ from .refh import (
     project_refh_points,
     read_refh_points,
     write_refh_las,
+    summarize_refh_array,
 )
 
 
@@ -163,30 +164,6 @@ def robust_min_max(values: np.ndarray, percentiles: Tuple[float, float]) -> Tupl
         vmax = float(np.nanmax(vals[finite]))
         return vmin, vmax if vmax > vmin else vmin + 1.0
     return float(p_low), float(p_high)
-
-
-def summarize_array(name: str, arr: np.ndarray) -> Dict[str, Any]:
-    vals = np.asarray(arr)
-    try:
-        vals_float = vals.astype(np.float64, copy=False)
-    except (TypeError, ValueError):
-        return {"name": name, "n": int(vals.size), "dtype": str(vals.dtype), "summary": "non_numeric"}
-    finite = np.isfinite(vals_float)
-    if not np.any(finite):
-        return {"name": name, "n": int(vals.size), "n_finite": 0, "min": None, "p02": None, "p50": None, "p98": None, "max": None}
-    q = np.nanpercentile(vals_float[finite], [2, 50, 98])
-    return {
-        "name": name,
-        "n": int(vals.size),
-        "n_finite": int(np.sum(finite)),
-        "min": float(np.nanmin(vals_float[finite])),
-        "p02": float(q[0]),
-        "p50": float(q[1]),
-        "p98": float(q[2]),
-        "max": float(np.nanmax(vals_float[finite])),
-    }
-
-
 
 
 # =============================================================================
@@ -333,24 +310,17 @@ def open3d_visualize(data: RefhPointData, proj: ProjectedRefh, filt: FilterResul
 # Main workflow
 # =============================================================================
 
-def main(argv: Optional[list[str]] = None) -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--h5", type=Path, required=True, help="CASALS L1B input H5 file")
-    parser.add_argument("--output-dir", type=Path, help="Output directory (default: outputs/refh/<h5-stem>/filter).")
-    parser.add_argument(
-        "--point-cloud-dir",
-        type=Path,
-        help="Directory for LAS output (default: <output-dir>/point_clouds)",
-    )
-    parser.add_argument("--config", type=Path, help="Optional JSON object of Config fields")
-    args = parser.parse_args(argv)
-    output_dir = args.output_dir or Path("outputs/refh") / args.h5.stem / "filter"
-    # -------------------------------------------------------------------------
-    # The current scientific defaults remain here; JSON may override them.
-    # -------------------------------------------------------------------------
-    cfg = Config(
-        h5_path=args.h5,
-        point_cloud_dir=args.point_cloud_dir or output_dir / "point_clouds",
+def default_config(
+    h5_path: Path,
+    output_dir: Optional[Path] = None,
+    point_cloud_dir: Optional[Path] = None,
+) -> Config:
+    """Build the established filter defaults for direct or CLI use."""
+    output_dir = output_dir or Path("outputs/refh") / h5_path.stem / "filter"
+    point_cloud_dir = point_cloud_dir or output_dir / "point_clouds"
+    return Config(
+        h5_path=h5_path,
+        point_cloud_dir=point_cloud_dir,
         output_dir=output_dir,
 
         # Input-level filtering: keep broad for raw/reference product.
@@ -413,6 +383,23 @@ def main(argv: Optional[list[str]] = None) -> None:
         preview_max_points=300_000,
         overwrite=True,
     )
+
+
+def main(argv: Optional[list[str]] = None) -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--h5", type=Path, required=True, help="CASALS L1B input H5 file")
+    parser.add_argument("--output-dir", type=Path, help="Output directory (default: outputs/refh/<h5-stem>/filter).")
+    parser.add_argument(
+        "--point-cloud-dir",
+        type=Path,
+        help="Directory for LAS output (default: <output-dir>/point_clouds)",
+    )
+    parser.add_argument("--config", type=Path, help="Optional JSON object of Config fields")
+    args = parser.parse_args(argv)
+    # -------------------------------------------------------------------------
+    # Apply only the explicit JSON overrides to the shared defaults.
+    # -------------------------------------------------------------------------
+    cfg = default_config(args.h5, args.output_dir, args.point_cloud_dir)
     if args.config:
         overrides = json.loads(args.config.read_text(encoding="utf-8"))
         cfg = replace(
@@ -424,6 +411,10 @@ def main(argv: Optional[list[str]] = None) -> None:
             },
         )
 
+    filter_refh(cfg)
+
+
+def filter_refh(cfg: Config) -> Dict[str, Any]:
     t0 = time.time()
     ensure_dir(cfg.point_cloud_dir)
     ensure_dir(cfg.output_dir)
@@ -468,15 +459,15 @@ def main(argv: Optional[list[str]] = None) -> None:
 
     print("Coordinate and attribute summaries:")
     summaries = [
-        summarize_array("longitude_deg", data.lon),
-        summarize_array("latitude_deg", data.lat),
-        summarize_array("easting_m", proj.easting),
-        summarize_array("northing_m", proj.northing),
-        summarize_array("refh_ellipsoidal_height_m", data.z_refh),
-        summarize_array("refh_amp", data.refh_amp),
-        summarize_array("refh_snr", data.refh_snr),
-        summarize_array("track_num", data.track_num),
-        summarize_array("sweep_num", data.sweep_num),
+        summarize_refh_array("longitude_deg", data.lon),
+        summarize_refh_array("latitude_deg", data.lat),
+        summarize_refh_array("easting_m", proj.easting),
+        summarize_refh_array("northing_m", proj.northing),
+        summarize_refh_array("refh_ellipsoidal_height_m", data.z_refh),
+        summarize_refh_array("refh_amp", data.refh_amp),
+        summarize_refh_array("refh_snr", data.refh_snr),
+        summarize_refh_array("track_num", data.track_num),
+        summarize_refh_array("sweep_num", data.sweep_num),
     ]
     for s in summaries:
         print(json.dumps(s, indent=2))
@@ -599,6 +590,13 @@ def main(argv: Optional[list[str]] = None) -> None:
     print("Reminder: Z is CASALS refh WGS84 ellipsoidal height; this is not a DEM or ground-classified product.")
 
     open3d_visualize(data, proj, filt, cfg)
+
+    return {
+        "metadata_path": metadata_path,
+        "outputs": outputs,
+        "counts": filt.counts,
+        "metadata": metadata,
+    }
 
 
 if __name__ == "__main__":

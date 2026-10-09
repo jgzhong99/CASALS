@@ -22,9 +22,8 @@ from pathlib import Path
 import json
 import math
 import warnings
-from typing import Any, Dict, Iterable, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
-import h5py
 import numpy as np
 from pyproj import CRS, Transformer
 
@@ -61,8 +60,8 @@ from scipy.spatial import cKDTree
 
 from casals_l1b.raster import disk_structure, fill_nearest_within_mask, robust_normalize, write_float_geotiff, write_uint8_geotiff
 
-from casals_l1b.h5 import find_dataset, read_optional_array, require_dataset
 from casals_l1b.geo import infer_wgs84_utm_epsg, transform_lonlat_to_projected
+from casals_l1b.refh import RefhSurfaceData, read_refh_surface_data, summarize_surface_array
 
 
 @dataclass
@@ -135,21 +134,6 @@ class Config:
 
 
 @dataclass
-class PointData:
-    lon: np.ndarray
-    lat: np.ndarray
-    z: np.ndarray
-    snr: np.ndarray
-    amp: np.ndarray
-    thres: np.ndarray
-    good_snr: np.ndarray
-    track_num: Optional[np.ndarray]
-    sweep_num: Optional[np.ndarray]
-    pulse_index: np.ndarray
-    attrs: Dict[str, Any]
-
-
-@dataclass
 class ResolvedFillParams:
     support_buffer_m: float
     support_closing_m: float
@@ -184,72 +168,7 @@ def _json_safe(obj: Any) -> Any:
 
 
 
-def read_point_data(h5_path: Path) -> PointData:
-    with h5py.File(h5_path, "r") as h5:
-        lon = np.asarray(require_dataset(h5, "refh_longitude")[...], dtype=np.float64).reshape(-1)
-        lat = np.asarray(require_dataset(h5, "refh_latitude")[...], dtype=np.float64).reshape(-1)
-        z = np.asarray(require_dataset(h5, "refh")[...], dtype=np.float64).reshape(-1)
-        amp = np.asarray(require_dataset(h5, "refh_amp")[...], dtype=np.float64).reshape(-1)
-
-        snr_ds = find_dataset(h5, "refh_snr")
-        thres_ds = find_dataset(h5, "refh_thres")
-        if thres_ds is not None:
-            thres = np.asarray(thres_ds[...], dtype=np.float64).reshape(-1)
-        else:
-            thres = np.full(lon.shape, np.nan, dtype=np.float64)
-
-        if snr_ds is not None:
-            snr = np.asarray(snr_ds[...], dtype=np.float64).reshape(-1)
-        else:
-            if thres_ds is None:
-                raise KeyError("Neither refh_snr nor refh_thres was found; cannot compute SNR.")
-            snr = np.divide(amp, thres, out=np.full_like(amp, np.nan), where=(thres != 0))
-
-        good_snr_arr = read_optional_array(h5, "good_snr", lon.size)
-        if good_snr_arr is None:
-            good_snr = snr >= 5.0
-        else:
-            good_snr = good_snr_arr.astype(bool)
-
-        track_num = read_optional_array(h5, "track_num", lon.size)
-        sweep_num = read_optional_array(h5, "sweep_num", lon.size)
-
-        sizes = {"lon": lon.size, "lat": lat.size, "z": z.size, "snr": snr.size, "amp": amp.size, "thres": thres.size}
-        if len(set(sizes.values())) != 1:
-            raise ValueError(f"Required datasets do not have matching sizes: {sizes}")
-
-        attrs = {}
-        for key, value in h5.attrs.items():
-            try:
-                if isinstance(value, bytes):
-                    attrs[key] = value.decode("utf-8", errors="replace")
-                elif isinstance(value, np.ndarray):
-                    attrs[key] = value.tolist()
-                else:
-                    attrs[key] = value.item() if hasattr(value, "item") else value
-            except Exception:
-                attrs[key] = str(value)
-
-    return PointData(
-        lon=lon,
-        lat=lat,
-        z=z,
-        snr=snr,
-        amp=amp,
-        thres=thres,
-        good_snr=good_snr,
-        track_num=track_num,
-        sweep_num=sweep_num,
-        pulse_index=np.arange(lon.size, dtype=np.uint32),
-        attrs=attrs,
-    )
-
-
-
-
-
-
-def build_valid_mask(pd: PointData, cfg: Config) -> Tuple[np.ndarray, Dict[str, Any]]:
+def build_valid_mask(pd: RefhSurfaceData, cfg: Config) -> Tuple[np.ndarray, Dict[str, Any]]:
     base = (
         np.isfinite(pd.lon)
         & np.isfinite(pd.lat)
@@ -575,7 +494,7 @@ def write_selected_las(
     x: np.ndarray,
     y: np.ndarray,
     z: np.ndarray,
-    pd: PointData,
+    pd: RefhSurfaceData,
     mask: np.ndarray,
     out_crs: CRS,
     cfg: Config,
@@ -839,40 +758,17 @@ def write_previews(
     plt.close(fig)
 
 
-def summarize_array(values: np.ndarray, percentiles: Iterable[float] = (0, 1, 2, 5, 50, 95, 98, 99, 100)) -> Dict[str, Any]:
-    values = np.asarray(values, dtype=np.float64)
-    finite = values[np.isfinite(values)]
-    if finite.size == 0:
-        return {"n": int(values.size), "n_finite": 0}
-    return {
-        "n": int(values.size),
-        "n_finite": int(finite.size),
-        "min": float(np.nanmin(finite)),
-        "max": float(np.nanmax(finite)),
-        "mean": float(np.nanmean(finite)),
-        "std": float(np.nanstd(finite)),
-        "percentiles": {str(p): float(np.nanpercentile(finite, p)) for p in percentiles},
-    }
-
-
-def main(argv: Optional[list[str]] = None) -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--h5", type=Path, required=True, help="CASALS L1B input H5 file")
-    parser.add_argument("--output-dir", type=Path, help="Output directory (default: outputs/refh/<h5-stem>/dsm).")
-    parser.add_argument(
-        "--point-cloud-dir",
-        type=Path,
-        help="Directory for LAS output (default: <output-dir>/point_clouds)",
-    )
-    parser.add_argument("--config", type=Path, help="Optional JSON object of Config fields")
-    args = parser.parse_args(argv)
-    output_dir = args.output_dir or Path("outputs/refh") / args.h5.stem / "dsm"
-    # -------------------------------------------------------------------------
-    # The current scientific defaults remain here; JSON may override them.
-    # -------------------------------------------------------------------------
-    cfg = Config(
-        h5_path=args.h5,
-        point_cloud_dir=args.point_cloud_dir or output_dir / "point_clouds",
+def default_config(
+    h5_path: Path,
+    output_dir: Optional[Path] = None,
+    point_cloud_dir: Optional[Path] = None,
+) -> Config:
+    """Build the established dsm defaults for direct or CLI use."""
+    output_dir = output_dir or Path("outputs/refh") / h5_path.stem / "dsm"
+    point_cloud_dir = point_cloud_dir or output_dir / "point_clouds"
+    return Config(
+        h5_path=h5_path,
+        point_cloud_dir=point_cloud_dir,
         out_dir=output_dir,
 
         # Main threshold. Try 2.0, 3.0, 4.0, 4.5, 5.0.
@@ -917,6 +813,23 @@ def main(argv: Optional[list[str]] = None) -> None:
         write_snr_mean_raster=False,
         write_preview_png=True,
     )
+
+
+def main(argv: Optional[list[str]] = None) -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--h5", type=Path, required=True, help="CASALS L1B input H5 file")
+    parser.add_argument("--output-dir", type=Path, help="Output directory (default: outputs/refh/<h5-stem>/dsm).")
+    parser.add_argument(
+        "--point-cloud-dir",
+        type=Path,
+        help="Directory for LAS output (default: <output-dir>/point_clouds)",
+    )
+    parser.add_argument("--config", type=Path, help="Optional JSON object of Config fields")
+    args = parser.parse_args(argv)
+    # -------------------------------------------------------------------------
+    # Apply only the explicit JSON overrides to the shared defaults.
+    # -------------------------------------------------------------------------
+    cfg = default_config(args.h5, args.output_dir, args.point_cloud_dir)
     if args.config:
         overrides = json.loads(args.config.read_text(encoding="utf-8"))
         cfg = replace(
@@ -929,6 +842,10 @@ def main(argv: Optional[list[str]] = None) -> None:
         )
     # -------------------------------------------------------------------------
 
+    make_refh_dsm(cfg)
+
+
+def make_refh_dsm(cfg: Config) -> Dict[str, Any]:
     cfg.point_cloud_dir.mkdir(parents=True, exist_ok=True)
     cfg.out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -944,7 +861,7 @@ def main(argv: Optional[list[str]] = None) -> None:
     print(f"DSM resolution: {cfg.dsm_resolution_m} m")
     print("Scientific caveat: output DSM is max-Rx-bin/refh surface DSM, not ground DEM.")
 
-    pd = read_point_data(cfg.h5_path)
+    pd = read_refh_surface_data(cfg.h5_path)
     mask, mask_info = build_valid_mask(pd, cfg)
 
     epsg = cfg.output_epsg_override or infer_wgs84_utm_epsg(pd.lon[mask], pd.lat[mask])
@@ -1038,12 +955,12 @@ def main(argv: Optional[list[str]] = None) -> None:
         "mask_info": mask_info,
         "selected_fraction_of_total": float(mask.sum() / pd.lon.size),
         "selected_point_summaries": {
-            "x": summarize_array(x),
-            "y": summarize_array(y),
-            "z_refh": summarize_array(z),
-            "snr": summarize_array(snr),
-            "amp": summarize_array(pd.amp[mask]),
-            "thres": summarize_array(pd.thres[mask]),
+            "x": summarize_surface_array(x),
+            "y": summarize_surface_array(y),
+            "z_refh": summarize_surface_array(z),
+            "snr": summarize_surface_array(snr),
+            "amp": summarize_surface_array(pd.amp[mask]),
+            "thres": summarize_surface_array(pd.thres[mask]),
         },
         "grid": {
             k: (_json_safe(v) if k != "transform" else tuple(grid["transform"])) for k, v in grid.items()
@@ -1060,10 +977,10 @@ def main(argv: Optional[list[str]] = None) -> None:
             "strict_valid_cell_fraction": float(strict_valid.sum() / grids["strict_dsm"].size),
             "filled_valid_cell_fraction": float(filled_valid.sum() / grids["filled_dsm"].size),
             "support_cell_fraction": float(support_valid.sum() / support_valid.size),
-            "strict_dsm_values": summarize_array(grids["strict_dsm"][strict_valid]),
-            "filled_dsm_values": summarize_array(grids["filled_dsm"][filled_valid]),
-            "point_count_per_nonempty_cell": summarize_array(grids["count"][grids["count"] > 0]),
-            "fill_distance_m_for_nearest_fallback": summarize_array(grids["nearest_distance_m"][nearest_fill_mask]),
+            "strict_dsm_values": summarize_surface_array(grids["strict_dsm"][strict_valid]),
+            "filled_dsm_values": summarize_surface_array(grids["filled_dsm"][filled_valid]),
+            "point_count_per_nonempty_cell": summarize_surface_array(grids["count"][grids["count"] > 0]),
+            "fill_distance_m_for_nearest_fallback": summarize_surface_array(grids["nearest_distance_m"][nearest_fill_mask]),
             "strict_cells_match_filled_on_observed": strict_cells_match,
             "all_observed_cells_retained_in_filled_dsm": observed_cells_preserved,
             "max_abs_diff_on_observed_cells_m": float(np.nanmax(observed_abs_diff, initial=0.0)),
@@ -1107,6 +1024,8 @@ def main(argv: Optional[list[str]] = None) -> None:
         "selected_las": str(las_path) if las_path is not None else None,
         "metadata": str(metadata_path),
     }), indent=2))
+
+    return {"metadata_path": metadata_path, "metadata": metadata}
 
 
 if __name__ == "__main__":

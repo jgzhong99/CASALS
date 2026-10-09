@@ -39,7 +39,7 @@ conda install -c conda-forge h5py laspy lazrs pyproj scipy pandas numpy
 
 Example
 -------
-python -m casals_l1b transfer-3dep ^
+python -m casals_l1b reference transfer ^
   --casals-h5 data/raw/casals_l1b/casals_l1b_20241112T165718_001_02.h5 ^
   --dep3-las data/reference/3dep/example_3dep_clip.laz ^
   --output-dir outputs/reference/casals_l1b_20241112T165718_001_02/transfer

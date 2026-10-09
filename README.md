@@ -1,31 +1,28 @@
 # CASALS Research Workflows
 
-This repository contains analysis tools and research records for CASALS Level-1B waveform data. The workflows read the official CASALS reference-height (`refh`) product, inspect waveform structure and geolocation, compare selected CASALS products with 3DEP lidar, and make clearly labeled derived surfaces and classifications.
+This repository contains two CASALS L1B research lines: refh quality, surfaces, classification, and 3DEP comparison; and waveform multi-peak detection with experimental 3D candidate geolocation.
 
-CASALS L1B is treated here as a geolocated waveform product. Each pulse has one official geolocated `refh` point associated with the maximum-amplitude receiver-waveform bin. Additional waveform peaks are diagnostic features; they are not official geolocated returns. `refh` is treated as WGS84 ellipsoidal height unless source metadata says otherwise. Horizontal projection and vertical reference-frame interpretation are documented separately; an empirical height offset is not a vertical datum transformation.
+Each pulse has one official geolocated `refh` point associated with the maximum-amplitude RX bin. Other detected waveform components are diagnostic features. Candidate positions for those components are experimental and are not official multi-return coordinates. CASALS `refh` height is treated as WGS84 ellipsoidal height unless source metadata says otherwise. An empirical 3DEP height offset is not a vertical datum transformation.
 
 ## Repository layout
 
 ```text
-casals_l1b/       Shared science code and official refh/classification workflows
-research/         Classification, geolocation, and 3DEP research code
+casals_l1b/       Shared H5, refh, waveform, classification, and geolocation code
+research/         Reference comparison and parameter/geolocation research
 tools/            Standalone viewers, animations, and data utilities
-notebooks/        Current tutorials and workflow notebooks
+notebooks/        Four current real-data research notebooks
 casals_gui_app/   Qt TDMS viewer implementation; casals_gui.py is its launcher
-data/raw/         User-provided CASALS H5 and TDMS inputs (local, ignored by Git)
-data/reference/   External reference inputs, including 3DEP clips (local, ignored)
-data/derived/     Reusable derived data, if promoted from a workflow output
-outputs/          Generated workflow results and preserved pre-refactor results
-docs/             Workflow, data-layout, experiment, and source-reference notes
-tests/            Small synthetic tests for shared numerical behavior
+data/             Local raw and reference data (ignored by Git)
+outputs/          Local workflow results (ignored by Git)
+docs/             Workflow, data, experiment, and refactor notes
+tests/            Small numerical and interface regression tests
 ```
 
-See [docs/data_layout.md](docs/data_layout.md), [docs/workflow_reference.md](docs/workflow_reference.md), and [docs/experiments.md](docs/experiments.md) for details.
-The [refactor report](docs/refactor_report.md) records the migration, preserved baselines, and real-data validation results.
+See [data layout](docs/data_layout.md), [workflow reference](docs/workflow_reference.md), and [research index](docs/experiments.md). The third-round implementation and validation record is [refactor_improvement_report.md](docs/refactor_improvement_report.md).
 
 ## Environment setup
 
-Use a supported Python environment and install the project in editable mode:
+Install the project in a supported Python environment:
 
 ```powershell
 py -3 -m venv .venv
@@ -34,62 +31,54 @@ python -m pip install --upgrade pip
 python -m pip install -e ".[dev,notebooks]"
 ```
 
-Install optional GUI and visualization dependencies only when those features are needed:
+Install optional GUI and visualization dependencies only when needed:
 
 ```powershell
 python -m pip install -e ".[gui,visualization]"
 ```
 
-The 3DEP clipping workflow also calls PDAL. Install PDAL and its Python bindings from a compatible conda-forge environment; they are not included in the pip extras. GDAL command-line and OSR cross-checks are optional and are reported as unavailable when not installed.
+The 3DEP clipping workflow also requires PDAL and its Python bindings. Install those from a compatible conda-forge environment.
 
-## Prepare local data
+## Core CLI
 
-Place CASALS `.h5` files under `data/raw/casals_l1b/`, TDMS files and sidecars under `data/raw/tdms/`, and external 3DEP LAS/LAZ references under `data/reference/3dep/`. These directories are local data, are excluded from Git, and are not modified by package installation. The current workstation copy was moved from its previous project-local folders without rewriting file contents.
-
-Workflow outputs default to `outputs/{refh,peaks,classification,reference}/<h5-stem>/...`. Existing pre-refactor outputs are retained under `outputs/baseline_pre_refactor/` for comparison. Do not use them as newly generated results; their metadata records their original paths and run configuration.
-
-## Core workflow
-
-The principal workflow uses a CASALS H5 input:
+Run commands from the repository root. The formal CLI exposes three groups: `refh`, `peaks`, and `reference`.
 
 ```powershell
-python -m casals_l1b refh-export --h5 data/raw/casals_l1b/<granule>.h5
-python -m casals_l1b refh-filter --h5 data/raw/casals_l1b/<granule>.h5
-python -m casals_l1b peaks --h5 data/raw/casals_l1b/<granule>.h5
-python -m casals_l1b refh-dsm --h5 data/raw/casals_l1b/<granule>.h5
-python -m casals_l1b refh-ground --h5 data/raw/casals_l1b/<granule>.h5
+python -m casals_l1b refh export --h5 data/raw/casals_l1b/<granule>.h5
+python -m casals_l1b refh filter --h5 data/raw/casals_l1b/<granule>.h5
+python -m casals_l1b refh dsm --h5 data/raw/casals_l1b/<granule>.h5
+python -m casals_l1b refh ground --h5 data/raw/casals_l1b/<granule>.h5
+python -m casals_l1b refh classify --h5 data/raw/casals_l1b/<granule>.h5
+python -m casals_l1b refh evaluate --prediction <classified.laz> --reference <labels.laz>
+
+python -m casals_l1b peaks extract --h5 data/raw/casals_l1b/<granule>.h5
+python -m casals_l1b peaks locate --h5 <granule.h5> --components <component_table.parquet> --method both
+python -m casals_l1b peaks validate --h5 <granule.h5> --candidates <candidate_points.parquet>
+
+python -m casals_l1b reference download --h5 data/raw/casals_l1b/<granule>.h5
+python -m casals_l1b reference diagnose --h5 <granule.h5> --reference <3dep_clip.laz>
+python -m casals_l1b reference transfer --casals-h5 <granule.h5> --dep3-las <3dep_clip.laz>
 ```
 
-Each command accepts `--help`. `--output-dir` selects the workflow output directory; the point-cloud workflows keep LAS/LAZ files inside that directory. JSON configuration overrides are supported by the export, filter, DSM, and ground commands while keeping input/output paths on the command line.
+Classification runs with H5 and classifier parameters alone. Evaluation is a separate step; `refh classify --reference` is available when an explicitly paired pseudo-reference evaluation is desired. Transferred 3DEP labels remain pseudo-reference labels and do not establish independent accuracy. `python -m casals_l1b --help` and each nested `--help` show the current arguments. The installed `casals` command uses the same groups.
 
-3DEP comparison is a separate research workflow. First download or provide a reference clip, then run `python -m casals_l1b diagnose-3dep ...` and/or `python -m casals_l1b transfer-3dep ...` with the H5 and reference LAS/LAZ paths. Transferred labels are pseudo-reference labels for evaluation; they do not certify independent classification accuracy. Run `python -m casals_l1b classify-refh ...` only with an explicit H5/reference pair.
+The principal APIs can also be called directly: `export_refh`, `filter_refh`, `make_refh_dsm`, `make_refh_ground`, `classify_refh`, `evaluate_classification`, `extract_components`, `locate_peaks`, and `validate_candidate_table`.
 
-The installed `casals` command uses the same subcommands. Run `python -m casals_l1b --help` to list them and append `--help` after a subcommand for its options.
+## Current notebooks
 
-## Notebooks
+The four notebooks are [refh quality and products](notebooks/01_refh_quality.ipynb), [classification and 3DEP pseudo-reference](notebooks/02_refh_classification.ipynb), [waveform analysis](notebooks/03_waveform_analysis.ipynb), and [peak geolocation](notebooks/04_peak_geolocation.ipynb). They use explicit local inputs, call package functions, and include saved real-data outputs. Start Jupyter from the repository root. The 21 earlier research notebooks remain under `research/archived_notebooks/`; four superseded synthetic root demos were also moved there with saved outputs, leaving exactly four active notebooks under `notebooks/`.
 
-The four current notebooks are `notebooks/01_refh_data_contract.ipynb`, `notebooks/02_waveform_components.ipynb`, `notebooks/03_beam_geolocation_candidates.ipynb`, and `notebooks/04_refh_classification_and_reference.ipynb`. They run from the repository root after package installation. The refh overview checks H5 metadata without loading full point arrays by default. All 21 earlier notebooks, including their saved outputs, are preserved under `research/archived_notebooks/<topic>/`.
+## Viewers
 
-## GUI
+- `tools/view_lpc_qt_classes.py` opens generic classified LAS/LAZ files, supports class visibility toggles, and limits display through chunked reservoir sampling.
+- `tools/view_refh_points.py` reads CASALS H5 directly to display refh quality fields and optional classification overlays.
 
-The supported desktop viewer is the PyQt5 launcher:
-
-```powershell
-python casals_gui.py
-```
-
-The GUI reads local settings from `config/local/casals_gui_settings.json`. A sanitized example is provided at `config/casals_gui_settings.example.json`. Install the `gui` extra and the TDMS reader dependency for data browsing; the `visualization` extra enables optional 3D display components.
+The Qt workflow viewer is `python casals_gui.py`. Local GUI settings live in `config/local/` and are not tracked.
 
 ## Tests
 
-Run the synthetic regression tests with:
-
 ```powershell
-python -m pytest
+python -m pytest -q -p no:cacheprovider
 ```
 
-These tests check shared helpers and deterministic scientific behavior on small arrays. They do not replace real-data workflow validation or independent scientific review.
-
-## Research references
-
-The preserved presentations and source materials are indexed in [docs/references/README.md](docs/references/README.md). The prior workflow notes remain in [docs/workflow_reference.md](docs/workflow_reference.md).
+The tests check shared helpers and interfaces on small fixtures. Real-data execution and scientific interpretation are documented separately in the refactor improvement report.

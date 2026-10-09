@@ -17,7 +17,7 @@ def test_cli_forwards_arguments_to_selected_command(monkeypatch):
 
     monkeypatch.setattr(cli, "import_module", fake_import)
 
-    assert cli.main(["refh-export", "--h5", "input.h5"]) == 0
+    assert cli.main(["refh", "export", "--h5", "input.h5"]) == 0
     assert called == {
         "module": "casals_l1b.refh_export",
         "argv": ["--h5", "input.h5"],
@@ -26,4 +26,8 @@ def test_cli_forwards_arguments_to_selected_command(monkeypatch):
 
 def test_cli_help_lists_commands(capsys):
     assert cli.main(["--help"]) == 0
-    assert "refh-export" in capsys.readouterr().out
+    help_text = capsys.readouterr().out
+    assert "refh" in help_text
+    assert "peaks" in help_text
+    assert "reference" in help_text
+    assert "refh-export" not in help_text

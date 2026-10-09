@@ -19,12 +19,11 @@ from __future__ import annotations
 import argparse
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import Any, Dict, Iterable, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 import json
 import math
 import warnings
 
-import h5py
 import numpy as np
 from pyproj import CRS, Transformer
 
@@ -59,8 +58,8 @@ from scipy.spatial import cKDTree
 from casals_l1b.raster import disk_structure, fill_nearest_within_mask, robust_normalize, write_float_geotiff, write_uint8_geotiff
 from scipy import ndimage
 
-from casals_l1b.h5 import find_dataset, read_optional_array, require_dataset
 from casals_l1b.geo import infer_wgs84_utm_epsg, transform_lonlat_to_projected
+from casals_l1b.refh import RefhSurfaceData, read_refh_surface_data, summarize_surface_array
 
 
 @dataclass
@@ -145,21 +144,6 @@ class Config:
 
 
 @dataclass
-class PointData:
-    lon: np.ndarray
-    lat: np.ndarray
-    z: np.ndarray
-    snr: np.ndarray
-    amp: np.ndarray
-    thres: np.ndarray
-    good_snr: np.ndarray
-    track_num: Optional[np.ndarray]
-    sweep_num: Optional[np.ndarray]
-    pulse_index: np.ndarray
-    attrs: Dict[str, Any]
-
-
-@dataclass
 class GridDef:
     xmin: float
     xmax: float
@@ -191,77 +175,7 @@ def _json_safe(obj: Any) -> Any:
 
 
 
-def read_point_data(h5_path: Path) -> PointData:
-    with h5py.File(h5_path, "r") as h5:
-        lon = np.asarray(require_dataset(h5, "refh_longitude")[...], dtype=np.float64).reshape(-1)
-        lat = np.asarray(require_dataset(h5, "refh_latitude")[...], dtype=np.float64).reshape(-1)
-        z = np.asarray(require_dataset(h5, "refh")[...], dtype=np.float64).reshape(-1)
-        amp = np.asarray(require_dataset(h5, "refh_amp")[...], dtype=np.float64).reshape(-1)
-
-        thres_ds = find_dataset(h5, "refh_thres")
-        if thres_ds is not None:
-            thres = np.asarray(thres_ds[...], dtype=np.float64).reshape(-1)
-        else:
-            thres = np.full(lon.shape, np.nan, dtype=np.float64)
-
-        snr_ds = find_dataset(h5, "refh_snr")
-        if snr_ds is not None:
-            snr = np.asarray(snr_ds[...], dtype=np.float64).reshape(-1)
-        else:
-            if thres_ds is None:
-                raise KeyError("Neither refh_snr nor refh_thres was found; cannot compute SNR.")
-            snr = np.divide(amp, thres, out=np.full_like(amp, np.nan), where=(thres != 0))
-
-        good_arr = read_optional_array(h5, "good_snr", lon.size)
-        good_snr = good_arr.astype(bool) if good_arr is not None else (snr >= 5.0)
-
-        track_num = read_optional_array(h5, "track_num", lon.size)
-        sweep_num = read_optional_array(h5, "sweep_num", lon.size)
-
-        sizes = {
-            "lon": lon.size,
-            "lat": lat.size,
-            "z": z.size,
-            "snr": snr.size,
-            "amp": amp.size,
-            "thres": thres.size,
-            "good_snr": good_snr.size,
-        }
-        if len(set(sizes.values())) != 1:
-            raise ValueError(f"Required datasets do not have matching sizes: {sizes}")
-
-        attrs: Dict[str, Any] = {}
-        for key, value in h5.attrs.items():
-            try:
-                if isinstance(value, bytes):
-                    attrs[key] = value.decode("utf-8", errors="replace")
-                elif isinstance(value, np.ndarray):
-                    attrs[key] = value.tolist()
-                else:
-                    attrs[key] = value.item() if hasattr(value, "item") else value
-            except Exception:
-                attrs[key] = str(value)
-
-    return PointData(
-        lon=lon,
-        lat=lat,
-        z=z,
-        snr=snr,
-        amp=amp,
-        thres=thres,
-        good_snr=good_snr,
-        track_num=track_num,
-        sweep_num=sweep_num,
-        pulse_index=np.arange(lon.size, dtype=np.uint32),
-        attrs=attrs,
-    )
-
-
-
-
-
-
-def valid_base_mask(pd: PointData) -> np.ndarray:
+def valid_base_mask(pd: RefhSurfaceData) -> np.ndarray:
     return (
         np.isfinite(pd.lon)
         & np.isfinite(pd.lat)
@@ -589,7 +503,7 @@ def write_classified_las(
     x: np.ndarray,
     y: np.ndarray,
     z: np.ndarray,
-    pd: PointData,
+    pd: RefhSurfaceData,
     mask: np.ndarray,
     classification: np.ndarray,
     residual: np.ndarray,
@@ -745,22 +659,6 @@ def write_mesh(path: Path, vertices: np.ndarray, faces: np.ndarray) -> str:
         return "ascii_ply_fallback"
 
 
-def summarize_array(values: np.ndarray, percentiles: Iterable[float] = (0, 1, 2, 5, 50, 95, 98, 99, 100)) -> Dict[str, Any]:
-    values = np.asarray(values, dtype=np.float64)
-    finite = values[np.isfinite(values)]
-    if finite.size == 0:
-        return {"n": int(values.size), "n_finite": 0}
-    return {
-        "n": int(values.size),
-        "n_finite": int(finite.size),
-        "min": float(np.nanmin(finite)),
-        "max": float(np.nanmax(finite)),
-        "mean": float(np.nanmean(finite)),
-        "std": float(np.nanstd(finite)),
-        "percentiles": {str(p): float(np.nanpercentile(finite, p)) for p in percentiles},
-    }
-
-
 def write_previews(out_dir: Path, xg: np.ndarray, yg: np.ndarray, zg: np.ndarray, dtm: np.ndarray, source: np.ndarray, residual: np.ndarray, cfg: Config) -> None:
     if plt is None:
         warnings.warn(f"matplotlib import failed; previews not written: {_MATPLOTLIB_IMPORT_ERROR}")
@@ -806,24 +704,17 @@ def write_previews(out_dir: Path, xg: np.ndarray, yg: np.ndarray, zg: np.ndarray
     plt.close(fig)
 
 
-def main(argv: Optional[list[str]] = None) -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--h5", type=Path, required=True, help="CASALS L1B input H5 file")
-    parser.add_argument("--output-dir", type=Path, help="Output directory (default: outputs/refh/<h5-stem>/ground).")
-    parser.add_argument(
-        "--point-cloud-dir",
-        type=Path,
-        help="Directory for LAS output (default: <output-dir>/point_clouds)",
-    )
-    parser.add_argument("--config", type=Path, help="Optional JSON object of Config fields")
-    args = parser.parse_args(argv)
-    output_dir = args.output_dir or Path("outputs/refh") / args.h5.stem / "ground"
-    # -------------------------------------------------------------------------
-    # The current scientific defaults remain here; JSON may override them.
-    # -------------------------------------------------------------------------
-    cfg = Config(
-        h5_path=args.h5,
-        point_cloud_dir=args.point_cloud_dir or output_dir / "point_clouds",
+def default_config(
+    h5_path: Path,
+    output_dir: Optional[Path] = None,
+    point_cloud_dir: Optional[Path] = None,
+) -> Config:
+    """Build the established ground defaults for direct or CLI use."""
+    output_dir = output_dir or Path("outputs/refh") / h5_path.stem / "ground"
+    point_cloud_dir = point_cloud_dir or output_dir / "point_clouds"
+    return Config(
+        h5_path=h5_path,
+        point_cloud_dir=point_cloud_dir,
         out_dir=output_dir,
 
         # Use high-confidence CASALS reference returns. In the tested granule, this equals good_snr=True.
@@ -865,6 +756,23 @@ def main(argv: Optional[list[str]] = None) -> None:
         write_distance_tif=True,
         write_preview_png=True,
     )
+
+
+def main(argv: Optional[list[str]] = None) -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--h5", type=Path, required=True, help="CASALS L1B input H5 file")
+    parser.add_argument("--output-dir", type=Path, help="Output directory (default: outputs/refh/<h5-stem>/ground).")
+    parser.add_argument(
+        "--point-cloud-dir",
+        type=Path,
+        help="Directory for LAS output (default: <output-dir>/point_clouds)",
+    )
+    parser.add_argument("--config", type=Path, help="Optional JSON object of Config fields")
+    args = parser.parse_args(argv)
+    # -------------------------------------------------------------------------
+    # Apply only the explicit JSON overrides to the shared defaults.
+    # -------------------------------------------------------------------------
+    cfg = default_config(args.h5, args.output_dir, args.point_cloud_dir)
     if args.config:
         overrides = json.loads(args.config.read_text(encoding="utf-8"))
         cfg = replace(
@@ -877,6 +785,10 @@ def main(argv: Optional[list[str]] = None) -> None:
         )
     # -------------------------------------------------------------------------
 
+    make_refh_ground(cfg)
+
+
+def make_refh_ground(cfg: Config) -> Dict[str, Any]:
     if rasterio is None:
         raise RuntimeError(f"rasterio import failed: {_RASTERIO_IMPORT_ERROR}")
 
@@ -892,7 +804,7 @@ def main(argv: Optional[list[str]] = None) -> None:
     print(f"SNR threshold: {cfg.snr_threshold}")
     print("Scientific caveat: output is tentative CASALS-derived ground candidate surface, not final DEM.")
 
-    pd = read_point_data(cfg.h5_path)
+    pd = read_refh_surface_data(cfg.h5_path)
     base = valid_base_mask(pd)
     high = base & (pd.snr >= float(cfg.snr_threshold))
     if not np.any(high):
@@ -1047,11 +959,11 @@ def main(argv: Optional[list[str]] = None) -> None:
             "n_low_outliers": int((cls_high == 7).sum()),
         },
         "summaries": {
-            "high_snr_z": summarize_array(zh),
-            "high_snr_residual_to_prelim": summarize_array(residual_high),
-            "ground_candidate_z": summarize_array(zg),
-            "dtm_values": summarize_array(dtm_final[np.isfinite(dtm_final)]),
-            "nearest_ground_distance_inside_support": summarize_array(nearest_distance[support_mask]),
+            "high_snr_z": summarize_surface_array(zh),
+            "high_snr_residual_to_prelim": summarize_surface_array(residual_high),
+            "ground_candidate_z": summarize_surface_array(zg),
+            "dtm_values": summarize_surface_array(dtm_final[np.isfinite(dtm_final)]),
+            "nearest_ground_distance_inside_support": summarize_surface_array(nearest_distance[support_mask]),
         },
         "preliminary_grid": {
             "width": prelim_grid.width,
@@ -1108,6 +1020,8 @@ def main(argv: Optional[list[str]] = None) -> None:
         "valid_dtm_cell_fraction": float(valid_cells / total_cells),
         "mesh": mesh_info,
     }), indent=2))
+
+    return {"metadata_path": metadata_path, "metadata": metadata}
 
 
 if __name__ == "__main__":

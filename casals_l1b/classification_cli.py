@@ -26,7 +26,6 @@ import pandas as pd
 from laspy import ExtraBytesParams
 from pyproj import CRS, Transformer
 from scipy.spatial import cKDTree
-from sklearn.metrics import accuracy_score, confusion_matrix, precision_recall_fscore_support
 
 from casals_l1b.classification import (
     CLASS_NAME_MAP,
@@ -63,6 +62,14 @@ from casals_l1b.classification import (
     summarize_values,
 )
 from casals_l1b.geo import transform_xy
+from casals_l1b.evaluation import (
+    align_prediction_to_reference,
+    build_classification_summary_row,
+    evaluate_classification,
+    map_reference_labels_to_baseline_classes,
+    read_reference_labels,
+    compute_main_error_counts,
+)
 
 
 
@@ -198,7 +205,7 @@ def build_output_paths(output_root: Path, h5_stem: str) -> Dict[str, Path]:
 def build_initial_run_metadata(
     h5_stem: str,
     h5_path: Path,
-    reference_laz_path: Path,
+    reference_laz_path: Optional[Path],
     output_paths: Dict[str, Path],
     config: Dict[str, Any],
 ) -> Dict[str, Any]:
@@ -208,7 +215,7 @@ def build_initial_run_metadata(
         "h5_stem": h5_stem,
         "inputs": {
             "h5_path": str(h5_path),
-            "reference_laz_path": str(reference_laz_path),
+            "reference_laz_path": None if reference_laz_path is None else str(reference_laz_path),
         },
         "outputs": {key: str(value) for key, value in output_paths.items()},
         "classification_parameters": {
@@ -325,421 +332,16 @@ def build_common_metadata_payload(
 
 
 
-def read_reference_labels(reference_laz_path: Path) -> Dict[str, Any]:
-    las = laspy.read(str(reference_laz_path))
-    dims = set(las.point_format.extra_dimension_names)
-
-    ref: Dict[str, Any] = {
-        "point_count": int(las.header.point_count),
-        "point_format_id": int(las.header.point_format.id),
-        "crs": las.header.parse_crs(),
-        "classification": np.asarray(las.classification, dtype=np.uint8),
-        "x": np.asarray(las.x, dtype=np.float64),
-        "y": np.asarray(las.y, dtype=np.float64),
-        "z": np.asarray(las.z, dtype=np.float64),
-        "available_extra_dims": sorted(dims),
-    }
-    for name in [
-        "point_index",
-        "longitude",
-        "latitude",
-        "transfer_status",
-        "nearest3dep_dist_m",
-        "class_vote_ratio",
-    ]:
-        if name in dims:
-            ref[name] = np.asarray(las[name])
-    return ref
 
 
-def align_prediction_to_reference(
-    prediction: Dict[str, np.ndarray],
-    reference: Dict[str, Any],
-    config: Dict[str, Any],
-) -> Dict[str, Any]:
-    n_pred = int(prediction["point_index"].shape[0])
-    n_ref = int(reference["classification"].shape[0])
-    result: Dict[str, Any] = {
-        "eval_match_valid": np.zeros(n_pred, dtype=np.uint8),
-        "eval_gt_class_raw": np.zeros(n_pred, dtype=np.uint8),
-        "reference_transfer_status": None,
-        "reference_nearest3dep_dist_m": None,
-        "reference_class_vote_ratio": None,
-        "alignment_method": None,
-        "alignment_checks": {},
-    }
-
-    if "point_index" in reference:
-        ref_idx = np.asarray(reference["point_index"], dtype=np.int64)
-        if ref_idx.shape[0] != n_ref:
-            raise ValueError("Reference point_index size does not match reference classification size.")
-        if np.any(ref_idx < 0) or np.any(ref_idx >= n_pred):
-            raise ValueError("Reference point_index contains values outside prediction range.")
-        ref_sorted = np.sort(ref_idx, kind="mergesort")
-        if np.any(ref_sorted[1:] == ref_sorted[:-1]):
-            raise ValueError("Reference point_index contains duplicates.")
-
-        match_valid = np.ones(n_pred, dtype=np.uint8)
-        gt = np.zeros(n_pred, dtype=np.uint8)
-        gt[ref_idx] = np.asarray(reference["classification"], dtype=np.uint8)
-        result["eval_match_valid"] = match_valid
-        result["eval_gt_class_raw"] = gt
-        result["alignment_method"] = "point_index"
-
-        for name in ["transfer_status", "nearest3dep_dist_m", "class_vote_ratio"]:
-            if name in reference:
-                aligned = (
-                    np.full(n_pred, np.nan, dtype=np.float64)
-                    if name != "transfer_status"
-                    else np.full(n_pred, -1, dtype=np.int16)
-                )
-                aligned[ref_idx] = np.asarray(reference[name])
-                if name == "transfer_status":
-                    result["reference_transfer_status"] = aligned.astype(np.int16)
-                elif name == "nearest3dep_dist_m":
-                    result["reference_nearest3dep_dist_m"] = aligned.astype(np.float64)
-                elif name == "class_vote_ratio":
-                    result["reference_class_vote_ratio"] = aligned.astype(np.float64)
-        return result
-
-    if n_ref != n_pred:
-        raise RuntimeError("Reference has no point_index and point counts differ; row-order alignment is not safe.")
-
-    fractions = tuple(config["ROW_ALIGN_CHECK_INDICES"])
-    sample_idx = sorted({int(np.clip(round(frac * (n_pred - 1)), 0, n_pred - 1)) for frac in fractions})
-    checks: Dict[str, Any] = {"sample_indices": sample_idx}
-
-    if "longitude" in reference and "latitude" in reference:
-        dlon = np.abs(np.asarray(reference["longitude"], dtype=np.float64)[sample_idx] - prediction["longitude"][sample_idx])
-        dlat = np.abs(np.asarray(reference["latitude"], dtype=np.float64)[sample_idx] - prediction["latitude"][sample_idx])
-        checks["max_abs_dlon_deg"] = float(np.max(dlon))
-        checks["max_abs_dlat_deg"] = float(np.max(dlat))
-        if float(np.max(dlon)) <= float(config["ROW_ALIGN_LONLAT_TOL_DEG"]) and float(np.max(dlat)) <= float(config["ROW_ALIGN_LONLAT_TOL_DEG"]):
-            result["eval_match_valid"] = np.ones(n_pred, dtype=np.uint8)
-            result["eval_gt_class_raw"] = np.asarray(reference["classification"], dtype=np.uint8)
-            result["alignment_method"] = "row_order_lonlat"
-            result["alignment_checks"] = checks
-            if "transfer_status" in reference:
-                result["reference_transfer_status"] = np.asarray(reference["transfer_status"], dtype=np.int16)
-            if "nearest3dep_dist_m" in reference:
-                result["reference_nearest3dep_dist_m"] = np.asarray(reference["nearest3dep_dist_m"], dtype=np.float64)
-            if "class_vote_ratio" in reference:
-                result["reference_class_vote_ratio"] = np.asarray(reference["class_vote_ratio"], dtype=np.float64)
-            return result
-
-    dx = np.abs(reference["x"][sample_idx] - prediction["x"][sample_idx])
-    dy = np.abs(reference["y"][sample_idx] - prediction["y"][sample_idx])
-    checks["max_abs_dx_m"] = float(np.max(dx))
-    checks["max_abs_dy_m"] = float(np.max(dy))
-    if float(np.max(dx)) <= float(config["ROW_ALIGN_XY_TOL_M"]) and float(np.max(dy)) <= float(config["ROW_ALIGN_XY_TOL_M"]):
-        result["eval_match_valid"] = np.ones(n_pred, dtype=np.uint8)
-        result["eval_gt_class_raw"] = np.asarray(reference["classification"], dtype=np.uint8)
-        result["alignment_method"] = "row_order_xy"
-        result["alignment_checks"] = checks
-        if "transfer_status" in reference:
-            result["reference_transfer_status"] = np.asarray(reference["transfer_status"], dtype=np.int16)
-        if "nearest3dep_dist_m" in reference:
-            result["reference_nearest3dep_dist_m"] = np.asarray(reference["nearest3dep_dist_m"], dtype=np.float64)
-        if "class_vote_ratio" in reference:
-            result["reference_class_vote_ratio"] = np.asarray(reference["class_vote_ratio"], dtype=np.float64)
-        return result
-
-    raise RuntimeError("Reference and prediction could not be aligned safely by row order.")
 
 
-def map_reference_labels_to_baseline_classes(reference_class_raw: np.ndarray) -> np.ndarray:
-    ref = np.asarray(reference_class_raw, dtype=np.uint8)
-    out = np.ones(ref.shape[0], dtype=np.uint8)
-    out[ref == 2] = 2
-    out[(ref == 7) | (ref == 18)] = 7
-    return out
 
 
-def compute_main_error_counts(y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, Any]:
-    y_true = np.asarray(y_true, dtype=np.uint8)
-    y_pred = np.asarray(y_pred, dtype=np.uint8)
-    true1 = y_true == 1
-    true2 = y_true == 2
-    true7 = y_true == 7
-    true1_pred2_count = int(np.count_nonzero(true1 & (y_pred == 2)))
-    true7_pred1_count = int(np.count_nonzero(true7 & (y_pred == 1)))
-    true2_pred1_count = int(np.count_nonzero(true2 & (y_pred == 1)))
-    true2_pred7_count = int(np.count_nonzero(true2 & (y_pred == 7)))
-    return {
-        "true1_pred2_count": true1_pred2_count,
-        "true7_pred1_count": true7_pred1_count,
-        "true2_pred1_count": true2_pred1_count,
-        "true2_pred7_count": true2_pred7_count,
-        "true1_pred2_fraction_of_true1": (
-            None if not np.any(true1) else float(true1_pred2_count / np.count_nonzero(true1))
-        ),
-        "true7_pred1_fraction_of_true7": (
-            None if not np.any(true7) else float(true7_pred1_count / np.count_nonzero(true7))
-        ),
-    }
 
 
-def build_classification_summary_row(
-    h5_stem: str,
-    pred_class_baseline: np.ndarray,
-    eval_gt_class: np.ndarray,
-    eval_match_valid: np.ndarray,
-    dtm_sample_valid: np.ndarray,
-    ground_support_candidate_count: int,
-    valid_dtm_cell_count: int,
-    height_above_ground_m: np.ndarray,
-    refh_snr: np.ndarray,
-    point_density_pts_m3: np.ndarray,
-    classification_reason: np.ndarray,
-) -> Dict[str, Any]:
-    density_reason_codes = {6, 8, 9, 13, 14}
-    row: Dict[str, Any] = {
-        "h5_stem": h5_stem,
-        "point_count": int(pred_class_baseline.size),
-        "matched_count": int(np.count_nonzero(eval_match_valid)),
-        "unmatched_count": int(pred_class_baseline.size - np.count_nonzero(eval_match_valid)),
-        "dtm_invalid_count": int(np.count_nonzero(np.asarray(dtm_sample_valid) == 0)),
-        "ground_support_candidate_count": int(ground_support_candidate_count),
-        "valid_dtm_cell_count": int(valid_dtm_cell_count),
-        "density_noise_count": int(
-            np.count_nonzero(np.isin(np.asarray(classification_reason, dtype=np.uint8), list(density_reason_codes)))
-        ),
-    }
-    pred_counts = collect_class_counts(pred_class_baseline)
-    ref_counts = collect_class_counts(eval_gt_class[np.asarray(eval_match_valid, dtype=bool)])
-    for cls in LABEL_ORDER:
-        row[f"pred_count_{cls}"] = int(pred_counts.get(cls, 0))
-        row[f"ref_count_{cls}"] = int(ref_counts.get(cls, 0))
-        pred_mask = np.asarray(pred_class_baseline, dtype=np.uint8) == cls
-        p05, median, p95 = maybe_quantiles(np.asarray(height_above_ground_m, dtype=np.float64)[pred_mask])
-        row[f"hag_pred_{cls}_p05"] = p05
-        row[f"hag_pred_{cls}_median"] = median
-        row[f"hag_pred_{cls}_p95"] = p95
-        s05, smed, s95 = maybe_quantiles(np.asarray(refh_snr, dtype=np.float64)[pred_mask])
-        row[f"refh_snr_pred_{cls}_p05"] = s05
-        row[f"refh_snr_pred_{cls}_median"] = smed
-        row[f"refh_snr_pred_{cls}_p95"] = s95
-        d05, dmed, d95 = maybe_quantiles(np.asarray(point_density_pts_m3, dtype=np.float64)[pred_mask])
-        row[f"density_pred_{cls}_p05"] = d05
-        row[f"density_pred_{cls}_median"] = dmed
-        row[f"density_pred_{cls}_p95"] = d95
-    return row
 
 
-def compute_evaluation_metrics(
-    pred_class_baseline: np.ndarray,
-    eval_gt_class: np.ndarray,
-    eval_match_valid: np.ndarray,
-    dtm_sample_valid: np.ndarray,
-    reference_transfer_status: Optional[np.ndarray],
-    reference_nearest3dep_dist_m: Optional[np.ndarray],
-    reference_class_vote_ratio: Optional[np.ndarray],
-    config: Dict[str, Any],
-) -> Dict[str, Any]:
-    matched = np.asarray(eval_match_valid, dtype=bool)
-    if config["EVAL_REQUIRE_TRANSFER_STATUS"] is not None and reference_transfer_status is None:
-        raise RuntimeError("EVAL_REQUIRE_TRANSFER_STATUS is set but reference transfer_status is unavailable.")
-
-    base_mask = matched.copy()
-    if bool(config["EVAL_REQUIRE_VALID_DTM"]):
-        base_mask &= np.asarray(dtm_sample_valid, dtype=bool)
-    if bool(config["EVAL_IGNORE_REFERENCE_NOISE"]):
-        base_mask &= np.asarray(eval_gt_class, dtype=np.uint8) != 7
-    if config["EVAL_REQUIRE_TRANSFER_STATUS"] is not None:
-        required = config["EVAL_REQUIRE_TRANSFER_STATUS"]
-        required_values = [int(required)] if np.isscalar(required) else [int(v) for v in required]
-        base_mask &= np.isin(np.asarray(reference_transfer_status), required_values)
-
-    subset_masks: Dict[str, np.ndarray] = {"all_matched": base_mask}
-    if reference_nearest3dep_dist_m is not None and reference_class_vote_ratio is not None:
-        subset_masks["high_confidence_reference"] = (
-            base_mask
-            & np.isfinite(reference_nearest3dep_dist_m)
-            & np.isfinite(reference_class_vote_ratio)
-            & (reference_nearest3dep_dist_m <= float(config["HIGH_CONF_NEAREST3DEP_DIST_M"]))
-            & (reference_class_vote_ratio >= float(config["HIGH_CONF_CLASS_VOTE_RATIO_MIN"]))
-        )
-
-    subset_results: Dict[str, Any] = {}
-    evaluation_summary_rows: list[Dict[str, Any]] = []
-    primary_report_df = pd.DataFrame()
-    primary_confusion_df = pd.DataFrame()
-    primary_metrics: Dict[str, Any] = {}
-
-    for subset_name, subset_mask in subset_masks.items():
-        y_true = np.asarray(eval_gt_class, dtype=np.uint8)[subset_mask]
-        y_pred = np.asarray(pred_class_baseline, dtype=np.uint8)[subset_mask]
-        subset_result: Dict[str, Any] = {
-            "subset_name": subset_name,
-            "n_points": int(y_true.size),
-            "mask_count": int(np.count_nonzero(subset_mask)),
-        }
-        if y_true.size == 0:
-            subset_result["status"] = "no_points_after_filtering"
-            subset_results[subset_name] = subset_result
-            continue
-
-        cm = confusion_matrix(y_true, y_pred, labels=LABEL_ORDER)
-        precision, recall, f1, support = precision_recall_fscore_support(
-            y_true,
-            y_pred,
-            labels=LABEL_ORDER,
-            zero_division=0,
-        )
-        macro = precision_recall_fscore_support(y_true, y_pred, labels=LABEL_ORDER, average="macro", zero_division=0)
-        weighted = precision_recall_fscore_support(y_true, y_pred, labels=LABEL_ORDER, average="weighted", zero_division=0)
-        present_labels = sorted(int(v) for v in np.unique(np.concatenate([y_true, y_pred])) if int(v) in LABEL_ORDER)
-        if present_labels:
-            macro_present = precision_recall_fscore_support(
-                y_true,
-                y_pred,
-                labels=present_labels,
-                average="macro",
-                zero_division=0,
-            )
-            weighted_present = precision_recall_fscore_support(
-                y_true,
-                y_pred,
-                labels=present_labels,
-                average="weighted",
-                zero_division=0,
-            )
-        else:
-            macro_present = (np.nan, np.nan, np.nan, None)
-            weighted_present = (np.nan, np.nan, np.nan, None)
-        accuracy = float(accuracy_score(y_true, y_pred))
-        nonzero_support = [int(v) for v in support if int(v) > 0]
-        support_min = min(nonzero_support) if nonzero_support else 0
-        error_counts = compute_main_error_counts(y_true, y_pred)
-
-        report_rows: list[Dict[str, Any]] = []
-        per_class_metrics: Dict[int, Dict[str, Any]] = {}
-        for i, cls in enumerate(LABEL_ORDER):
-            per_class_metrics[cls] = {
-                "precision": float(precision[i]),
-                "recall": float(recall[i]),
-                "f1": float(f1[i]),
-                "support": int(support[i]),
-            }
-            report_rows.append({
-                "row_name": CLASS_NAME_MAP[cls],
-                "class_code": cls,
-                "precision": float(precision[i]),
-                "recall": float(recall[i]),
-                "f1_score": float(f1[i]),
-                "support": int(support[i]),
-            })
-        report_rows.extend([
-            {
-                "row_name": "macro avg",
-                "class_code": "",
-                "precision": float(macro[0]),
-                "recall": float(macro[1]),
-                "f1_score": float(macro[2]),
-                "support": int(np.sum(support)),
-            },
-            {
-                "row_name": "weighted avg",
-                "class_code": "",
-                "precision": float(weighted[0]),
-                "recall": float(weighted[1]),
-                "f1_score": float(weighted[2]),
-                "support": int(np.sum(support)),
-            },
-            {
-                "row_name": "accuracy",
-                "class_code": "",
-                "precision": None,
-                "recall": None,
-                "f1_score": accuracy,
-                "support": int(np.sum(support)),
-            },
-        ])
-
-        confusion_rows = []
-        for row_i, true_cls in enumerate(LABEL_ORDER):
-            confusion_rows.append({
-                "true_class": true_cls,
-                "true_name": CLASS_NAME_MAP[true_cls],
-                "pred_1": int(cm[row_i, 0]),
-                "pred_2": int(cm[row_i, 1]),
-                "pred_7": int(cm[row_i, 2]),
-                "row_total": int(np.sum(cm[row_i])),
-            })
-
-        subset_result.update({
-            "status": "ok",
-            "accuracy": accuracy,
-            "macro_precision": float(macro[0]),
-            "macro_recall": float(macro[1]),
-            "macro_f1": float(macro[2]),
-            "weighted_precision": float(weighted[0]),
-            "weighted_recall": float(weighted[1]),
-            "weighted_f1": float(weighted[2]),
-            "present_labels": present_labels,
-            "present_label_names": [CLASS_NAME_MAP[int(v)] for v in present_labels],
-            "macro_precision_present": None if not np.isfinite(macro_present[0]) else float(macro_present[0]),
-            "macro_recall_present": None if not np.isfinite(macro_present[1]) else float(macro_present[1]),
-            "macro_f1_present": None if not np.isfinite(macro_present[2]) else float(macro_present[2]),
-            "weighted_precision_present": None if not np.isfinite(weighted_present[0]) else float(weighted_present[0]),
-            "weighted_recall_present": None if not np.isfinite(weighted_present[1]) else float(weighted_present[1]),
-            "weighted_f1_present": None if not np.isfinite(weighted_present[2]) else float(weighted_present[2]),
-            "n_present_labels": int(len(present_labels)),
-            "support_min": int(support_min),
-            "support_1": int(support[0]),
-            "support_2": int(support[1]),
-            "support_7": int(support[2]),
-            "confusion_matrix": cm.astype(int).tolist(),
-            "report_rows": report_rows,
-            "confusion_rows": confusion_rows,
-            "per_class_metrics": per_class_metrics,
-            "y_true": y_true,
-            "y_pred": y_pred,
-            **error_counts,
-        })
-        subset_results[subset_name] = subset_result
-        evaluation_summary_rows.append({
-            "subset_name": subset_name,
-            "n_points": int(y_true.size),
-            "accuracy": accuracy,
-            "macro_precision": float(macro[0]),
-            "macro_recall": float(macro[1]),
-            "macro_f1": float(macro[2]),
-            "weighted_precision": float(weighted[0]),
-            "weighted_recall": float(weighted[1]),
-            "weighted_f1": float(weighted[2]),
-            "macro_precision_present": None if not np.isfinite(macro_present[0]) else float(macro_present[0]),
-            "macro_recall_present": None if not np.isfinite(macro_present[1]) else float(macro_present[1]),
-            "macro_f1_present": None if not np.isfinite(macro_present[2]) else float(macro_present[2]),
-            "weighted_precision_present": None if not np.isfinite(weighted_present[0]) else float(weighted_present[0]),
-            "weighted_recall_present": None if not np.isfinite(weighted_present[1]) else float(weighted_present[1]),
-            "weighted_f1_present": None if not np.isfinite(weighted_present[2]) else float(weighted_present[2]),
-            "n_present_labels": int(len(present_labels)),
-            "support_min": int(support_min),
-            "support_1": int(support[0]),
-            "support_2": int(support[1]),
-            "support_7": int(support[2]),
-            **error_counts,
-        })
-
-        if subset_name == "all_matched":
-            primary_report_df = pd.DataFrame(report_rows)
-            primary_confusion_df = pd.DataFrame(confusion_rows)
-            primary_metrics = {
-                "accuracy": accuracy,
-                "macro_f1": float(macro[2]),
-                "weighted_f1": float(weighted[2]),
-                "per_class_metrics": per_class_metrics,
-                **error_counts,
-            }
-
-    return {
-        "subset_results": subset_results,
-        "evaluation_summary_rows": evaluation_summary_rows,
-        "primary_report_df": primary_report_df,
-        "primary_confusion_df": primary_confusion_df,
-        "primary_metrics": primary_metrics,
-    }
 
 
 def build_error_subset_masks(
@@ -835,7 +437,7 @@ def write_classified_laz(
     pred_class_baseline: np.ndarray,
     fields: Dict[str, np.ndarray],
     eval_gt_class: Optional[np.ndarray],
-    eval_match_valid: np.ndarray,
+    eval_match_valid: Optional[np.ndarray],
     config: Dict[str, Any],
     optional_extra_arrays: Optional[Dict[str, np.ndarray]] = None,
 ) -> None:
@@ -866,8 +468,9 @@ def write_classified_laz(
         ExtraBytesParams(name="dtm_sample_valid", type=np.uint8, description="1 if DTM valid"),
         ExtraBytesParams(name="classification_reason", type=np.uint8, description="Deterministic class reason"),
         ExtraBytesParams(name="pred_class_baseline", type=np.uint8, description="Deterministic class"),
-        ExtraBytesParams(name="eval_match_valid", type=np.uint8, description="1 if eval matched"),
     ]
+    if eval_match_valid is not None:
+        extra_dims.append(ExtraBytesParams(name="eval_match_valid", type=np.uint8, description="1 if eval matched"))
     optional_specs = {
         "refh_snr": np.float32,
         "refh_amp": np.float32,
@@ -915,7 +518,8 @@ def write_classified_laz(
     las["dtm_sample_valid"] = np.asarray(dtm_sample_valid, dtype=np.uint8)
     las["classification_reason"] = np.asarray(classification_reason, dtype=np.uint8)
     las["pred_class_baseline"] = np.asarray(pred_class_baseline, dtype=np.uint8)
-    las["eval_match_valid"] = np.asarray(eval_match_valid, dtype=np.uint8)
+    if eval_match_valid is not None:
+        las["eval_match_valid"] = np.asarray(eval_match_valid, dtype=np.uint8)
     if eval_gt_class is not None:
         las["eval_gt_class"] = np.asarray(eval_gt_class, dtype=np.uint8)
     for name, dtype in optional_specs.items():
@@ -1029,9 +633,14 @@ def write_summary_outputs(
             plt.close(fig)
 
 
-def process_one_pair(input_pair: Dict[str, Path], config: Dict[str, Any]) -> Dict[str, Any]:
-    h5_path = Path(input_pair["h5_path"])
-    reference_laz_path = Path(input_pair["reference_laz_path"])
+def classify_refh(
+    h5_path: str | Path,
+    config: Dict[str, Any],
+    reference_laz_path: str | Path | None = None,
+) -> Dict[str, Any]:
+    """Classify official refh points; evaluate only when a reference is supplied."""
+    h5_path = Path(h5_path)
+    reference_laz_path = None if reference_laz_path is None else Path(reference_laz_path)
     h5_stem = h5_path.stem
     output_paths = build_output_paths(Path(config["OUTPUT_ROOT"]), h5_stem)
     ensure_dir(output_paths["classified_laz"].parent)
@@ -1043,13 +652,13 @@ def process_one_pair(input_pair: Dict[str, Path], config: Dict[str, Any]) -> Dic
     try:
         if not h5_path.exists():
             raise FileNotFoundError(h5_path)
-        if not reference_laz_path.exists():
+        if reference_laz_path is not None and not reference_laz_path.exists():
             raise FileNotFoundError(reference_laz_path)
 
         casals = read_casals_h5_refh_points(h5_path)
         print(f"Read CASALS points: {casals['point_index'].size:,}")
 
-        reference = read_reference_labels(reference_laz_path)
+        reference = None if reference_laz_path is None else read_reference_labels(reference_laz_path)
         crs_info = infer_or_choose_projected_crs(casals, reference)
         projected_crs = crs_info["crs"]
         x, y = transform_xy(casals["lon"], casals["lat"], 4326, projected_crs)
@@ -1181,6 +790,63 @@ def process_one_pair(input_pair: Dict[str, Path], config: Dict[str, Any]) -> Dic
         error_feature_cache: Dict[str, Dict[str, np.ndarray]] = {}
         error_subset_masks: Dict[str, np.ndarray] = {}
 
+        if reference is None:
+            classification_summary_row = build_classification_summary_row(
+                h5_stem=h5_stem,
+                pred_class_baseline=pred_class_baseline,
+                eval_gt_class=eval_gt_class,
+                eval_match_valid=eval_match_valid,
+                dtm_sample_valid=dtm_sample_valid,
+                ground_support_candidate_count=ground_grid["support_count"],
+                valid_dtm_cell_count=ground_grid["valid_cell_count"],
+                height_above_ground_m=height_above_ground_m,
+                refh_snr=refh_snr,
+                point_density_pts_m3=point_density_pts_m3,
+                classification_reason=classification_reason,
+            )
+            write_classified_laz(
+                **common_laz_kwargs,
+                eval_gt_class=None,
+                eval_match_valid=None,
+            )
+            metadata["status"] = "success"
+            metadata.update(common_metadata)
+            metadata["evaluation"] = {"status": "not_run", "reason": "no_reference_provided"}
+            metadata["alignment_method"] = None
+            metadata["classifier_mode"] = str(config["CLASSIFIER_MODE"])
+            metadata["reason_code_map"] = CLASS_REASON_MAP
+            metadata["outputs"] = {
+                "classified_laz": str(output_paths["classified_laz"]),
+                "classification_summary_csv": str(output_paths["classification_summary_csv"]),
+                "run_metadata_json": str(output_paths["run_metadata_json"]),
+            }
+            pd.DataFrame([classification_summary_row]).to_csv(output_paths["classification_summary_csv"], index=False)
+            safe_json_dump(metadata, output_paths["run_metadata_json"])
+            print(f"Wrote: {output_paths['classified_laz']}")
+            return {
+                "status": "success",
+                "h5_stem": h5_stem,
+                "classification_summary_row": classification_summary_row,
+                "evaluation_summary_rows": [],
+                "confusion_rows_by_subset": {},
+                "classification_summary_arrays": {
+                    "pred_class_baseline": pred_class_baseline,
+                    "eval_gt_class": eval_gt_class,
+                    "eval_match_valid": eval_match_valid,
+                    "dtm_sample_valid": dtm_sample_valid,
+                    "height_above_ground_m": height_above_ground_m,
+                    "refh_snr": refh_snr,
+                    "point_density_pts_m3": point_density_pts_m3,
+                    "classification_reason": classification_reason,
+                    "ground_support_candidate_count": ground_grid["support_count"],
+                    "valid_dtm_cell_count": ground_grid["valid_cell_count"],
+                },
+                "evaluation_arrays_by_subset": {},
+                "error_feature_rows": [],
+                "error_feature_cache": {},
+                "metadata_path": output_paths["run_metadata_json"],
+            }
+
         try:
             alignment = align_prediction_to_reference(
                 prediction={
@@ -1202,7 +868,7 @@ def process_one_pair(input_pair: Dict[str, Path], config: Dict[str, Any]) -> Dic
             reference_class_vote_ratio = alignment["reference_class_vote_ratio"]
             print(f"Evaluation alignment: {alignment_method}")
 
-            evaluation_metrics = compute_evaluation_metrics(
+            evaluation_metrics = evaluate_classification(
                 pred_class_baseline=pred_class_baseline,
                 eval_gt_class=eval_gt_class,
                 eval_match_valid=eval_match_valid,
@@ -1489,64 +1155,44 @@ def write_all_files_outputs(
             aggregate_by_subset[subset_name]["y_true"].append(arrays["y_true"])
             aggregate_by_subset[subset_name]["y_pred"].append(arrays["y_pred"])
 
+    aggregate_config = {
+        **config,
+        "EVAL_REQUIRE_VALID_DTM": False,
+        "EVAL_IGNORE_REFERENCE_NOISE": False,
+        "EVAL_REQUIRE_TRANSFER_STATUS": None,
+    }
     for subset_name, arrays in aggregate_by_subset.items():
         y_true = np.concatenate(arrays["y_true"]) if arrays["y_true"] else np.array([], dtype=np.uint8)
         y_pred = np.concatenate(arrays["y_pred"]) if arrays["y_pred"] else np.array([], dtype=np.uint8)
         if y_true.size == 0:
             continue
-        cm = confusion_matrix(y_true, y_pred, labels=LABEL_ORDER)
-        per_class = precision_recall_fscore_support(y_true, y_pred, labels=LABEL_ORDER, zero_division=0)
-        macro = precision_recall_fscore_support(y_true, y_pred, labels=LABEL_ORDER, average="macro", zero_division=0)
-        weighted = precision_recall_fscore_support(y_true, y_pred, labels=LABEL_ORDER, average="weighted", zero_division=0)
-        present_labels = sorted(int(v) for v in np.unique(np.concatenate([y_true, y_pred])) if int(v) in LABEL_ORDER)
-        if present_labels:
-            macro_present = precision_recall_fscore_support(
-                y_true, y_pred, labels=present_labels, average="macro", zero_division=0
-            )
-            weighted_present = precision_recall_fscore_support(
-                y_true, y_pred, labels=present_labels, average="weighted", zero_division=0
-            )
-        else:
-            macro_present = (np.nan, np.nan, np.nan, None)
-            weighted_present = (np.nan, np.nan, np.nan, None)
-        support = per_class[3]
-        nonzero_support = [int(v) for v in support if int(v) > 0]
-        error_counts = compute_main_error_counts(y_true, y_pred)
-        evaluation_summary_rows.append({
-            "h5_stem": "__all__",
-            "subset_name": subset_name,
-            "n_points": int(y_true.size),
-            "accuracy": float(accuracy_score(y_true, y_pred)),
-            "macro_precision": float(macro[0]),
-            "macro_recall": float(macro[1]),
-            "macro_f1": float(macro[2]),
-            "weighted_precision": float(weighted[0]),
-            "weighted_recall": float(weighted[1]),
-            "weighted_f1": float(weighted[2]),
-            "macro_precision_present": None if not np.isfinite(macro_present[0]) else float(macro_present[0]),
-            "macro_recall_present": None if not np.isfinite(macro_present[1]) else float(macro_present[1]),
-            "macro_f1_present": None if not np.isfinite(macro_present[2]) else float(macro_present[2]),
-            "weighted_precision_present": None if not np.isfinite(weighted_present[0]) else float(weighted_present[0]),
-            "weighted_recall_present": None if not np.isfinite(weighted_present[1]) else float(weighted_present[1]),
-            "weighted_f1_present": None if not np.isfinite(weighted_present[2]) else float(weighted_present[2]),
-            "n_present_labels": int(len(present_labels)),
-            "support_min": int(min(nonzero_support)) if nonzero_support else 0,
-            "support_1": int(support[0]),
-            "support_2": int(support[1]),
-            "support_7": int(support[2]),
-            **error_counts,
-        })
-        for row_i, true_cls in enumerate(LABEL_ORDER):
-            confusion_rows.append({
-                "h5_stem": "__all__",
-                "subset_name": subset_name,
-                "true_class": true_cls,
-                "true_name": CLASS_NAME_MAP[true_cls],
-                "pred_1": int(cm[row_i, 0]),
-                "pred_2": int(cm[row_i, 1]),
-                "pred_7": int(cm[row_i, 2]),
-                "row_total": int(np.sum(cm[row_i])),
-            })
+        aggregate_metrics = evaluate_classification(
+            pred_class_baseline=y_pred,
+            eval_gt_class=y_true,
+            eval_match_valid=np.ones(y_true.size, dtype=np.uint8),
+            dtm_sample_valid=np.ones(y_true.size, dtype=np.uint8),
+            reference_transfer_status=None,
+            reference_nearest3dep_dist_m=None,
+            reference_class_vote_ratio=None,
+            config=aggregate_config,
+        )
+        subset = aggregate_metrics["subset_results"]["all_matched"]
+        metric_names = (
+            "n_points", "accuracy", "macro_precision", "macro_recall", "macro_f1",
+            "weighted_precision", "weighted_recall", "weighted_f1",
+            "macro_precision_present", "macro_recall_present", "macro_f1_present",
+            "weighted_precision_present", "weighted_recall_present", "weighted_f1_present",
+            "n_present_labels", "support_min", "support_1", "support_2", "support_7",
+            "true1_pred2_count", "true7_pred1_count", "true2_pred1_count", "true2_pred7_count",
+            "true1_pred2_fraction_of_true1", "true7_pred1_fraction_of_true7",
+        )
+        evaluation_summary_rows.append(
+            {"h5_stem": "__all__", "subset_name": subset_name, **{name: subset.get(name) for name in metric_names}}
+        )
+        confusion_rows.extend(
+            {"h5_stem": "__all__", "subset_name": subset_name, **row}
+            for row in subset["confusion_rows"]
+        )
 
     pd.DataFrame(
         evaluation_summary_rows,
@@ -1629,16 +1275,16 @@ def write_all_files_outputs(
 def main(argv: Optional[list[str]] = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--h5", action="append", type=Path, required=True, help="CASALS L1B H5 input; repeat for multiple pairs.")
-    parser.add_argument("--reference", action="append", type=Path, required=True, help="Transferred pseudo-reference LAS/LAZ; repeat in the same order as --h5.")
+    parser.add_argument("--reference", action="append", type=Path, help="Optional transferred pseudo-reference LAS/LAZ; repeat in the same order as --h5.")
     parser.add_argument("--output-dir", type=Path, default=Path("outputs/classification"))
     parser.add_argument("--config", type=Path, help="Optional JSON object overriding classifier configuration.")
     args = parser.parse_args(argv)
-    if len(args.h5) != len(args.reference):
+    if args.reference is not None and len(args.h5) != len(args.reference):
         parser.error("provide the same number of --h5 and --reference arguments")
 
     input_pairs = [
-        {"h5_path": h5_path, "reference_laz_path": reference_path}
-        for h5_path, reference_path in zip(args.h5, args.reference)
+        {"h5_path": h5_path, "reference_laz_path": None if args.reference is None else args.reference[i]}
+        for i, h5_path in enumerate(args.h5)
     ]
 
     config_overrides: Dict[str, Any] = {"OUTPUT_ROOT": args.output_dir}
@@ -1664,16 +1310,24 @@ def main(argv: Optional[list[str]] = None) -> None:
             "all_files_error_feature_summary_csv": str(Path(config["OUTPUT_ROOT"]) / "all_files_error_feature_summary.csv"),
             "all_files_run_metadata_json": str(Path(config["OUTPUT_ROOT"]) / "all_files_run_metadata.json"),
         },
-        "reference_type": "3dep_transferred_pseudo_reference",
-        "learning_based_methods_used": False,
-        "supervised_training_used": False,
-        "pseudo_reference_used_only_for_evaluation": True,
-        "selected_rules_must_be_visually_validated": True,
+        "evaluation_status": "pending" if args.reference is not None else "not_run_no_reference",
     }
+    if args.reference is not None:
+        all_metadata.update({
+            "reference_type": "3dep_transferred_pseudo_reference",
+            "learning_based_methods_used": False,
+            "supervised_training_used": False,
+            "pseudo_reference_used_only_for_evaluation": True,
+            "selected_rules_must_be_visually_validated": True,
+        })
 
     for input_pair in input_pairs:
         print(f"\n=== Processing pair: {input_pair['h5_path'].stem} ===")
-        result = process_one_pair(input_pair, config)
+        result = classify_refh(
+            input_pair["h5_path"],
+            config,
+            reference_laz_path=input_pair["reference_laz_path"],
+        )
         if result["status"] == "success":
             successful_results.append(result)
             all_metadata["successful_files"].append({
@@ -1688,13 +1342,21 @@ def main(argv: Optional[list[str]] = None) -> None:
                 "error": result.get("error"),
             })
 
-    write_all_files_outputs(
-        successful_results=successful_results,
-        failed_results=failed_results,
-        config=config,
-        input_pairs=input_pairs,
-        all_metadata=all_metadata,
-    )
+    if args.reference is not None:
+        write_all_files_outputs(
+            successful_results=successful_results,
+            failed_results=failed_results,
+            config=config,
+            input_pairs=input_pairs,
+            all_metadata=all_metadata,
+        )
+    else:
+        all_metadata["totals"] = {
+            "n_input_pairs": len(input_pairs),
+            "n_successful_pairs": len(successful_results),
+            "n_failed_pairs": len(failed_results),
+        }
+        safe_json_dump(all_metadata, Path(config["OUTPUT_ROOT"]) / "all_files_run_metadata.json")
 
 
 if __name__ == "__main__":

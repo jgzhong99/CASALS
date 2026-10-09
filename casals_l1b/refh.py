@@ -15,7 +15,13 @@ from laspy import ExtraBytesParams
 from pyproj import CRS
 
 from .geo import infer_wgs84_utm_epsg, transform_lonlat_to_projected, validate_inverse_projection
-from .h5 import read_global_attributes, read_root_1d
+from .h5 import (
+    find_dataset,
+    read_global_attributes,
+    read_optional_array,
+    read_root_1d,
+    require_dataset,
+)
 from .noise import NoiseResult
 
 
@@ -73,6 +79,23 @@ class ProjectedRefh:
     utm_epsg: int
     utm_crs_name: str
     projection_check: dict[str, Any]
+
+
+@dataclass
+class RefhSurfaceData:
+    """Unfiltered refh fields used by the DSM and tentative DTM workflows."""
+
+    lon: np.ndarray
+    lat: np.ndarray
+    z: np.ndarray
+    snr: np.ndarray
+    amp: np.ndarray
+    thres: np.ndarray
+    good_snr: np.ndarray
+    track_num: Optional[np.ndarray]
+    sweep_num: Optional[np.ndarray]
+    pulse_index: np.ndarray
+    attrs: dict[str, Any]
 
 
 def build_valid_mask(
@@ -213,6 +236,121 @@ def read_refh_points(
         n_valid_records=n_valid,
         input_mask_summary=summary,
     )
+
+
+def read_refh_surface_data(h5_path: Path) -> RefhSurfaceData:
+    """Read the full, unfiltered point arrays used by DSM and DTM workflows.
+
+    Unlike :func:`read_refh_points`, this preserves invalid rows so each
+    surface algorithm can apply its established input mask and retain pulse
+    indexing exactly as before.
+    """
+    with h5py.File(h5_path, "r") as h5:
+        lon = np.asarray(require_dataset(h5, "refh_longitude")[...], dtype=np.float64).reshape(-1)
+        lat = np.asarray(require_dataset(h5, "refh_latitude")[...], dtype=np.float64).reshape(-1)
+        z = np.asarray(require_dataset(h5, "refh")[...], dtype=np.float64).reshape(-1)
+        amp = np.asarray(require_dataset(h5, "refh_amp")[...], dtype=np.float64).reshape(-1)
+
+        thres_ds = find_dataset(h5, "refh_thres")
+        thres = (
+            np.asarray(thres_ds[...], dtype=np.float64).reshape(-1)
+            if thres_ds is not None
+            else np.full(lon.shape, np.nan, dtype=np.float64)
+        )
+        snr_ds = find_dataset(h5, "refh_snr")
+        if snr_ds is not None:
+            snr = np.asarray(snr_ds[...], dtype=np.float64).reshape(-1)
+        elif thres_ds is not None:
+            snr = np.divide(amp, thres, out=np.full_like(amp, np.nan), where=(thres != 0))
+        else:
+            raise KeyError("Neither refh_snr nor refh_thres was found; cannot compute SNR.")
+
+        good_snr = read_optional_array(h5, "good_snr", lon.size)
+        good_snr = good_snr.astype(bool) if good_snr is not None else (snr >= 5.0)
+        track_num = read_optional_array(h5, "track_num", lon.size)
+        sweep_num = read_optional_array(h5, "sweep_num", lon.size)
+        attrs = read_global_attributes(h5)
+
+    sizes = {
+        "lon": lon.size,
+        "lat": lat.size,
+        "z": z.size,
+        "snr": snr.size,
+        "amp": amp.size,
+        "thres": thres.size,
+        "good_snr": good_snr.size,
+    }
+    if len(set(sizes.values())) != 1:
+        raise ValueError(f"Required datasets do not have matching sizes: {sizes}")
+
+    return RefhSurfaceData(
+        lon=lon,
+        lat=lat,
+        z=z,
+        snr=snr,
+        amp=amp,
+        thres=thres,
+        good_snr=good_snr,
+        track_num=track_num,
+        sweep_num=sweep_num,
+        pulse_index=np.arange(lon.size, dtype=np.uint32),
+        attrs=attrs,
+    )
+
+
+def summarize_refh_array(name: str, values: np.ndarray) -> dict[str, Any]:
+    """Return the shared finite-value summary used by refh export/filter."""
+    array = np.asarray(values)
+    try:
+        numeric = array.astype(np.float64, copy=False)
+    except (TypeError, ValueError):
+        return {"name": name, "n": int(array.size), "dtype": str(array.dtype), "summary": "non_numeric"}
+    finite = np.isfinite(numeric)
+    if not np.any(finite):
+        return {
+            "name": name,
+            "n": int(array.size),
+            "n_finite": 0,
+            "min": None,
+            "p02": None,
+            "p50": None,
+            "p98": None,
+            "max": None,
+        }
+    percentiles = np.nanpercentile(numeric[finite], [2, 50, 98])
+    return {
+        "name": name,
+        "n": int(array.size),
+        "n_finite": int(np.sum(finite)),
+        "min": float(np.nanmin(numeric[finite])),
+        "p02": float(percentiles[0]),
+        "p50": float(percentiles[1]),
+        "p98": float(percentiles[2]),
+        "max": float(np.nanmax(numeric[finite])),
+    }
+
+
+def summarize_surface_array(
+    values: np.ndarray,
+    percentiles: tuple[float, ...] = (0, 1, 2, 5, 50, 95, 98, 99, 100),
+) -> dict[str, Any]:
+    """Return the identical array summary used by DSM and tentative DTM."""
+    array = np.asarray(values, dtype=np.float64)
+    finite = array[np.isfinite(array)]
+    if finite.size == 0:
+        return {"n": int(array.size), "n_finite": 0}
+    return {
+        "n": int(array.size),
+        "n_finite": int(finite.size),
+        "min": float(np.nanmin(finite)),
+        "max": float(np.nanmax(finite)),
+        "mean": float(np.nanmean(finite)),
+        "std": float(np.nanstd(finite)),
+        "percentiles": {
+            str(percentile): float(np.nanpercentile(finite, percentile))
+            for percentile in percentiles
+        },
+    }
 
 
 def project_refh_points(

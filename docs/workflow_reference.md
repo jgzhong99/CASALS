@@ -2,53 +2,68 @@
 
 ## Scientific interpretation
 
-CASALS L1B is treated as a geolocated waveform product, not a traditional discrete-return point cloud. Each pulse has one official geolocated `refh` point, defined by `refh_longitude`, `refh_latitude`, and `refh`; `refh` corresponds to the receiver waveform maximum-amplitude bin. Unless source metadata documents otherwise, `refh` is interpreted as WGS84 ellipsoidal height.
+CASALS L1B is a geolocated waveform product. Each pulse has one official `refh` point defined by `refh_longitude`, `refh_latitude`, and `refh`; `refh` is associated with the RX waveform maximum-amplitude bin. Secondary detected components are not official returns. The geolocation module can create experimental candidate coordinates for them, but these are not a validated multi-return point cloud.
 
-Secondary peaks found in a sampled waveform are diagnostic features. They are not official geolocated returns and do not create a formal multi-return point cloud. Horizontal projection is separate from vertical reference-frame interpretation. The scripts do not silently apply a vertical datum correction.
+Horizontal projection and vertical reference-frame interpretation are separate. `refh` is treated as WGS84 ellipsoidal height unless source metadata documents otherwise. Empirical CASALS-to-3DEP height alignment is not a geoid or datum transformation.
 
-## Formal workflows
+## Formal command groups
 
-Run commands from the repository root after installing the package. Set `--h5`, `--reference`, or other input paths explicitly when required. Each script provides `--help`.
+Run commands from the repository root. Outputs default beneath `outputs/<workflow>/<input-stem>/<step>/`; use `--output-dir` to choose another location.
 
-| Step | Entry point | Purpose |
+| Group | Command | Purpose |
 | --- | --- | --- |
-| 1 | `python -m casals_l1b refh-export --h5 <file.h5>` | Export an unclassified Level-A refh LAS. |
-| 2 | `python -m casals_l1b refh-filter --h5 <file.h5>` | Write raw, noise-labeled, and clean refh LAS products. |
-| 3 | `python -m casals_l1b peaks --h5 <file.h5>` | Derive waveform component and pulse/sweep diagnostics. |
-| 4 | `python -m casals_l1b refh-dsm --h5 <file.h5>` | Build a support-limited refh surface DSM with a raw strict companion. |
-| 5 | `python -m casals_l1b refh-ground --h5 <file.h5>` | Derive tentative ground candidates and an interpolated DTM. |
-| 6 | `python -m casals_l1b download-3dep --h5 <file.h5>` | Query the USGS 3DEP LPC index and clip usable EPT resources. Requires PDAL. |
-| 7 | `python -m casals_l1b diagnose-3dep --h5 <file.h5> --reference <clip.laz>` | Diagnose CASALS/3DEP vertical and reference-frame differences without modifying CASALS points. |
-| 8 | `python -m casals_l1b transfer-3dep --casals-h5 <file.h5> --dep3-las <clip.laz>` | Transfer 3DEP labels for pseudo-reference analysis. |
-| 9 | `python -m casals_l1b classify-refh --h5 <file.h5> --reference <labels.laz>` | Run the configured deterministic refh classifier and evaluation. |
+| `refh` | `python -m casals_l1b refh export --h5 <file.h5>` | Export official unclassified Level-A refh LAS. |
+| `refh` | `python -m casals_l1b refh filter --h5 <file.h5>` | Write raw, noise-labeled, and clean refh products. |
+| `refh` | `python -m casals_l1b refh dsm --h5 <file.h5>` | Build a support-limited refh surface DSM and strict observed-cell companion. |
+| `refh` | `python -m casals_l1b refh ground --h5 <file.h5>` | Derive tentative ground candidates and an interpolated DTM. |
+| `refh` | `python -m casals_l1b refh classify --h5 <file.h5>` | Predict classes using CASALS H5 and configured classifier rules. |
+| `refh` | `python -m casals_l1b refh evaluate --prediction <pred.laz> --reference <ref.laz>` | Evaluate an existing prediction against an explicitly aligned reference. |
+| `peaks` | `python -m casals_l1b peaks extract --h5 <file.h5>` | Extract bounded-slice waveform component and pulse/sweep diagnostics. |
+| `peaks` | `python -m casals_l1b peaks locate --h5 <file.h5> --components <components.parquet> --method both` | Map existing components to experimental segment and/or beam candidates. |
+| `peaks` | `python -m casals_l1b peaks validate --h5 <file.h5> --candidates <candidates.parquet>` | Check candidate schema and H5 pulse identity. |
+| `reference` | `python -m casals_l1b reference download --h5 <file.h5>` | Query the USGS 3DEP index and clip usable EPT resources; requires PDAL. |
+| `reference` | `python -m casals_l1b reference diagnose --h5 <file.h5> --reference <clip.laz>` | Diagnose CASALS/3DEP frame and height differences. |
+| `reference` | `python -m casals_l1b reference transfer --casals-h5 <file.h5> --dep3-las <clip.laz>` | Transfer labels for pseudo-reference analysis. |
 
-Per-input outputs live under `outputs/{refh,classification,peaks,reference}/<input-stem>/<step>/`. LAS/LAZ products stay beside their workflow metadata and diagnostics. The 3DEP downloader writes manifests under `outputs/reference/<h5-stem>/download/`; downloaded reference clips belong in `data/reference/3dep/`. Research figures and reports use the same domain roots where an input file identifies the result; multi-input aggregates may use a shared explicitly named directory.
-
-## Waveform feature extraction
-
-The feature extractor reads large `rx_waveform` arrays in bounded slices. It does not assume every dataset has a complete rectangular sweep/track layout. Its outputs are component-level, pulse-level, and sweep-level summaries, with optional diagnostic figures.
-
-Interpret the output conservatively:
-
-- Candidate component count is not a true return count.
-- Prominent secondary components are waveform features, not official returns.
-- Range-window checks and tentative height bookkeeping do not geolocate additional returns.
-- Waveform features can support refh quality diagnosis or downstream experiments, but they do not change the official refh definition.
-
-The current examples are `notebooks/01_refh_data_contract.ipynb` and `notebooks/02_waveform_components.ipynb`. Earlier introduction and waveform notebooks, including the range-window/bin-mapping hypothesis, are preserved under `research/archived_notebooks/`.
+`python -m casals_l1b --help` lists only these three top-level groups. Each nested command supports `--help`. Standalone viewer, animation, and parameter-exploration tools remain under `tools/` and `research/` and are not registered in the main CLI.
 
 ## Refh products
 
-- `refh-export` writes unclassified Level-A refh records; initial LAS classification is `1`.
-- `refh-filter` assigns likely noise class `7` and records its noise reason codes. It preserves the original threshold and class semantics.
-- `refh-dsm` writes a support-limited filled DSM and a strict observed-cell companion. Fill products are restricted to the configured support mask; they are not a classified ground DEM.
-- `refh-ground` writes a tentative derived ground-candidate product and DTM, not an official ground DEM.
-- `classify-refh` uses transferred 3DEP labels only as pseudo-reference evaluation labels. Its metrics are not independent accuracy estimates.
+- `refh export` writes each valid official max-RX-bin `refh` point as LAS class 1.
+- `refh filter` preserves raw points, records likely noise as class 7 with a `noise_reason` code, and writes a clean product under the configured thresholds.
+- `refh dsm` writes an interpolated surface only within its support mask and retains the strict observed-cell DSM for audit. It is not a ground DEM.
+- `refh ground` uses a distinct tentative ground-candidate algorithm and writes a derived DTM. It is not an official or independently validated terrain product.
+- `refh classify` does not require a reference file. It writes class predictions, reason codes, point indices, counts, and run metadata. If no reference is supplied, evaluation metadata reports `not_run` and no accuracy metrics are generated.
+- `refh evaluate` is separate from prediction. In the optional combined classify path, the reference is passed explicitly after prediction. 3DEP-transferred labels are pseudo-reference labels; the reported metrics do not certify independent accuracy.
+
+## Waveform extraction and geolocation
+
+`peaks extract` uses the package's existing detector with bounded H5 reads. The component table retains the existing detector schema and indices. Candidate component count is not a return count, and feature extraction does not geolocate additional returns.
+
+`peaks locate` reads the component table and H5 pulse records. It checks `pulse_index` against `sweep_num` and `track_num`, then writes `candidate_points.parquet`, `validation_summary.csv`, `closure_residuals.csv`, and `run_metadata.json`.
+
+- The segment method interpolates WGS84 ECEF `rwstart` to `rwstop` by `peak_bin / (n_rx_bins - 1)`. Raw RX argmax closure is an internal consistency check and does not fit model parameters.
+- The beam method uses the documented local-angle convention and an official `refh` anchor with H5 `bin_size`. Its candidates and closure are refh-anchored by construction.
+- Coordinate validity records that finite modeled coordinates were produced. It does not establish that a secondary component is a physical return or that its absolute location is correct.
+- Segment/beam agreement is internal model agreement. Neither method is an independent reference for the other.
+
+The measured real-data residuals, model comparison, and unresolved assumptions are in [the improvement report](refactor_improvement_report.md).
+
+## Current notebooks and historical records
+
+The current runnable notebooks are:
+
+1. `notebooks/01_refh_quality.ipynb`
+2. `notebooks/02_refh_classification.ipynb`
+3. `notebooks/03_waveform_analysis.ipynb`
+4. `notebooks/04_peak_geolocation.ipynb`
+
+They use explicit local data paths and package APIs. Missing inputs produce an actionable error rather than a synthetic fallback. The 21 earlier notebooks and four superseded synthetic root demos, with their saved outputs, remain under `research/archived_notebooks/`.
 
 ## 3DEP comparisons
 
-The downloader writes EPT-derived clips, not archival copies of source USGS LAZ tiles. It preserves project metadata and does not transform vertical datum. Offset diagnosis keeps geodetic reference-frame checks in that workflow; they are not folded into general coordinate helpers. Pseudo-label transfer outputs remain analysis products.
+Downloaded clips are EPT-derived products, not archival copies of source USGS tiles. The label-transfer workflow estimates an empirical ground alignment term and stores match status, distance, and voting fields. Treat its labels as pseudo-reference. It does not modify source H5 inputs or certify vertical datum agreement.
 
-## Historical research records
+## Research records
 
-Notebook sources and saved outputs are preserved. Prior generated products were moved beneath `outputs/baseline_pre_refactor/` for comparison and are not post-refactor results. For the original HEAD, major configuration, metrics, and output inventory, see [refactor_baseline.md](refactor_baseline.md). The experiment index is [experiments.md](experiments.md).
+The earlier project history and baseline inventory remain in [refactor_baseline.md](refactor_baseline.md). The active implementation and verification evidence are in [refactor_improvement_report.md](refactor_improvement_report.md).

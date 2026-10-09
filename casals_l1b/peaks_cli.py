@@ -597,7 +597,63 @@ def build_metadata(
     }
 
 
-def process_one_file(cfg: Config, input_h5_path: Path) -> dict[str, Any]:
+def default_config(input_h5_paths: Sequence[Path], output_root: Path = Path("outputs/peaks")) -> Config:
+    """Return the unchanged detector settings used by the supported CLI."""
+    return Config(
+        input_h5_paths=[Path(path) for path in input_h5_paths],
+        output_root=Path(output_root),
+        sweep_start=5000,
+        sweep_end=5002,
+        background_mode="minus_bg_mean",
+        clip_negative_after_background=True,
+        smoothing_method="savgol",
+        smoothing_window=7,
+        smoothing_polyorder=2,
+        min_height_sigma=3.0,
+        min_prominence_sigma=4.0,
+        min_width_bins=1.0,
+        max_width_bins=80.0,
+        min_distance_bins=5,
+        max_candidate_components_per_pulse=8,
+        min_prominent_prominence_sigma=5.0,
+        min_prominent_relative_to_main=0.20,
+        min_secondary_separation_bins=8,
+        broad_main_width_bins=30.0,
+        weak_main_prominence_sigma=4.0,
+        edge_exclusion_bins=10,
+        stripe_bin_tolerance=2,
+        stripe_min_fraction=0.20,
+        write_component_table=True,
+        write_pulse_summary=True,
+        write_sweep_summary=True,
+        write_diagnostic_png=True,
+    )
+
+
+def extract_components(
+    h5_path: str | Path,
+    sweep_selection: Sequence[int] | None = None,
+    config: Config | None = None,
+    output_dir: str | Path | None = None,
+) -> dict[str, Any]:
+    """Extract components with the single established detector implementation.
+
+    Waveform reads remain limited to the selected sweep records. Scalar H5
+    fields and the sweep/track index are read once to preserve current indexing.
+    """
+    h5_path = Path(h5_path)
+    cfg = default_config([h5_path], Path(output_dir or "outputs/peaks")) if config is None else config
+    cfg.input_h5_paths = [h5_path]
+    if output_dir is not None:
+        cfg.output_root = Path(output_dir)
+    if sweep_selection is not None:
+        cfg.selected_sweeps = [int(value) for value in sweep_selection]
+        cfg.sweep_start = None
+        cfg.sweep_end = None
+    return _extract_components(cfg, h5_path)
+
+
+def _extract_components(cfg: Config, input_h5_path: Path) -> dict[str, Any]:
     require_scipy()
 
     h5_path = resolve_path(input_h5_path)
@@ -917,11 +973,13 @@ def process_one_file(cfg: Config, input_h5_path: Path) -> dict[str, Any]:
 def run_all(cfg: Config) -> list[dict[str, Any]]:
     results = []
     for h5_path in cfg.input_h5_paths:
-        results.append(process_one_file(cfg, h5_path))
+        results.append(extract_components(h5_path, cfg.selected_sweeps, cfg, cfg.output_root))
     return results
 
 
 def main(argv: Optional[list[str]] = None) -> None:
+    if argv and argv[0] == "extract":
+        argv = argv[1:]
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--h5", action="append", type=Path, required=True, help="Input H5 file; repeat to process more than one granule.")
     parser.add_argument("--output-dir", type=Path, default=Path("outputs/peaks"), help="Output root; each H5 stem gets its own subdirectory.")
@@ -933,41 +991,12 @@ def main(argv: Optional[list[str]] = None) -> None:
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args(argv)
 
-    cfg = Config(
-        input_h5_paths=args.h5,
-        output_root=args.output_dir,
-        sweep_start=None if args.all_sweeps else args.sweep_start,
-        sweep_end=None if args.all_sweeps else args.sweep_end,
-        sweep_step=args.sweep_step,
-        selected_sweeps=None,
-        selected_tracks=None,
-        max_sweeps=args.max_sweeps,
-        background_mode="minus_bg_mean",
-        clip_negative_after_background=True,
-        smoothing_method="savgol",
-        smoothing_window=7,
-        smoothing_polyorder=2,
-        min_height_sigma=3.0,
-        min_prominence_sigma=4.0,
-        min_width_bins=1.0,
-        max_width_bins=80.0,
-        min_distance_bins=5,
-        max_candidate_components_per_pulse=8,
-        min_prominent_prominence_sigma=5.0,
-        min_prominent_relative_to_main=0.20,
-        min_secondary_separation_bins=8,
-        broad_main_width_bins=30.0,
-        weak_main_prominence_sigma=4.0,
-        edge_exclusion_bins=10,
-        stripe_bin_tolerance=2,
-        stripe_min_fraction=0.20,
-        write_component_table=True,
-        write_pulse_summary=True,
-        write_sweep_summary=True,
-        write_diagnostic_png=True,
-        diagnostic_sweeps=None,
-        random_seed=args.seed,
-    )
+    cfg = default_config(args.h5, args.output_dir)
+    cfg.sweep_start = None if args.all_sweeps else args.sweep_start
+    cfg.sweep_end = None if args.all_sweeps else args.sweep_end
+    cfg.sweep_step = args.sweep_step
+    cfg.max_sweeps = args.max_sweeps
+    cfg.random_seed = args.seed
     run_all(cfg)
 
 

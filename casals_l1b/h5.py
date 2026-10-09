@@ -20,6 +20,35 @@ DEFAULT_ATTR_KEYS = (
 )
 
 
+def normalize_attribute(value: Any) -> Any:
+    """Convert one HDF5 attribute to ordinary Python values for metadata."""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
+
+
+def read_global_attributes(h5: h5py.File) -> dict[str, Any]:
+    return {str(key): normalize_attribute(value) for key, value in h5.attrs.items()}
+
+
+def require_root_dataset(h5: h5py.File, name: str) -> h5py.Dataset:
+    """Require the root-level dataset used by the original refh workflows."""
+    if name not in h5 or not isinstance(h5[name], h5py.Dataset):
+        raise KeyError(f"Required root dataset {name!r} was not found in the H5 file.")
+    return h5[name]
+
+
+def read_root_1d(h5: h5py.File, name: str) -> np.ndarray:
+    values = np.asarray(require_root_dataset(h5, name)[...])
+    if values.ndim != 1:
+        raise ValueError(f"Dataset {name!r} is expected to be 1D, got shape {values.shape}.")
+    return values
+
+
 def find_dataset(h5: h5py.File, name: str) -> h5py.Dataset | None:
     """Find a root dataset or a unique recursive basename match."""
     normalized = name.strip("/")

@@ -49,6 +49,47 @@ def transform_xy(
     return np.asarray(out_x, dtype=np.float64), np.asarray(out_y, dtype=np.float64)
 
 
+def validate_inverse_projection(
+    x: np.ndarray,
+    y: np.ndarray,
+    lon: np.ndarray,
+    lat: np.ndarray,
+    utm_epsg: int,
+    sample_size: int = 50_000,
+    seed: int = 42,
+) -> dict[str, float]:
+    """Check projected XY round-trips without changing the supplied coordinates."""
+    n = len(x)
+    if n == 0:
+        return {
+            "inverse_projection_sample_size": 0,
+            "max_abs_lon_error_deg": float("nan"),
+            "max_abs_lat_error_deg": float("nan"),
+            "approx_max_horizontal_error_m": float("nan"),
+        }
+    idx = (
+        np.random.default_rng(seed).choice(n, size=sample_size, replace=False)
+        if n > sample_size
+        else np.arange(n)
+    )
+    transformer = Transformer.from_crs(
+        CRS.from_epsg(int(utm_epsg)), CRS.from_epsg(4326), always_xy=True
+    )
+    lon_back, lat_back = transformer.transform(x[idx], y[idx])
+    max_lon = float(np.nanmax(np.abs(np.asarray(lon_back) - lon[idx])))
+    max_lat = float(np.nanmax(np.abs(np.asarray(lat_back) - lat[idx])))
+    lat_rad = np.deg2rad(float(np.nanmedian(lat[idx])))
+    meters_per_degree_lon = 111_320.0 * max(math.cos(lat_rad), 1e-6)
+    return {
+        "inverse_projection_sample_size": int(len(idx)),
+        "max_abs_lon_error_deg": max_lon,
+        "max_abs_lat_error_deg": max_lat,
+        "approx_max_horizontal_error_m": float(
+            max(max_lon * meters_per_degree_lon, max_lat * 111_320.0)
+        ),
+    }
+
+
 def horizontal_crs_only(crs: CRS) -> CRS:
     if crs.is_compound:
         for sub_crs in crs.sub_crs_list:

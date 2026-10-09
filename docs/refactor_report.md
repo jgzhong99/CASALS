@@ -123,3 +123,27 @@ python -m scripts.classify_and_evaluate_refh --h5 <granule.h5> --reference <tran
 2. 117,530,910 点的 2024-11-18 3DEP clip 没有在当前仅约 4.4 GB 可用内存下重跑转移；分类重放使用已保留的旧转移文件。小 clip 的 2024-11-12 转移和诊断已实际运行。
 3. TDMS 文件按需召回，未完成真实 GUI 数据浏览；PDAL 未安装，未运行在线 clip 下载。
 4. 基线文件记录了配置和结果，但未记录波形运行的 NumPy/SciPy 版本。旧诊断元数据指向 `anaconda3/envs/py11`，该环境在当前机器不存在；近似并列峰的精确旧环境复现因此受限。
+
+## 2026-10-08 two-research-line layout addendum
+
+This addendum records the follow-up layout pass and supersedes earlier command paths and output-root descriptions above where they differ. The work is on branch `refactor/two-research-lines`, based on `e1acecdefa393952526ad810908387c2adb041f4`; nothing was pushed.
+
+- Formal refh and classification workflows now live in `casals_l1b/`; waveform component diagnostics use the same package CLI while remaining a distinct research line. Reference transfer, classifier exploration, and secondary-peak geolocation research live under `research/`. Viewers and download/inspection utilities live under `tools/`. The file-by-file map is [refactor_inventory.md](refactor_inventory.md).
+- The single entry point is `python -m casals_l1b` (installed command: `casals`). The active notebook directory contains four package-backed notebooks; all 21 former notebooks and their saved cell outputs were SHA-256 checked before and after archival under `research/archived_notebooks/`.
+- Default per-input products now follow `outputs/{refh,classification,peaks,reference}/<input-stem>/<step>/`. Historical outputs remain under `outputs/baseline_pre_refactor/`; new local validation products remain Git-ignored under `outputs/refactor_validation/`.
+- Directory cleanup removed the empty `.agents/`, former `scripts/` and `experiments/` shells, and empty directories beneath the baseline-output archive. It also removed `backup.bat` and the generated `.pyc`. `.compile_tmp/casals_gui_3d_surface.html` and `config/local/casals_gui_settings.json` remain physically present on this workstation and are excluded from Git tracking.
+- The H5, TDMS, reference clips, `Archive/`, and non-empty baseline output files were not deleted or rewritten by this layout pass.
+
+### Follow-up verification
+
+- `python -m pytest -q -p no:cacheprovider`: 13 passed in 3.10 s under Python 3.12.13 from the existing `map` Conda environment. The active base environment lacks HDF5/LAS dependencies, so `laspy 2.7.0` was added as a temporary no-dependency overlay for this run and removed afterward.
+- `python -m casals_l1b --help` and help for refh export/filter/DSM/ground, peaks, and classification resolve successfully in that test environment. The installed `casals` entry point was also checked earlier. Each of the four current notebooks was parsed and its code cells executed successfully.
+- Refh export on `casals_l1b_20241112T165718_001_02.h5` wrote 3,604,480 points. Its LAS file is byte-for-byte equal to the original exporter output (SHA-256 `63d4003744d6ac2af442b5ac9207201e7d9f1e2c9cdf5605124274fdd8f89fa9`).
+- Refh filtering on the same granule retained 42,740 SNR-selected records and labeled no noise; raw, noise-labeled, and clean LAS outputs were each byte-for-byte equal to the original filter outputs.
+- Waveform diagnostics on sweeps 5000–5002 produced 768 pulse rows and 3,068 component rows. `component_table.parquet` (3,068 × 27), `pulse_summary.parquet` (768 × 37), and `sweep_summary.csv` (3 × 20) match the original feature outputs cell-for-cell. This subset result does not replace the separate 2024-11-18 comparison recorded above.
+- The original-to-archived notebook SHA-256 comparison passed for all 21 notebooks. The local HTML and settings preservation checks also passed.
+
+### Remaining validation limits
+
+- PDAL is not installed, so the live 3DEP downloader was not run. Optional visualization dependencies are not all installed, so viewer behavior was not checked interactively. The full TDMS browsing limitation recorded above remains.
+- Final checks passed: AST parsing of 39 Python files, `git diff --check HEAD`, the four-root-notebook/21-archived-notebook count, and a scan for active references to the removed script/experiment and old flat output paths.

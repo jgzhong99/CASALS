@@ -12,17 +12,17 @@ Run commands from the repository root after installing the package. Set `--h5`, 
 
 | Step | Entry point | Purpose |
 | --- | --- | --- |
-| 1 | `python -m scripts.export_refh_las --h5 <file.h5>` | Export an unclassified Level-A refh LAS. |
-| 2 | `python -m scripts.filter_refh_points --h5 <file.h5>` | Write raw, noise-labeled, and clean refh LAS products. |
-| 3 | `python -m scripts.extract_waveform_features --h5 <file.h5>` | Derive waveform component and pulse/sweep diagnostics. |
-| 4 | `python -m scripts.make_refh_dsm --h5 <file.h5>` | Build a support-limited refh surface DSM with a raw strict companion. |
-| 5 | `python -m scripts.extract_refh_ground --h5 <file.h5>` | Derive tentative ground candidates and an interpolated DTM. |
-| 6 | `python -m scripts.download_3dep_lpc --h5 <file.h5>` | Query the USGS 3DEP LPC index and clip usable EPT resources. Requires PDAL. |
-| 7 | `python -m scripts.diagnose_3dep_offsets --h5 <file.h5> --reference <clip.laz>` | Diagnose CASALS/3DEP vertical and reference-frame differences without modifying CASALS points. |
-| 8 | `python -m scripts.transfer_3dep_labels_to_casals --casals-h5 <file.h5> --dep3-las <clip.laz>` | Transfer 3DEP labels for pseudo-reference analysis. |
-| 9 | `python -m scripts.classify_and_evaluate_refh --h5 <file.h5> --reference <labels.laz>` | Run the configured deterministic refh classifier and evaluation. |
+| 1 | `python -m casals_l1b refh-export --h5 <file.h5>` | Export an unclassified Level-A refh LAS. |
+| 2 | `python -m casals_l1b refh-filter --h5 <file.h5>` | Write raw, noise-labeled, and clean refh LAS products. |
+| 3 | `python -m casals_l1b peaks --h5 <file.h5>` | Derive waveform component and pulse/sweep diagnostics. |
+| 4 | `python -m casals_l1b refh-dsm --h5 <file.h5>` | Build a support-limited refh surface DSM with a raw strict companion. |
+| 5 | `python -m casals_l1b refh-ground --h5 <file.h5>` | Derive tentative ground candidates and an interpolated DTM. |
+| 6 | `python -m casals_l1b download-3dep --h5 <file.h5>` | Query the USGS 3DEP LPC index and clip usable EPT resources. Requires PDAL. |
+| 7 | `python -m casals_l1b diagnose-3dep --h5 <file.h5> --reference <clip.laz>` | Diagnose CASALS/3DEP vertical and reference-frame differences without modifying CASALS points. |
+| 8 | `python -m casals_l1b transfer-3dep --casals-h5 <file.h5> --dep3-las <clip.laz>` | Transfer 3DEP labels for pseudo-reference analysis. |
+| 9 | `python -m casals_l1b classify-refh --h5 <file.h5> --reference <labels.laz>` | Run the configured deterministic refh classifier and evaluation. |
 
-The normal outputs live under `outputs/<workflow>/`. An output LAS/LAZ is kept beside its workflow metadata and diagnostics rather than in a separate project-wide point-cloud folder. The 3DEP download workflow writes its manifests under `outputs/download_3dep_lpc/`; downloaded reference clips belong in `data/reference/3dep/`.
+Per-input outputs live under `outputs/{refh,classification,peaks,reference}/<input-stem>/<step>/`. LAS/LAZ products stay beside their workflow metadata and diagnostics. The 3DEP downloader writes manifests under `outputs/reference/<h5-stem>/download/`; downloaded reference clips belong in `data/reference/3dep/`. Research figures and reports use the same domain roots where an input file identifies the result; multi-input aggregates may use a shared explicitly named directory.
 
 ## Waveform feature extraction
 
@@ -35,15 +35,15 @@ Interpret the output conservatively:
 - Range-window checks and tentative height bookkeeping do not geolocate additional returns.
 - Waveform features can support refh quality diagnosis or downstream experiments, but they do not change the official refh definition.
 
-Relevant notebooks are in `notebooks/introduction/` and `notebooks/waveform/`; the independent range-window/bin-mapping hypothesis is preserved at `notebooks/geolocation/range_window_bin_mapping_hypothesis.ipynb`.
+The current examples are `notebooks/01_refh_data_contract.ipynb` and `notebooks/02_waveform_components.ipynb`. Earlier introduction and waveform notebooks, including the range-window/bin-mapping hypothesis, are preserved under `research/archived_notebooks/`.
 
 ## Refh products
 
-- `export_refh_las.py` writes unclassified Level-A refh records; initial LAS classification is `1`.
-- `filter_refh_points.py` assigns likely noise class `7` and records its noise reason codes. It preserves the original threshold and class semantics.
-- `make_refh_dsm.py` writes a support-limited filled DSM and a strict observed-cell companion. Fill products are restricted to the configured support mask; they are not a classified ground DEM.
-- `extract_refh_ground.py` writes a tentative derived ground-candidate product and DTM, not an official ground DEM.
-- `classify_and_evaluate_refh.py` uses transferred 3DEP labels only as pseudo-reference evaluation labels. Its metrics are not independent accuracy estimates.
+- `refh-export` writes unclassified Level-A refh records; initial LAS classification is `1`.
+- `refh-filter` assigns likely noise class `7` and records its noise reason codes. It preserves the original threshold and class semantics.
+- `refh-dsm` writes a support-limited filled DSM and a strict observed-cell companion. Fill products are restricted to the configured support mask; they are not a classified ground DEM.
+- `refh-ground` writes a tentative derived ground-candidate product and DTM, not an official ground DEM.
+- `classify-refh` uses transferred 3DEP labels only as pseudo-reference evaluation labels. Its metrics are not independent accuracy estimates.
 
 ## 3DEP comparisons
 

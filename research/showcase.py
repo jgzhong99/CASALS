@@ -19,26 +19,34 @@ def relative(path):
     return str(Path(path).resolve().relative_to(Path.cwd().resolve())).replace('\\', '/')
 
 
-def find_products(h5_path, key):
+def find_products(h5_path, key, metadata_path=None):
     """Use metadata outputs, checking source identity and existing files first."""
-    stem = Path(h5_path).stem
-    for p in sorted(Path('outputs').rglob('*metadata.json')):
+    target = Path(h5_path).resolve()
+    matches = []
+    paths = [Path(metadata_path)] if metadata_path is not None else sorted(Path('outputs').rglob('*metadata.json'))
+    for p in paths:
         d = json.loads(p.read_text(encoding='utf-8'))
-        source = d.get('source_h5', d.get('input_h5', d.get('config', {}).get('h5_path', '')))
+        source = d.get('source_h5') or d.get('input_h5') or d.get('inputs', {}).get('h5_path') or d.get('config', {}).get('h5_path')
         outputs = d.get('outputs', {})
         if key not in outputs or not outputs[key]:
             continue
-        if stem not in str(source) and stem not in str(p):
+        if not source or Path(source).resolve() != target:
+            if metadata_path is not None:
+                raise ValueError(f'Product source H5 mismatch or missing: {p}')
             continue
         if Path(outputs[key]).exists():
-            return {k: Path(v) for k, v in outputs.items() if isinstance(v, str) and Path(v).exists()}, p
-    raise FileNotFoundError(f'No existing metadata output {key} for {stem}')
+            matches.append(({k: Path(v) for k, v in outputs.items() if isinstance(v, str) and Path(v).exists()}, p))
+    if len(matches) > 1:
+        raise ValueError(f'Ambiguous {key} for {target.name}; provide metadata_path: ' + ', '.join(str(p) for _, p in matches))
+    if matches:
+        return matches[0]
+    raise FileNotFoundError(f'No existing metadata output {key} for {target.name}')
 
 
-def ensure_surfaces(h5_path, output_dir):
+def ensure_surfaces(h5_path, output_dir, dsm_metadata=None, dtm_metadata=None):
     """Generate only missing formal surfaces; never duplicate full point clouds."""
     try:
-        dsm, dm = find_products(h5_path, 'strict_dsm_tif')
+        dsm, dm = find_products(h5_path, 'strict_dsm_tif', dsm_metadata)
     except FileNotFoundError:
         from casals_l1b.refh_dsm import Config, make_refh_dsm
         out = Path(output_dir) / 'derived_dsm'
@@ -46,7 +54,7 @@ def ensure_surfaces(h5_path, output_dir):
                              snr_threshold=4.5, dsm_resolution_m=2., write_selected_las=False))
         dsm, dm = find_products(h5_path, 'strict_dsm_tif')
     try:
-        dtm, tm = find_products(h5_path, 'dtm_tif')
+        dtm, tm = find_products(h5_path, 'dtm_tif', dtm_metadata)
     except FileNotFoundError:
         from casals_l1b.refh_ground import Config, make_refh_ground
         out = Path(output_dir) / 'derived_dtm'
@@ -110,16 +118,46 @@ def load_points(h5_path):
     return p, np.column_stack([q.easting, q.northing]), q.utm_epsg
 
 
-def load_classes(h5_path, pulses):
+def load_classes(h5_path, pulses, metadata_path=None):
     import laspy
-    products, metadata = find_products(h5_path, 'classified_laz')
-    classes = np.zeros(int(pulses.max())+1, dtype=np.uint8)
+    import h5py
+    from casals_l1b.evaluation import point_source
+    products, metadata = find_products(h5_path, 'classified_laz', metadata_path)
+    pulses = np.asarray(pulses, dtype=np.int64)
+    with h5py.File(h5_path, 'r') as h5:
+        n = len(h5['refh'])
+    if ((pulses < 0) | (pulses >= n)).any():
+        raise ValueError('Requested pulse outside source H5 domain')
+    classes = np.zeros(n, dtype=np.uint8)
+    seen = np.zeros(n, dtype=bool)
+    requested = np.zeros(n, dtype=bool)
+    requested[pulses] = True
     with laspy.open(products['classified_laz']) as src:
+        source = point_source(src).get('source_h5')
+        if not source or Path(source).resolve() != Path(h5_path).resolve():
+            raise ValueError('Classified LAZ source H5 provenance missing or different')
         for chunk in src.chunk_iterator(500_000):
             ids = np.asarray(chunk.point_index, int)
             if (ids < 0).any() or (ids >= len(classes)).any():
                 raise ValueError('Classification point_index outside source pulse domain')
+            if len(np.unique(ids)) != len(ids) or seen[ids].any():
+                raise ValueError('Duplicate point_index; classification identity ambiguous')
+            seen[ids] = True
             classes[ids] = np.asarray(chunk.classification)
+            mask = requested[ids]
+            if mask.any():
+                selected_ids = ids[mask]
+                order = np.argsort(selected_ids)
+                with h5py.File(h5_path, 'r') as h5:
+                    for dim, field, tol in [('longitude','refh_longitude',1e-7), ('latitude','refh_latitude',1e-7), ('refh_original_m','refh',.001)]:
+                        if dim not in chunk.point_format.dimension_names:
+                            raise ValueError(f'Original {dim} missing; coordinate identity unverified')
+                        actual = np.asarray(chunk[dim])[mask][order]
+                        sorted_ids = selected_ids[order]
+                        selection = slice(int(sorted_ids[0]), int(sorted_ids[-1])+1) if np.all(np.diff(sorted_ids)==1) else sorted_ids
+                        expected = np.asarray(h5[field][selection])
+                        if not np.allclose(actual, expected, rtol=0, atol=tol, equal_nan=True):
+                            raise ValueError(f'Coordinate identity mismatch: {dim}')
     if not np.isin(classes[pulses], [1,2,7]).all():
         raise ValueError('Existing classification does not cover every requested pulse with class 1/2/7')
     return classes[pulses], relative(metadata)
@@ -128,7 +166,7 @@ def load_classes(h5_path, pulses):
 NAIP_SERVICE = 'https://imagery.nationalmap.gov/arcgis/rest/services/USGSNAIPImagery/ImageServer'
 
 
-def fetch_naip(bounds, crs, out):
+def fetch_naip(bounds, crs, out, pixel_size_m=.5):
     """Small georeferenced RGB export, pinned to intersecting primary rasters.
 
     Archive catalog attributes and returned extent; export CRS is independent
@@ -151,7 +189,7 @@ def fetch_naip(bounds, crs, out):
         raise RuntimeError(f'NAIP catalog query failed: {catalog}')
     ids = [f['attributes']['OBJECTID'] for f in catalog['features']]
     request = dict(f='json', bbox=','.join(map(str,bounds)), bboxSR=int(crs), imageSR=int(crs),
-                   size=f'{int(np.ceil((x1-x0)/.5))},{int(np.ceil((y1-y0)/.5))}',
+                   size=f'{int(np.ceil((x1-x0)/pixel_size_m))},{int(np.ceil((y1-y0)/pixel_size_m))}',
                    format='tiff', pixelType='U8', bandIds='0,1,2', interpolation='RSP_NearestNeighbor',
                    mosaicRule=json.dumps({'mosaicMethod':'esriMosaicLockRaster','lockRasterIds':ids}))
     response = requests.get(NAIP_SERVICE+'/exportImage', params=request, timeout=90)
@@ -184,14 +222,14 @@ def show_ortho(ax, path):
     ax.ticklabel_format(useOffset=False, style='plain')
 
 
-def screen_granule(h5_path, out, window_m=100, grid_step_m=2):
+def screen_granule(h5_path, out, window_m=100, grid_step_m=2, classification_metadata=None, dsm_metadata=None, dtm_metadata=None):
     """Deterministic full-scalar screening; no waveform reads."""
     import pandas as pd
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
-    dsm, dtm, metadata = ensure_surfaces(h5_path, out)
+    dsm, dtm, metadata = ensure_surfaces(h5_path, out, dsm_metadata, dtm_metadata)
     p, xy, crs = load_points(h5_path)
-    classes, cm = load_classes(h5_path, p.pulse_index)
+    classes, cm = load_classes(h5_path, p.pulse_index, classification_metadata)
     ground, valid = sample_raster(dtm['dtm_tif'], xy, crs, dtm['support_mask_tif'])
     hag = p.z_refh-ground
     frame = pd.DataFrame({'gx':np.floor(xy[:,0]/window_m).astype(int),

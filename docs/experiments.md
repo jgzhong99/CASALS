@@ -14,7 +14,7 @@ This index separates the two active research lines from preserved historical wor
 | `notebooks/06_waveform_gallery.ipynb` | How do selected real waveform morphologies differ, separately from their spatial land-cover evidence? |
 | `notebooks/07_georeferencing_geometry.ipynb` | How do stored instrument/window/Refh positions and audited H1/H2 mappings relate in ECEF and local ENU? |
 
-Each notebook names its local input and output paths. It uses package APIs for scientific processing and raises an actionable error if required data or prior workflow products are missing. All four notebooks were executed from clean kernels; details are in [refactor_improvement_report.md](refactor_improvement_report.md).
+Each notebook names its local input and output paths. It uses package APIs for scientific processing and raises an actionable error if required data or prior workflow products are missing. The original four workflow notebooks were executed from clean kernels; details are in [refactor_improvement_report.md](refactor_improvement_report.md).
 
 Notebooks 05–07 run independently from the repository root. Small numerical/input helpers are in `research/showcase.py`; scientific processing reuses the package and the existing bin audit. Their PNG/CSV/JSON and self-contained Plotly HTML outputs live at `outputs/notebooks/<notebook>/<granule-stem>/`. The actual executions, historical NAIP evidence, numerical closures, visual review and preservation checks are recorded in [showcase_execution_report.md](showcase_execution_report.md). No production geolocation behavior is changed.
 
@@ -41,6 +41,6 @@ Notebooks 05–07 run independently from the repository root. Small numerical/in
 
 ## Preserved research records
 
-The 21 former topic notebooks remain under `research/archived_notebooks/` with their saved outputs. Four superseded synthetic root demos were also moved to `research/archived_notebooks/superseded_root_demos/`; their outputs are retained. The original four active notebooks are now joined by showcases 05?07 in `notebooks/`. The original workflow evidence is inventoried in [refactor_baseline.md](refactor_baseline.md); the path and implementation changes are in [refactor_inventory.md](refactor_inventory.md).
+The 21 former topic notebooks remain under `research/archived_notebooks/` with their saved outputs. Four superseded synthetic root demos were also moved to `research/archived_notebooks/superseded_root_demos/`; their outputs are retained. The original four active notebooks are now joined by showcases 05–07 in `notebooks/`. The original workflow evidence is inventoried in [refactor_baseline.md](refactor_baseline.md); the path and implementation changes are in [refactor_inventory.md](refactor_inventory.md).
 
 Presentations, notes, PDFs, and source references remain under `docs/presentations/` and `docs/references/`. See [references/README.md](references/README.md).

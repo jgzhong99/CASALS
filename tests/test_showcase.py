@@ -6,6 +6,47 @@ from rasterio.transform import from_origin
 from pyproj import Transformer
 from research.showcase import transect_coordinates, sample_raster, enu_frame, to_enu, from_enu, bin_to_xyz
 from casals_l1b.waveform import build_record_index_grid, infer_waveform_record_axis, read_waveform_records
+from research.showcase import find_products, load_classes
+import json
+import laspy
+
+
+def test_metadata_source_and_ambiguity(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    h5 = tmp_path/'same.h5'
+    out = tmp_path/'outputs';out.mkdir()
+    product=out/'surface.tif';product.touch()
+    for name,source in [('a',h5),('b',h5),('same_wrong',tmp_path/'other.h5')]:
+        (out/(name+'_metadata.json')).write_text(json.dumps({'inputs':{'h5_path':str(source)},'outputs':{'dtm_tif':str(product)}}))
+    with pytest.raises(ValueError,match='Ambiguous'):
+        find_products(h5,'dtm_tif')
+    _,selected=find_products(h5,'dtm_tif',out/'b_metadata.json')
+    assert selected==out/'b_metadata.json'
+    with pytest.raises(ValueError,match='source H5 mismatch'):
+        find_products(h5,'dtm_tif',out/'same_wrong_metadata.json')
+
+
+@pytest.mark.parametrize('ids,wrong_source,error', [([0,0],False,'Duplicate'),([0],False,'cover'),([0,1],True,'provenance'),([1,0],False,None)])
+def test_classification_identity(tmp_path, monkeypatch, ids, wrong_source, error):
+    monkeypatch.chdir(tmp_path)
+    h5=tmp_path/'source.h5'
+    with h5py.File(h5,'w') as f:
+        f['refh']=[10.,20.];f['refh_longitude']=[-76.,-75.];f['refh_latitude']=[36.,37.]
+    header=laspy.LasHeader(point_format=6,version='1.4')
+    for name,dtype in [('point_index','u4'),('longitude','f8'),('latitude','f8'),('refh_original_m','f8')]:
+        header.add_extra_dim(laspy.ExtraBytesParams(name=name,type=dtype))
+    source=tmp_path/'wrong.h5' if wrong_source else h5
+    header.vlrs.append(laspy.VLR(user_id='CASALS',record_id=1,record_data=json.dumps({'source_h5':str(source)}).encode()))
+    las=laspy.LasData(header);las.point_index=ids
+    las.longitude=np.array([-76.,-75.])[ids];las.latitude=np.array([36.,37.])[ids];las.refh_original_m=np.array([10.,20.])[ids]
+    las.classification=np.array([2,1],dtype='u1')[ids]
+    path=tmp_path/'classified.laz';las.write(path)
+    meta=tmp_path/'metadata.json';meta.write_text(json.dumps({'inputs':{'h5_path':str(h5)},'outputs':{'classified_laz':str(path)}}))
+    if error:
+        with pytest.raises(ValueError,match=error):load_classes(h5,np.array([1,0]),meta)
+    else:
+        classes,used=load_classes(h5,np.array([1,0]),meta)
+        np.testing.assert_equal(classes,[1,2]);assert used=='metadata.json'
 
 
 def test_transect_rotation_and_extent():

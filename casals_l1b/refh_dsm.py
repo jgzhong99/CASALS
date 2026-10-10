@@ -595,7 +595,7 @@ def preview_cmap(name: str, bad_color: str = "black") -> Any:
 
 
 PREVIEW_SNR_CMAP = "cividis"
-PREVIEW_ELEVATION_CMAP = "jet"
+PREVIEW_ELEVATION_CMAP = "viridis"
 PREVIEW_COUNT_CMAP = "inferno"
 PREVIEW_FILL_SOURCE_CMAP = "plasma"
 

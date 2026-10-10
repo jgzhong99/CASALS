@@ -42,7 +42,7 @@ def main() -> int:
 
     try:
         _configure_high_dpi(QtCore, QtWidgets)
-        from casals_gui_app.qt_main_window import CASALSQtMainWindow
+        from casals_tdms_viewer.qt_main_window import CASALSQtMainWindow
 
         app = QtWidgets.QApplication(sys.argv)
         window = CASALSQtMainWindow()

@@ -57,8 +57,13 @@ The current runnable notebooks are:
 2. `notebooks/02_refh_classification.ipynb`
 3. `notebooks/03_waveform_analysis.ipynb`
 4. `notebooks/04_peak_geolocation.ipynb`
+5. `notebooks/05_forest_transect_showcase.ipynb`
+6. `notebooks/06_waveform_gallery.ipynb`
+7. `notebooks/07_georeferencing_geometry.ipynb`
 
 They use explicit local data paths and package APIs. Missing inputs produce an actionable error rather than a synthetic fallback. The 21 earlier notebooks and four superseded synthetic root demos, with their saved outputs, remain under `research/archived_notebooks/`.
+
+Showcases 05–07 do not require one another to execute. They read product filenames from metadata `outputs`, use each raster's own CRS/affine transform and support mask, and save new results beneath `outputs/notebooks/<notebook>/<granule-stem>/`. Geometry reuses the research audit's H1/H2 function without changing production mapping. See [the showcase execution report](showcase_execution_report.md).
 
 ## 3DEP comparisons
 

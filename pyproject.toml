@@ -36,7 +36,7 @@ casals = "casals_l1b.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["casals_l1b*", "research*", "tools*", "casals_gui_app*"]
+include = ["casals_l1b*", "research*", "tools*", "casals_tdms_viewer*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -31,6 +31,35 @@ def test_occupancy_amplitude_and_candidate_band_are_reported():
     band = bands[(bands.track_num == 1) & (bands.start_bin == 100)].iloc[0]
     assert band.end_bin == 102
     assert band.max_persistence_sweeps >= 18
+    assert band.max_persistence_sweeps <= 24
+    assert scores.valid_sweep_count.eq(24).all()
+
+
+def test_missing_waveform_samples_use_per_bin_valid_denominator():
+    rx = np.zeros((10, 1, 20), dtype=np.float32)
+    rx[:4, 0, 7] = 8.0
+    rx[4, 0, 7] = np.nan
+    mean = np.zeros((10, 1), dtype=np.float32)
+    std = np.ones((10, 1), dtype=np.float32)
+    refh = np.zeros((10, 1), dtype=float)
+    scores = score_track_bins(rx, mean, std, refh, early_bins=12, threshold_sigma=5)
+    row = scores[(scores.track_num == 0) & (scores.bin == 7)].iloc[0]
+    assert row.valid_sweep_count == 9
+    assert row.event_count == 4
+    assert np.isclose(row.occupancy, 4 / 9)
+
+
+def test_quiet_noise_block_does_not_create_a_candidate_band():
+    rng = np.random.default_rng(2026)
+    rx = rng.normal(0.0, 1.0, size=(90, 2, 128)).astype(np.float32)
+    mean = np.zeros((90, 2), dtype=np.float32)
+    std = np.ones((90, 2), dtype=np.float32)
+    refh = np.zeros((90, 2), dtype=float)
+    scores = score_track_bins(rx, mean, std, refh, early_bins=64, threshold_sigma=5)
+    bands = extract_candidate_bands(scores, occupancy_min=0.20,
+                                   median_excess_sigma_min=5, score_min=0.45)
+    assert bands.empty
+    np.testing.assert_array_equal(mask_bins(rx[0, 0], []), rx[0, 0])
 
 
 def test_flag_and_mask_cover_inclusive_candidate_interval():

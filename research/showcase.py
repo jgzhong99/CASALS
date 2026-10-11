@@ -43,6 +43,20 @@ def find_products(h5_path, key, metadata_path=None):
     raise FileNotFoundError(f'No existing metadata output {key} for {target.name}')
 
 
+def raster_valid_mask(values, nodata=None, support=None):
+    """Mask nonfinite/nodata cells and, when supplied, cells outside support."""
+    array = np.asarray(values, dtype=float)
+    valid = np.isfinite(array)
+    if nodata is not None and not np.isnan(nodata):
+        valid &= array != nodata
+    if support is not None:
+        support = np.asarray(support)
+        if support.shape != array.shape:
+            raise ValueError('support mask shape must match raster values')
+        valid &= np.isfinite(support) & (support > 0)
+    return valid
+
+
 def ensure_surfaces(h5_path, output_dir, dsm_metadata=None, dtm_metadata=None):
     """Generate only missing formal surfaces; never duplicate full point clouds."""
     try:
@@ -166,6 +180,21 @@ def load_classes(h5_path, pulses, metadata_path=None):
 NAIP_SERVICE = 'https://imagery.nationalmap.gov/arcgis/rest/services/USGSNAIPImagery/ImageServer'
 
 
+def _get_with_retries(url, *, retries=2, **kwargs):
+    import time
+    import requests
+    for attempt in range(retries + 1):
+        response = requests.get(url, **kwargs)
+        try:
+            response.raise_for_status()
+        except requests.exceptions.HTTPError:
+            if response.status_code not in {502, 503, 504} or attempt == retries:
+                raise
+            time.sleep(2 ** attempt)
+        else:
+            return response
+
+
 def fetch_naip(bounds, crs, out, pixel_size_m=.5):
     """Small georeferenced RGB export, pinned to intersecting primary rasters.
 
@@ -180,10 +209,9 @@ def fetch_naip(bounds, crs, out, pixel_size_m=.5):
         return json.loads(provenance.read_text())
     x0, y0, x1, y1 = map(float, bounds)
     geometry = dict(xmin=x0, ymin=y0, xmax=x1, ymax=y1, spatialReference={'wkid':int(crs)})
-    query = requests.get(NAIP_SERVICE+'/query', params=dict(f='json', geometry=json.dumps(geometry),
+    query = _get_with_retries(NAIP_SERVICE+'/query', params=dict(f='json', geometry=json.dumps(geometry),
                          geometryType='esriGeometryEnvelope', spatialRel='esriSpatialRelIntersects',
                          outFields='*', returnGeometry='true', where='Category=1'), timeout=60)
-    query.raise_for_status()
     catalog = query.json()
     if 'error' in catalog or not catalog.get('features'):
         raise RuntimeError(f'NAIP catalog query failed: {catalog}')
@@ -192,13 +220,11 @@ def fetch_naip(bounds, crs, out, pixel_size_m=.5):
                    size=f'{int(np.ceil((x1-x0)/pixel_size_m))},{int(np.ceil((y1-y0)/pixel_size_m))}',
                    format='tiff', pixelType='U8', bandIds='0,1,2', interpolation='RSP_NearestNeighbor',
                    mosaicRule=json.dumps({'mosaicMethod':'esriMosaicLockRaster','lockRasterIds':ids}))
-    response = requests.get(NAIP_SERVICE+'/exportImage', params=request, timeout=90)
-    response.raise_for_status()
+    response = _get_with_retries(NAIP_SERVICE+'/exportImage', params=request, timeout=90)
     export = response.json()
     if 'href' not in export:
         raise RuntimeError(f'NAIP export failed: {export}')
-    image = requests.get(export['href'], timeout=90)
-    image.raise_for_status()
+    image = _get_with_retries(export['href'], timeout=90)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_bytes(image.content)
     with rasterio.open(out) as ds:

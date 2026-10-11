@@ -61,7 +61,8 @@ def score_track_bins(
     valid = np.isfinite(z)
     detected = valid & (z >= float(threshold_sigma))
     count = detected.sum(axis=0)
-    occupancy = count / np.maximum(valid.sum(axis=0), 1)
+    valid_sweeps = valid.sum(axis=0)
+    occupancy = count / np.maximum(valid_sweeps, 1)
 
     # The median is computed over threshold exceedances only; no-hit bins stay NaN.
     hit_values = np.where(detected, z, np.inf)
@@ -107,6 +108,7 @@ def score_track_bins(
             "bin": bin_grid.ravel(),
             "occupancy": occupancy.ravel(),
             "event_count": count.ravel(),
+            "valid_sweep_count": valid_sweeps.ravel(),
             "median_excess_counts": median_excess.ravel(),
             "median_excess_sigma": median_z.ravel(),
             "early_weight": early_weight.ravel(),

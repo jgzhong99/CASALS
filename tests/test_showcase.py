@@ -4,9 +4,9 @@ import pytest
 import rasterio
 from rasterio.transform import from_origin
 from pyproj import Transformer
-from research.showcase import transect_coordinates, sample_raster, enu_frame, to_enu, from_enu, bin_to_xyz
+from research.showcase import transect_coordinates, sample_raster, raster_valid_mask, enu_frame, to_enu, from_enu, bin_to_xyz
 from casals_l1b.waveform import build_record_index_grid, infer_waveform_record_axis, read_waveform_records
-from research.showcase import find_products, load_classes
+from research.showcase import find_products, load_classes, _get_with_retries
 import json
 import laspy
 
@@ -71,6 +71,21 @@ def test_raster_crs_nodata_and_support(tmp_path):
     np.testing.assert_allclose(v,[10,np.nan,np.nan,np.nan],equal_nan=True)
 
 
+def test_raster_valid_mask_excludes_nodata_nonfinite_and_unsupported():
+    values = np.array([[10.0, -9999.0, np.nan, np.inf, 30.0]])
+    support = np.array([[1, 1, 1, 1, 0]])
+    np.testing.assert_array_equal(
+        raster_valid_mask(values, nodata=-9999.0, support=support),
+        [[True, False, False, False, False]],
+    )
+    np.testing.assert_array_equal(
+        raster_valid_mask(values, nodata=np.nan),
+        [[True, True, False, False, True]],
+    )
+    with pytest.raises(ValueError, match='shape'):
+        raster_valid_mask(values, support=np.ones((2, 2)))
+
+
 def test_reordered_pulse_identity_and_axis(tmp_path):
     with h5py.File(tmp_path/'x.h5','w') as f:
         f['sweep_num']=[1,0,1,0];f['track_num']=[0,1,1,0]
@@ -90,3 +105,26 @@ def test_h1_h2_and_ecef_enu_roundtrip():
     origin,rotation=enu_frame(-76.69,36.19,-20)
     xyz=np.vstack([origin,origin+[150,210,1100],origin+[-120,440,-80]])
     np.testing.assert_allclose(from_enu(to_enu(xyz,origin,rotation),origin,rotation),xyz,rtol=0,atol=2e-9)
+
+
+
+def test_naip_request_retries_gateway_timeout(monkeypatch):
+    import requests
+    import time
+    statuses = [504, 200]
+    calls = []
+
+    def fake_get(url, **kwargs):
+        calls.append((url, kwargs))
+        response = requests.Response()
+        response.status_code = statuses.pop(0)
+        response.reason = 'Gateway Timeout' if response.status_code == 504 else 'OK'
+        response.url = url
+        response._content = b'ok'
+        return response
+
+    monkeypatch.setattr(requests, 'get', fake_get)
+    monkeypatch.setattr(time, 'sleep', lambda _: None)
+    result = _get_with_retries('https://example.invalid/image', timeout=1)
+    assert result.content == b'ok'
+    assert len(calls) == 2

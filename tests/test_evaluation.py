@@ -56,3 +56,30 @@ def test_no_reference_population_has_no_metrics():
     assert metrics["primary_metrics"] == {}
     assert len(metrics["evaluation_summary_rows"]) == 2
     assert metrics["subset_results"]["strict"]["status"] == "evaluation unavailable"
+
+
+def test_strict_and_strict_plus_weak_exclude_other_transfer_statuses():
+    config = {
+        **DEFAULT_CONFIG,
+        "EVAL_REQUIRE_TRANSFER_STATUS": [1, 2],
+        "EVAL_REQUIRE_VALID_DTM": False,
+        "EVAL_IGNORE_REFERENCE_NOISE": False,
+    }
+    status = np.array([0, 1, 2, 3, 4], dtype=np.uint8)
+    result = evaluate_classification(
+        pred_class_baseline=np.array([7, 1, 1, 2, 7], dtype=np.uint8),
+        eval_gt_class=np.array([7, 1, 2, 2, 7], dtype=np.uint8),
+        eval_match_valid=np.ones(5, dtype=bool),
+        dtm_sample_valid=np.ones(5, dtype=bool),
+        reference_transfer_status=status,
+        reference_nearest3dep_dist_m=np.ones(5),
+        reference_class_vote_ratio=np.ones(5),
+        config=config,
+    )
+
+    strict = result["subset_results"]["strict"]
+    strict_weak = result["subset_results"]["strict_plus_weak"]
+    assert strict["n_points"] == 1
+    assert strict_weak["n_points"] == 2
+    assert np.asarray(strict["confusion_matrix"]).sum() == strict["n_points"]
+    assert np.asarray(strict_weak["confusion_matrix"]).sum() == strict_weak["n_points"]

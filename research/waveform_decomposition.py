@@ -93,11 +93,13 @@ def fit_gaussian_components(
     noise_sigma: float,
     detector_peaks: Sequence[Any] | None = None,
     max_components: int = 5,
+    fit_indices: Sequence[int] | None = None,
 ) -> dict[str, Any]:
-    """Fit 0..K Gaussian components and choose K by BIC.
+    """Fit 0..K Gaussian components and choose K by BIC on selected bins.
 
     The fit is an exploratory waveform representation. Its components are not
-    validated physical returns or official geolocated points.
+    validated physical returns or official geolocated points. BIC counts the
+    baseline, Gaussian parameters, and fitted residual variance.
     """
 
     y = np.asarray(waveform, dtype=np.float64).reshape(-1)
@@ -108,6 +110,14 @@ def fit_gaussian_components(
     sigma_noise = float(noise_sigma) if np.isfinite(noise_sigma) and noise_sigma > 0 else _robust_sigma(y)
     base = float(baseline) if np.isfinite(baseline) else float(np.median(y[: min(256, y.size)]))
     x = np.arange(y.size, dtype=np.float64)
+    if fit_indices is None:
+        indices = np.arange(y.size, dtype=np.int64)
+    else:
+        indices = np.asarray(fit_indices, dtype=np.int64).reshape(-1)
+        if (indices.size < 5 or np.any(indices < 0) or np.any(indices >= y.size)
+                or np.unique(indices).size != indices.size):
+            raise ValueError("fit_indices must contain at least five unique in-range bins")
+    x_fit, y_fit = x[indices], y[indices]
     seeds = _peak_seeds(y - base, sigma_noise, detector_peaks)
 
     if not seeds:
@@ -123,15 +133,19 @@ def fit_gaussian_components(
             "delta_bic": None,
             "at_search_limit": False,
             "stable_order": False,
-            "rmse": float(np.sqrt(np.mean(residual**2))),
+            "rmse": float(np.sqrt(np.mean(residual[indices]**2))),
+            "full_window_rmse": float(np.sqrt(np.mean(residual**2))),
+            "fit_sample_count": int(indices.size),
+            "fit_sample_fraction": float(indices.size / y.size),
+            "parameter_count": None,
             "fit": fitted,
             "residual": residual,
             "components": [],
             "models": [],
         }
 
-    n = y.size
-    max_amp = max(float(np.max(y - base)), sigma_noise) * 2.0 + sigma_noise
+    n = y_fit.size
+    max_amp = max(float(np.max(y_fit - base)), sigma_noise) * 2.0 + sigma_noise
     lower_baseline = base - 3.0 * sigma_noise
     upper_baseline = base + 3.0 * sigma_noise
     candidates: list[dict[str, Any]] = []
@@ -144,10 +158,10 @@ def fit_gaussian_components(
             radius = max(5.0, 2.0 * width)
             initial.extend([amplitude, center, width])
             lower.extend([0.0, max(0.0, center - radius), 0.6])
-            upper.extend([max_amp, min(float(n - 1), center + radius), 80.0])
+            upper.extend([max_amp, min(float(x.size - 1), center + radius), 80.0])
 
         def residuals(params: np.ndarray) -> np.ndarray:
-            return _gaussian_sum(x, params, count) - y
+            return _gaussian_sum(x_fit, params, count) - y_fit
 
         try:
             result = least_squares(
@@ -157,9 +171,10 @@ def fit_gaussian_components(
                 max_nfev=3000,
             )
             fitted = _gaussian_sum(x, result.x, count)
+            fit_resid = y_fit - _gaussian_sum(x_fit, result.x, count)
             resid = y - fitted
-            rss = max(float(np.dot(resid, resid)), np.finfo(float).tiny)
-            parameter_count = 1 + 3 * count
+            rss = max(float(np.dot(fit_resid, fit_resid)), np.finfo(float).tiny)
+            parameter_count = 2 + 3 * count
             bic = n * np.log(rss / n) + parameter_count * np.log(n)
             components = []
             for index in range(count):
@@ -181,7 +196,11 @@ def fit_gaussian_components(
                     "baseline": float(result.x[0]),
                     "noise_sigma": sigma_noise,
                     "bic": float(bic),
-                    "rmse": float(np.sqrt(np.mean(resid**2))),
+                    "rmse": float(np.sqrt(np.mean(fit_resid**2))),
+                    "full_window_rmse": float(np.sqrt(np.mean(resid**2))),
+                    "fit_sample_count": int(indices.size),
+                    "fit_sample_fraction": float(indices.size / y.size),
+                    "parameter_count": int(parameter_count),
                     "fit": fitted,
                     "residual": resid,
                     "components": components,
@@ -205,6 +224,10 @@ def fit_gaussian_components(
             "at_search_limit": False,
             "stable_order": False,
             "rmse": float(np.sqrt(np.mean(residual**2))),
+            "full_window_rmse": float(np.sqrt(np.mean(residual**2))),
+            "fit_sample_count": int(indices.size),
+            "fit_sample_fraction": float(indices.size / y.size),
+            "parameter_count": None,
             "fit": fitted,
             "residual": residual,
             "components": [],
@@ -217,7 +240,8 @@ def fit_gaussian_components(
     best["stable_order"] = bool(best["success"] and best["delta_bic"] is not None and best["delta_bic"] >= 6.0)
     best["at_search_limit"] = bool(best["chosen_k"] >= min(int(max_components), len(seeds)))
     best["models"] = [
-        {"k": int(item["chosen_k"]), "bic": float(item["bic"]), "rmse": float(item["rmse"])}
+        {"k": int(item["chosen_k"]), "bic": float(item["bic"]), "rmse": float(item["rmse"]),
+         "parameter_count": int(item["parameter_count"]), "sample_count": int(item["fit_sample_count"])}
         for item in candidates
     ]
     return best

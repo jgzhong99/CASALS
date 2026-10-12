@@ -821,3 +821,463 @@ def site_level_unit_counts(rows: Any) -> dict[str, Any]:
         class_label: {"n_independent_sites": len(sites), "site_ids": sorted(sites)}
         for class_label, sites in sorted(sites_by_class.items())
     }
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, np.ndarray):
+        return _json_safe(value.tolist())
+    if isinstance(value, np.integer):
+        return int(value)
+    if isinstance(value, (np.floating, float)):
+        return float(value) if np.isfinite(value) else None
+    if isinstance(value, np.bool_):
+        return bool(value)
+    if isinstance(value, Path):
+        return str(value)
+    return value
+
+
+def build_landcover_response_analysis(
+    project_root: str | Path,
+    h5_by_stem: Mapping[str, str | Path],
+    naip_paths: Mapping[str, tuple[str | Path, str | Path]],
+    naip_dates: Mapping[str, str],
+    roi_manifest: Mapping[str, Any],
+    previous_root: str | Path,
+    output_root: str | Path,
+    *,
+    prominence_quantile: float,
+    background_window: tuple[int, int],
+    minimum_width_bins: float,
+    minimum_peak_distance: int,
+) -> dict[str, Any]:
+    """Recompute current-H5 ROI responses and write Notebook 11 research tables."""
+
+    import gc
+    import hashlib
+    import h5py
+    import inspect
+    import pandas as pd
+    import rasterio
+    from datetime import date
+    from matplotlib.path import Path as PolygonPath
+    from pyproj import Transformer
+
+    from research.validation_figures import plot_naip_roi_board
+
+    ROOT = Path(project_root)
+    H5_BY_STEM = {str(key): Path(value) for key, value in h5_by_stem.items()}
+    NAIP_PATHS = {str(key): tuple(Path(value) for value in paths) for key, paths in naip_paths.items()}
+    NAIP_DATES = naip_dates
+    ROI_MANIFEST = roi_manifest
+    OLD_ROOT = Path(previous_root)
+    OUT_ROOT = Path(output_root)
+    PROMINENCE_QUANTILE = float(prominence_quantile)
+    BACKGROUND_WINDOW = tuple(background_window)
+    MINIMUM_WIDTH_BINS = float(minimum_width_bins)
+    MINIMUM_PEAK_DISTANCE = int(minimum_peak_distance)
+    OUT_ROOT.mkdir(parents=True, exist_ok=True)
+
+    roi_features_by_stem = {}
+    roi_audit_parts, memberships, features_by_stem = [], {}, {}
+    noise_parts, noise_summary = [], {}
+    for stem, h5_path in H5_BY_STEM.items():
+        image_path, metadata_path = NAIP_PATHS[stem]
+        image_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        expected_date = NAIP_DATES[stem]
+        if image_metadata.get("acquisition_dates") != [expected_date]:
+            raise ValueError(f"NAIP date mismatch for {stem}: {image_metadata.get('acquisition_dates')}.")
+        granule_features = [feature for feature in ROI_MANIFEST["features"]
+                            if feature["properties"].get("granule_id") == stem]
+        roi_features_by_stem[stem] = granule_features
+        with h5py.File(h5_path, "r") as h5:
+            h5_date = str(h5.attrs["start_utca"])[:10]
+            h5_count = int(h5["refh"].shape[0])
+            if not np.array_equal(np.asarray(h5["good_snr"]), np.asarray(h5["refh_snr"]) >= 5.0):
+                raise ValueError(f"H5 good_snr differs from refh_snr >= 5 for {stem}.")
+
+        audit_rows = []
+        with rasterio.open(image_path) as raster:
+            transform = raster.transform
+            if raster.crs is None or not np.isclose(transform.b, 0.0) or not np.isclose(transform.d, 0.0) or transform.a <= 0 or transform.e >= 0:
+                raise ValueError(f"NAIP raster is not north-up with projected coordinates: {image_path}")
+            raster_transformer = Transformer.from_crs("EPSG:4326", raster.crs, always_xy=True)
+            for feature in granule_features:
+                props = feature["properties"]
+                coords = np.asarray(feature["geometry"]["coordinates"][0], dtype=np.float64)
+                px, py = raster_transformer.transform(coords[:, 0], coords[:, 1])
+                inside = ((px >= raster.bounds.left) & (px <= raster.bounds.right)
+                          & (py >= raster.bounds.bottom) & (py <= raster.bounds.top))
+                eligibility = roi_primary_eligibility(
+                    props, expected_granule_id=stem, observed_image_date=expected_date,
+                )
+                full_footprint = bool(inside.all())
+                primary = bool(eligibility["primary_eligible"] and full_footprint)
+                tier = "primary" if primary else ("exploratory" if props.get("analysis_status") in {"Included", "Candidate"} else "excluded")
+                audit_rows.append({
+                    "granule_id": stem, "roi_id": props["roi_id"], "site_id": props["site_id"],
+                    "class_label": props["class_label"], "analysis_status": props["analysis_status"],
+                    "analysis_tier": tier, "primary_eligible": primary,
+                    "eligibility_reasons": "|".join(eligibility["reasons"] + ([] if full_footprint else ["roi_outside_naip_bounds"])),
+                    "h5_acquisition_date": h5_date, "naip_acquisition_date": expected_date,
+                    "naip_age_days_at_h5": (date.fromisoformat(h5_date) - date.fromisoformat(expected_date)).days,
+                    "naip_crs": raster.crs.to_string(), "naip_affine": tuple(transform),
+                    "naip_bounds": tuple(raster.bounds), "roi_vertices_inside_naip_fraction": float(inside.mean()),
+                    "roi_fully_inside_naip_footprint": full_footprint,
+                    "label_source": props.get("label_source"), "evidence_source": props.get("evidence_source"),
+                    "confidence": props.get("confidence"), "temporal_change_risk": props.get("temporal_change_risk"),
+                    "boundary_risk": props.get("boundary_risk"),
+                })
+        audit = pd.DataFrame(audit_rows)
+        roi_audit_parts.append(audit)
+
+        membership_path = OLD_ROOT / stem / "roi_pulse_features.csv.gz"
+        membership = pd.read_csv(
+            membership_path, compression="gzip",
+            usecols=["granule_id", "pulse_index", "sweep_num", "track_num", "roi_id"],
+        ).drop_duplicates(["granule_id", "pulse_index", "roi_id"]).copy()
+        if set(membership["granule_id"].astype(str)) != {stem}:
+            raise ValueError(f"ROI membership granule IDs do not match {stem}.")
+        if membership.empty or membership.pulse_index.min() < 0 or membership.pulse_index.max() >= h5_count:
+            raise ValueError(f"Invalid H5 pulse IDs in preserved ROI membership for {stem}.")
+        membership["site_id"] = membership.roi_id.map({p["roi_id"]: p["site_id"] for p in [f["properties"] for f in granule_features]})
+        membership["class_label"] = membership.roi_id.map({p["roi_id"]: p["class_label"] for p in [f["properties"] for f in granule_features]})
+        membership["analysis_status"] = membership.roi_id.map({p["roi_id"]: p["analysis_status"] for p in [f["properties"] for f in granule_features]})
+        membership["analysis_tier"] = membership.roi_id.map(audit.set_index("roi_id").analysis_tier.to_dict())
+        if membership[["site_id", "class_label", "analysis_status", "analysis_tier"]].isna().any().any():
+            raise ValueError(f"Membership includes an ROI missing from the current manifest for {stem}.")
+
+        windows = sample_real_background_windows(
+            str(h5_path), window=BACKGROUND_WINDOW, block_count=24, rows_per_block=256,
+        )
+        tail_table, sd_ratio = background_stationarity_summary(windows)
+        calibration_path = OLD_ROOT / stem / "noise_peak_calibration.json"
+        calibration = json.loads(calibration_path.read_text(encoding="utf-8"))
+        expected_seed = 20261024 if "20241112" in stem else 20261030
+        checks = {
+            "granule_id": calibration.get("granule_id") == stem,
+            "background_window_bins": calibration.get("background_window_bins") == "2600:2728",
+            "real_background_window_count": int(calibration.get("real_background_window_count", -1)) == len(windows),
+            "calibration_simulation_count": int(calibration.get("calibration_simulation_count", -1)) == 10_000,
+            "validation_simulation_count": int(calibration.get("validation_simulation_count", -1)) == 10_000,
+            "seed": int(calibration.get("seed", -1)) == expected_seed,
+            "width_condition": float(calibration.get("minimum_detected_width_bins", -1)) == MINIMUM_WIDTH_BINS,
+            "threshold_quantile": float(calibration.get("threshold_quantile", -1)) == PROMINENCE_QUANTILE,
+            "stationarity_ratio_reproduced": np.isclose(
+                float(calibration.get("tail_segment_sd_ratio_max_min", np.nan)), float(sd_ratio), rtol=0, atol=5e-8,
+            ),
+        }
+        if not all(checks.values()):
+            raise ValueError(f"Preserved noise threshold did not reproduce for {stem}: {checks}")
+        calibration = {
+            **calibration, "calibration_reused_from": str(calibration_path.relative_to(ROOT)),
+            "current_real_tail_windows_rechecked": True, "current_tail_sd_ratio": float(sd_ratio),
+            "calibration_parameters_verified": checks,
+            "candidate_detector": "all positive-height local peaks; prominence and width qualified jointly; maximum prominence among qualified peaks",
+            "candidate_detector_source_sha256": hashlib.sha256(
+                inspect.getsource(__import__("research.l1b_validation", fromlist=["candidate_signal_features"]).candidate_signal_features).encode()
+            ).hexdigest(),
+            "official_refh_rx_bin_available": False,
+            "interpretation": "Research screening threshold only; the block-bootstrap null does not calibrate real-return detection probability.",
+        }
+        noise_summary[stem] = calibration
+        tail_table.insert(0, "granule_id", stem)
+        noise_parts.append(tail_table)
+        (OUT_ROOT / f"{stem}_noise_peak_calibration.json").write_text(
+            json.dumps(_json_safe(calibration), indent=2, allow_nan=False), encoding="utf-8",
+        )
+
+        threshold = float(calibration["threshold_peak_prominence_sigma"])
+        pulse_features, per_roi = extract_roi_waveform_features(
+            str(h5_path), membership, prominence_threshold_sigma=threshold,
+            minimum_width_bins=MINIMUM_WIDTH_BINS, minimum_peak_distance=MINIMUM_PEAK_DISTANCE,
+        )
+        for feature in granule_features:
+            props = feature["properties"]
+            roi_id = str(props["roi_id"])
+            rows = per_roi.loc[per_roi.roi_id == roi_id]
+            if rows.empty:
+                continue
+            polygon = PolygonPath(np.asarray(feature["geometry"]["coordinates"][0], dtype=np.float64))
+            coords = rows[["longitude_deg", "latitude_deg"]].to_numpy(dtype=np.float64)
+            if not polygon.contains_points(coords).all():
+                raise ValueError(f"Some current H5 centers fall outside their saved ROI: {stem}/{roi_id}.")
+        per_roi = per_roi.merge(
+            audit[["granule_id", "roi_id", "primary_eligible"]],
+            on=["granule_id", "roi_id"], how="left", validate="many_to_one",
+        )
+        if len(pulse_features) != membership.pulse_index.nunique():
+            raise ValueError(f"Current H5 waveform extraction lost pulse IDs for {stem}.")
+        pulse_features.to_csv(OUT_ROOT / f"{stem}_recomputed_pulse_features.csv.gz",
+                              index=False, compression="gzip")
+        per_roi.to_csv(OUT_ROOT / f"{stem}_recomputed_roi_waveforms.csv.gz",
+                       index=False, compression="gzip")
+        memberships[stem] = membership
+        features_by_stem[stem] = per_roi
+
+        roi_counts = membership.groupby("roi_id").size().to_dict()
+        audit["n_nominal_pulse_centers"] = audit.roi_id.map(roi_counts).fillna(0).astype(int)
+        audit["n_tracks"] = audit.roi_id.map(membership.groupby("roi_id").track_num.nunique()).fillna(0).astype(int)
+        roi_audit_parts[-1] = audit
+        del pulse_features, per_roi, membership, windows
+        gc.collect()
+
+    ROI_AUDIT = pd.concat(roi_audit_parts, ignore_index=True)
+    ROI_PULSE_FEATURES = pd.concat(
+        [frame for frame in features_by_stem.values()], ignore_index=True,
+    )
+    NOISE_SEGMENTS = pd.concat(noise_parts, ignore_index=True)
+    ROI_AUDIT.to_csv(OUT_ROOT / "roi_audit.csv", index=False)
+    NOISE_SEGMENTS.to_csv(OUT_ROOT / "noise_tail_stationarity.csv", index=False)
+    (OUT_ROOT / "noise_peak_calibration.json").write_text(
+        json.dumps(_json_safe(noise_summary), indent=2, allow_nan=False), encoding="utf-8",
+    )
+
+    roi_rows = []
+    for keys, group in ROI_PULSE_FEATURES.groupby(
+        ["granule_id", "roi_id", "site_id", "class_label", "analysis_status", "analysis_tier"], sort=True,
+    ):
+        stem, roi_id, site_id, class_label, status, tier = keys
+        detected = group.candidate_signal_detected.fillna(False).astype(bool)
+        valid_wave = group.waveform_status.isin(["candidate", "no_candidate"])
+        row = {
+            "granule_id": stem, "roi_id": roi_id, "site_id": site_id, "class_label": class_label,
+            "analysis_status": status, "analysis_tier": tier,
+            "n_roi_pulses": int(len(group)), "n_valid_waveforms": int(valid_wave.sum()),
+            "n_invalid_waveforms": int((~valid_wave).sum()), "n_candidate_signals": int(detected.sum()),
+            "candidate_signal_rate_all_roi_pulses": float(detected.mean()),
+            "track_count": int(group.track_num.nunique()),
+            "refh_snr_median": float(group.refh_snr.median()),
+            "refh_snr_p10": float(group.refh_snr.quantile(0.10)),
+            "refh_snr_p90": float(group.refh_snr.quantile(0.90)),
+            "refh_amp_counts_median": float(group.refh_amp_counts.median()),
+            "refh_amp_counts_p10": float(group.refh_amp_counts.quantile(0.10)),
+            "refh_amp_counts_p90": float(group.refh_amp_counts.quantile(0.90)),
+            "candidate_width_median_bins": float(group.loc[detected, "width_halfmax_bins"].median()) if detected.any() else np.nan,
+            "candidate_width_p10_bins": float(group.loc[detected, "width_halfmax_bins"].quantile(0.10)) if detected.any() else np.nan,
+            "candidate_width_p90_bins": float(group.loc[detected, "width_halfmax_bins"].quantile(0.90)) if detected.any() else np.nan,
+            "candidate_energy_median_counts_bin": float(group.loc[detected, "dominant_support_energy_counts_bin"].median()) if detected.any() else np.nan,
+            "candidate_asymmetry_median": float(group.loc[detected, "asymmetry_skewness"].median()) if detected.any() else np.nan,
+            "candidate_feature_n": int(detected.sum()),
+            "refh_amp_matches_raw_max_n": int(group.refh_amp_matches_raw_max.sum()),
+        }
+        roi_rows.append(row)
+    ROI_RESPONSE = pd.DataFrame(roi_rows)
+    ROI_RESPONSE.to_csv(OUT_ROOT / "roi_response_summary.csv", index=False)
+
+    site_pulses = ROI_PULSE_FEATURES.drop_duplicates(["granule_id", "site_id", "pulse_index"]).copy()
+    site_rows = []
+    for keys, group in site_pulses.groupby(["granule_id", "site_id", "class_label", "analysis_tier"], sort=True):
+        stem, site_id, class_label, tier = keys
+        detected = group.candidate_signal_detected.fillna(False).astype(bool)
+        site_rows.append({
+            "granule_id": stem, "site_id": site_id, "class_label": class_label, "analysis_tier": tier,
+            "n_rois": int(ROI_PULSE_FEATURES.loc[
+                (ROI_PULSE_FEATURES.granule_id == stem) & (ROI_PULSE_FEATURES.site_id == site_id), "roi_id"
+            ].nunique()),
+            "n_unique_site_pulses": int(len(group)), "n_candidate_signals": int(detected.sum()),
+            "candidate_signal_rate": float(detected.mean()),
+            "refh_snr_median": float(group.refh_snr.median()),
+            "refh_amp_counts_median": float(group.refh_amp_counts.median()),
+            "candidate_width_median_bins": float(group.loc[detected, "width_halfmax_bins"].median()) if detected.any() else np.nan,
+            "candidate_energy_median_counts_bin": float(group.loc[detected, "dominant_support_energy_counts_bin"].median()) if detected.any() else np.nan,
+        })
+    SITE_RESPONSE = pd.DataFrame(site_rows)
+    SITE_RESPONSE.to_csv(OUT_ROOT / "site_response_summary.csv", index=False)
+
+    variability_rows = []
+    for (stem, tier, class_label), group in SITE_RESPONSE.groupby(
+        ["granule_id", "analysis_tier", "class_label"], sort=True,
+    ):
+        for metric in ("refh_snr_median", "refh_amp_counts_median", "candidate_signal_rate",
+                       "candidate_width_median_bins", "candidate_energy_median_counts_bin"):
+            values = pd.to_numeric(group[metric], errors="coerce").dropna().to_numpy(dtype=float)
+            variability_rows.append({
+                "granule_id": stem, "analysis_tier": tier, "class_label": class_label, "metric": metric,
+                "independent_site_n": int(group.site_id.nunique()),
+                "median_across_sites": float(np.median(values)) if len(values) else np.nan,
+                "site_p10": float(np.percentile(values, 10)) if len(values) else np.nan,
+                "site_p90": float(np.percentile(values, 90)) if len(values) else np.nan,
+                "site_range": float(np.ptp(values)) if len(values) > 1 else np.nan,
+                "site_ids": "|".join(sorted(group.site_id.astype(str).unique())),
+            })
+    SITE_VARIABILITY = pd.DataFrame(variability_rows)
+    SITE_VARIABILITY.to_csv(OUT_ROOT / "between_site_variability.csv", index=False)
+
+    old_summary = pd.read_csv(OLD_ROOT / "roi_response_summary.csv")
+    candidate_rate_change = ROI_RESPONSE.merge(
+        old_summary[["granule_id", "roi_id", "n_candidate_signals", "candidate_signal_rate_all_roi_pulses"]],
+        on=["granule_id", "roi_id"], how="left", suffixes=("_current", "_previous"), validate="one_to_one",
+    )
+    candidate_rate_change["rate_change_percentage_points"] = 100 * (
+        candidate_rate_change.candidate_signal_rate_all_roi_pulses_current
+        - candidate_rate_change.candidate_signal_rate_all_roi_pulses_previous
+    )
+    candidate_rate_change["candidate_count_change"] = (
+        candidate_rate_change.n_candidate_signals_current
+        - candidate_rate_change.n_candidate_signals_previous
+    )
+    candidate_rate_change["rate_change_percentage_points"] = candidate_rate_change["rate_change_percentage_points"].round(8)
+    candidate_rate_change["previous_values_use"] = "summary-only comparison; all current candidate features were recomputed from source H5"
+    candidate_rate_change.to_csv(OUT_ROOT / "candidate_rate_change_after_detector_fix.csv", index=False)
+
+    transition_rows = []
+    for stem, current in features_by_stem.items():
+        old_path = OLD_ROOT / stem / "roi_pulse_features.csv.gz"
+        old_flags = pd.read_csv(
+            old_path, compression="gzip",
+            usecols=["granule_id", "roi_id", "pulse_index", "candidate_signal_detected"],
+        )
+        current_flags = current[["granule_id", "roi_id", "pulse_index", "candidate_signal_detected",
+                                 "site_id", "class_label", "analysis_tier"]]
+        comparison = old_flags.merge(
+            current_flags, on=["granule_id", "roi_id", "pulse_index"],
+            how="outer", suffixes=("_previous", "_current"), indicator=True, validate="one_to_one",
+        )
+        if not comparison._merge.eq("both").all():
+            raise ValueError(f"Previous/current candidate comparison has unmatched ROI pulse IDs for {stem}.")
+        previous = comparison.candidate_signal_detected_previous.astype(bool)
+        updated = comparison.candidate_signal_detected_current.astype(bool)
+        comparison["gained"] = ~previous & updated
+        comparison["lost"] = previous & ~updated
+        for keys, group in comparison.groupby(
+            ["granule_id", "roi_id", "site_id", "class_label", "analysis_tier"], sort=True,
+        ):
+            transition_rows.append({
+                **dict(zip(["granule_id", "roi_id", "site_id", "class_label", "analysis_tier"], keys)),
+                "compared_pulse_n": int(len(group)),
+                "previous_candidate_n": int(group.candidate_signal_detected_previous.astype(bool).sum()),
+                "current_candidate_n": int(group.candidate_signal_detected_current.astype(bool).sum()),
+                "gained_candidate_n": int(group.gained.sum()), "lost_candidate_n": int(group.lost.sum()),
+                "changed_flag_n": int((group.gained | group.lost).sum()),
+                "comparison_use": "before-after detector audit only; current summaries use only recomputed H5 features",
+            })
+    CANDIDATE_TRANSITIONS = pd.DataFrame(transition_rows)
+    CANDIDATE_TRANSITIONS.to_csv(OUT_ROOT / "candidate_detection_transition_summary.csv", index=False)
+
+    track_rows = []
+    for stem, frame in features_by_stem.items():
+        primary = frame.loc[frame.analysis_tier == "primary"].drop_duplicates(
+            ["granule_id", "site_id", "pulse_index"],
+        ).copy()
+        primary["roi_id"] = primary.site_id.astype(str)
+        track_rows.extend(aggregate_roi_track_responses(primary))
+    TRACK_SUMMARY = pd.DataFrame(track_rows)
+    TRACK_SUMMARY.to_csv(OUT_ROOT / "primary_site_track_responses.csv", index=False)
+
+    track_pair_rows, track_pair_summary = [], []
+    for stem in H5_BY_STEM:
+        part = TRACK_SUMMARY.loc[TRACK_SUMMARY.granule_id == stem]
+        open_sites = part.loc[part.class_label == "open_field", "site_id"].drop_duplicates().tolist()
+        compare_sites = part.loc[part.class_label.isin(["tree_canopy", "road_surface"]), ["site_id", "class_label"]].drop_duplicates()
+        by_site = {site: group.set_index("track_num", drop=False).to_dict("index")
+                   for site, group in part.groupby("site_id")}
+        pulse_counts = {
+            (row.granule_id, row.site_id): int(row.n_unique_site_pulses)
+            for row in SITE_RESPONSE.loc[SITE_RESPONSE.analysis_tier == "primary"].itertuples()
+        }
+        for open_site in open_sites:
+            for target in compare_sites.itertuples(index=False):
+                compare_site, target_class = str(target.site_id), str(target.class_label)
+                if compare_site == open_site:
+                    continue
+                common = common_track_ids(by_site.get(open_site, {}).keys(), by_site.get(compare_site, {}).keys())
+                comparison = f"{open_site} vs {compare_site} ({target_class})"
+                date_label = "Nov 12" if "20241112" in stem else "Nov 18"
+                field_label = "F1" if open_site.endswith(("01", "field_site_01")) else "F2"
+                compare_label = "road" if target_class == "road_surface" else ("woodlot" if "northwest" in compare_site else "forest")
+                comparison_short = f"{date_label}\n{field_label} / {compare_label}\nn={len(common)}"
+                left = by_site.get(open_site, {})
+                right = by_site.get(compare_site, {})
+                summary = {
+                    "granule_id": stem, "site_a": open_site, "site_b": compare_site, "class_b": target_class,
+                    "comparison": comparison, "comparison_short": comparison_short, "common_track_n": len(common),
+                    "site_a_pulse_n": pulse_counts.get((stem, open_site), 0),
+                    "site_b_pulse_n": pulse_counts.get((stem, compare_site), 0),
+                    "comparability": "common-track descriptive pair" if common else "no common track IDs",
+                }
+                values_by_metric = {
+                    "snr_difference_a_minus_b": [], "amplitude_difference_a_minus_b": [],
+                    "candidate_rate_difference_a_minus_b": [], "sweep_separation": [], "time_separation_s": [],
+                }
+                for track in common:
+                    a, b = left[track], right[track]
+                    row = {
+                        "granule_id": stem, "comparison": comparison, "comparison_short": comparison_short,
+                        "site_a": open_site, "site_b": compare_site, "class_b": target_class, "track_num": int(track),
+                        "site_a_pulse_n": int(a["n_pulses"]), "site_b_pulse_n": int(b["n_pulses"]),
+                        "site_a_sweep_median": a.get("sweep_num_median"),
+                        "site_b_sweep_median": b.get("sweep_num_median"),
+                        "site_a_time_median_s": a.get("delta_time_s_median"),
+                        "site_b_time_median_s": b.get("delta_time_s_median"),
+                    }
+                    row["sweep_separation"] = abs(float(row["site_a_sweep_median"]) - float(row["site_b_sweep_median"]))
+                    row["time_separation_s"] = abs(float(row["site_a_time_median_s"]) - float(row["site_b_time_median_s"]))
+                    row["snr_difference_a_minus_b"] = float(a["refh_snr_median"] - b["refh_snr_median"])
+                    row["amplitude_difference_a_minus_b"] = float(a["refh_amp_counts_median"] - b["refh_amp_counts_median"])
+                    row["candidate_rate_difference_a_minus_b"] = float(a["candidate_signal_rate"] - b["candidate_signal_rate"])
+                    for key in values_by_metric:
+                        values_by_metric[key].append(row[key])
+                    track_pair_rows.append(row)
+                for key, values in values_by_metric.items():
+                    summary[f"{key}_median"] = float(np.median(values)) if values else np.nan
+                if common:
+                    summary["median_sweep_separation"] = summary.pop("sweep_separation_median")
+                    summary["median_time_separation_s"] = summary.pop("time_separation_s_median")
+                track_pair_summary.append(summary)
+
+    TRACK_PAIRS = pd.DataFrame(track_pair_rows)
+    TRACK_PAIR_SUMMARY = pd.DataFrame(track_pair_summary)
+    TRACK_PAIRS.to_csv(OUT_ROOT / "matched_track_comparisons.csv", index=False)
+    TRACK_PAIR_SUMMARY.to_csv(OUT_ROOT / "matched_track_site_pair_summary.csv", index=False)
+
+    (OUT_ROOT / "study_summary.json").write_text(json.dumps(_json_safe({
+        "interpretation": "Within-granule descriptive response only; amplitude is native counts, morphology is candidate-only, and candidate rates are research screening rates.",
+        "strict_detection_probability_calibrated": False,
+        "official_refh_rx_bin_available": False,
+        "candidate_detector_parameters": {
+            "prominence_threshold_quantile": PROMINENCE_QUANTILE,
+            "width_minimum_bins": MINIMUM_WIDTH_BINS, "minimum_peak_distance_bins": MINIMUM_PEAK_DISTANCE,
+            "positive_peak_height_required": True,
+            "qualification": "height above background, prominence, and width are checked jointly for every local peak",
+        },
+        "roi_count": int(len(ROI_AUDIT)), "roi_response_count": int(len(ROI_RESPONSE)),
+        "site_response": SITE_RESPONSE.to_dict("records"),
+        "matched_track_site_pair_summary": TRACK_PAIR_SUMMARY.to_dict("records"),
+        "noise_thresholds": noise_summary,
+    }), indent=2, allow_nan=False), encoding="utf-8")
+
+    naip_figure_paths = {}
+    for stem in H5_BY_STEM:
+        assets = NAIP_PATHS[stem]
+        audit = ROI_AUDIT.loc[ROI_AUDIT.granule_id == stem]
+        membership = features_by_stem[stem]
+        overview = OUT_ROOT / f"11-A_naip_roi_context_{stem}.png"
+        plot_naip_roi_board(
+            granule_id=stem, h5_date=audit.h5_acquisition_date.iloc[0],
+            expected_naip_date=NAIP_DATES[stem], image_path=assets[0], metadata_path=assets[1],
+            roi_features=roi_features_by_stem[stem], roi_audit=audit,
+            membership=membership, output_path=overview,
+        )
+        naip_figure_paths[stem] = overview
+
+    return {
+        "roi_features_by_stem": roi_features_by_stem,
+        "roi_audit": ROI_AUDIT,
+        "roi_pulse_features": ROI_PULSE_FEATURES,
+        "noise_segments": NOISE_SEGMENTS,
+        "roi_response": ROI_RESPONSE,
+        "site_response": SITE_RESPONSE,
+        "site_variability": SITE_VARIABILITY,
+        "candidate_rate_change": candidate_rate_change,
+        "candidate_transitions": CANDIDATE_TRANSITIONS,
+        "track_summary": TRACK_SUMMARY,
+        "track_pairs": TRACK_PAIRS,
+        "track_pair_summary": TRACK_PAIR_SUMMARY,
+        "features_by_stem": features_by_stem,
+        "naip_figure_paths": naip_figure_paths,
+    }

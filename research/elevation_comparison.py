@@ -481,7 +481,11 @@ def select_elevation_cases(
 
 
 def build_ground_profile(matched: Any, *, calibration_offset_m: float, minimum_pulses: int = 25) -> tuple[Any, int]:
-    """Choose a test-site track and compute distance only from projected coordinates."""
+    """Choose a supported test track with the most SNR >= 3 observations.
+
+    Ties use measured path length, then row count. Every supported observation
+    on the selected track remains in the profile, including low-SNR outliers.
+    """
 
     frame = matched[
         (matched.spatial_split.astype(str) == "independent_test")
@@ -496,10 +500,13 @@ def build_ground_profile(matched: Any, *, calibration_offset_m: float, minimum_p
         dx = np.diff(ordered.easting_m_epsg6347.to_numpy(dtype=np.float64))
         dy = np.diff(ordered.northing_m_epsg6347.to_numpy(dtype=np.float64))
         distance = np.concatenate(([0.0], np.cumsum(np.hypot(dx, dy))))
-        options.append((float(distance[-1]), int(track), ordered, distance))
+        good_snr_n = int((ordered.refh_snr >= 3.0).sum())
+        options.append((good_snr_n, float(distance[-1]), len(ordered), int(track), ordered, distance))
     if not options:
         raise ValueError(f"No independent-test track has at least {minimum_pulses} supported pulses.")
-    _, track, profile, distance = max(options, key=lambda item: (item[0], len(item[2]), -item[1]))
+    _, _, _, track, profile, distance = max(
+        options, key=lambda item: (item[0], item[1], item[2], -item[3]),
+    )
     profile["distance_m"] = distance
     profile["casals_refh_m"] = profile["casals_refh_m"].to_numpy(dtype=np.float64)
     profile["empirically_aligned_refh_m"] = profile["casals_refh_m"] - float(calibration_offset_m)

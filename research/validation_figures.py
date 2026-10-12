@@ -232,7 +232,7 @@ def plot_spatial_snr_board(
     axes[0].scatter(frame.loc[gross, "easting_m_epsg6347"], frame.loc[gross, "northing_m_epsg6347"],
                     marker="^", s=50, facecolors="none", edgecolors="#111111", linewidths=1.2,
                     label=f"All |residual| > {gross_error_threshold_m:g} m ({int(gross.sum())})", zorder=5)
-    fig.colorbar(sc, ax=axes[0], label="Empirically aligned residual (m)")
+    fig.colorbar(sc, ax=axes[0], label="Empirically aligned residual (m; color scale capped at 97th percentile)")
     axes[0].legend(fontsize=7, loc="best")
     axes[0].set(title="Signed residual by location", xlabel="Easting (m, EPSG:6347)", ylabel="Northing (m, EPSG:6347)")
     sc2 = axes[1].scatter(frame.easting_m_epsg6347, frame.northing_m_epsg6347,
@@ -292,8 +292,10 @@ def plot_elevation_case_board(
                 fig.colorbar(sc, ax=ax, label="3DEP grid height (m; local structure)")
             nearby = case["nearby_casals"]
             if len(nearby):
-                ax.scatter(nearby.easting_m_epsg6347, nearby.northing_m_epsg6347,
-                           s=8, c="#5b6770", alpha=0.4, label="Nearby CASALS pulses")
+                shown = nearby.iloc[_spaced_indices(len(nearby), 1_200)]
+                ax.scatter(shown.easting_m_epsg6347, shown.northing_m_epsg6347,
+                           s=5, c="#5b6770", alpha=0.18, zorder=2,
+                           label=f"Nearby CASALS pulses ({len(shown):,}/{len(nearby):,} shown)")
             ax.scatter([xy[0]], [xy[1]], marker="*", s=150, c="#d1495b", edgecolors="white",
                        linewidths=0.8, label="Selected pulse", zorder=5)
             ax.set_aspect("equal", adjustable="datalim")
@@ -353,7 +355,8 @@ def plot_ground_profile(profile: pd.DataFrame, *, granule_id: str, track: int, o
                s=18, c="#b23a48", marker="x", label="CASALS SNR < 3")
     ax.plot(profile.distance_m, profile.casals_refh_m, color="#8d5a97", lw=0.8, alpha=0.55,
             label="Raw CASALS Refh (offset retained)")
-    ax.set(title=f"Ground profile by measured horizontal distance | {granule_id} | track {track}",
+    ax.set(title=(f"Independent-test ground profile | {granule_id} | track {track}\n"
+                  "Track chosen by supported SNR ≥ 3 count; all track observations shown"),
            xlabel="Cumulative horizontal distance from H5 projected coordinates (m)",
            ylabel="Stored height (m; vertical frames unresolved)")
     ax.legend(fontsize=8, ncol=2)

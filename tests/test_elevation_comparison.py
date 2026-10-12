@@ -1,10 +1,12 @@
 import warnings
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from research.elevation_comparison import (
     build_class2_reference_grid,
+    build_ground_profile,
     class2_ground_points,
     elevation_metrics,
     empirical_alignment_metrics,
@@ -106,6 +108,31 @@ def test_raw_metrics_and_empirical_alignment_recover_known_38m_offset():
     assert result["evaluation_semantics"].startswith("spatial holdout agreement")
     assert reference_readiness({})["status"] == "BLOCKED"
     assert raw["rmse_m"] > 37.0  # remains a raw difference, not absolute accuracy
+
+
+def test_ground_profile_prefers_supported_snr_track_but_keeps_its_low_snr_rows():
+    n_long, n_quality = 30, 27
+    frame = pd.DataFrame({
+        "spatial_split": ["independent_test"] * (n_long + n_quality),
+        "surface_acceptable": [True] * (n_long + n_quality),
+        "track_num": [1] * n_long + [2] * n_quality,
+        "sweep_num": list(range(n_long)) + list(range(n_quality)),
+        "pulse_index": list(range(n_long)) + list(range(100, 100 + n_quality)),
+        "easting_m_epsg6347": list(np.arange(n_long, dtype=float) * 10)
+        + list(np.arange(n_quality, dtype=float) * 0.5),
+        "northing_m_epsg6347": [0.0] * (n_long + n_quality),
+        "refh_snr": [2.0] * n_long + [4.0] * (n_quality - 1) + [2.0],
+        "casals_refh_m": [10.0] * (n_long + n_quality),
+        "reference_height_local_plane_m": [9.0] * (n_long + n_quality),
+    })
+
+    profile, track = build_ground_profile(frame, calibration_offset_m=-1.0, minimum_pulses=25)
+
+    assert track == 2
+    assert len(profile) == n_quality
+    assert (profile.refh_snr < 3.0).sum() == 1
+    assert profile.distance_m.iloc[-1] == pytest.approx((n_quality - 1) * 0.5)
+    assert np.all(profile.empirically_aligned_refh_m == 11.0)
 
 
 def test_test_values_never_affect_calibration_offset():

@@ -1,0 +1,686 @@
+{
+  "type": "FeatureCollection",
+  "name": "CASALS land-cover ROI manifest",
+  "metadata": {
+    "coordinate_reference": "GeoJSON coordinates are WGS84 longitude/latitude (EPSG:4326); polygons were digitized in EPSG:32618.",
+    "granule": "casals_l1b_20241118T171757_001_02.h5",
+    "naip_acquisition_date": "2022-06-15",
+    "label_scope": "Probable image-context labels only; not calibrated 2024 pulse-footprint truth.",
+    "omitted_classes": "No roof ROI was accepted. Water candidate is retained as excluded because no H5 nominal coordinate center intersects it.",
+    "coordinate_reference_system": "EPSG:4326",
+    "analysis_crs": "EPSG:32618",
+    "granules": [
+      "casals_l1b_20241112T165718_001_02",
+      "casals_l1b_20241118T171757_001_02"
+    ],
+    "boundary_method": "Manual image-only polygon digitization; nominal pulse centers are used only afterward for sample membership."
+  },
+  "features": [
+    {
+      "type": "Feature",
+      "id": "open_field_01",
+      "properties": {
+        "roi_id": "open_field_01",
+        "class_label": "open_field",
+        "site_id": "field_site_01",
+        "analysis_status": "Included",
+        "visual_interpretation_confidence": "high",
+        "evidence_source": "USGS NAIP imagery dated 2022-06-15",
+        "image_asset": "outputs/notebooks/06_waveform_gallery/method_improvement/casals_l1b_20241118T171757_001_02/search_2827710_naip.tif",
+        "image_service": "https://imagery.nationalmap.gov/arcgis/rest/services/USGSNAIPImagery/ImageServer",
+        "image_analysis_crs": "EPSG:32618",
+        "polygon_digitization_basis": "Visual interpretation of imagery only; no HAG, waveform amplitude, SNR, or classifier output used to draw the class boundary.",
+        "registration_limit": "Service georeferencing; no fitted shift; absolute footprint alignment is not independently validated.",
+        "temporal_limit": "Image predates CASALS acquisition by about two years; it supports probable context, not 2024 land-cover truth.",
+        "footprint_limit": "CASALS footprint is uncalibrated; point-in-polygon refers only to nominal H5 Refh coordinate centers.",
+        "note": "Uniform cultivated/open field interior; no visible canopy, road, roof, or water in the polygon.",
+        "granule_id": "casals_l1b_20241118T171757_001_02",
+        "landcover_class": "open_field",
+        "label_source": "USGS NAIP imagery dated 2022-06-15",
+        "source_date": "2022-06-15",
+        "confidence": "high",
+        "temporal_stability": "NAIP predates CASALS by about two years; land cover may have changed.",
+        "review_notes": "Uniform cultivated/open field interior; no visible canopy, road, roof, or water in the polygon."
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              -76.695759261,
+              36.189329414
+            ],
+            [
+              -76.69549245,
+              36.189333194
+            ],
+            [
+              -76.695497113,
+              36.189549475
+            ],
+            [
+              -76.695763925,
+              36.189545694
+            ],
+            [
+              -76.695759261,
+              36.189329414
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "open_field_02",
+      "properties": {
+        "roi_id": "open_field_02",
+        "class_label": "open_field",
+        "site_id": "field_site_02",
+        "analysis_status": "Included",
+        "visual_interpretation_confidence": "high",
+        "evidence_source": "USGS NAIP imagery dated 2022-06-15",
+        "image_asset": "outputs/notebooks/06_waveform_gallery/method_improvement/casals_l1b_20241118T171757_001_02/search_3190477_naip.tif",
+        "image_service": "https://imagery.nationalmap.gov/arcgis/rest/services/USGSNAIPImagery/ImageServer",
+        "image_analysis_crs": "EPSG:32618",
+        "polygon_digitization_basis": "Visual interpretation of imagery only; no HAG, waveform amplitude, SNR, or classifier output used to draw the class boundary.",
+        "registration_limit": "Service georeferencing; no fitted shift; absolute footprint alignment is not independently validated.",
+        "temporal_limit": "Image predates CASALS acquisition by about two years; it supports probable context, not 2024 land-cover truth.",
+        "footprint_limit": "CASALS footprint is uncalibrated; point-in-polygon refers only to nominal H5 Refh coordinate centers.",
+        "note": "Uniform open agricultural field interior; nearby field edges and structures are outside the polygon.",
+        "granule_id": "casals_l1b_20241118T171757_001_02",
+        "landcover_class": "open_field",
+        "label_source": "USGS NAIP imagery dated 2022-06-15",
+        "source_date": "2022-06-15",
+        "confidence": "high",
+        "temporal_stability": "NAIP predates CASALS by about two years; land cover may have changed.",
+        "review_notes": "Uniform open agricultural field interior; nearby field edges and structures are outside the polygon."
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              -76.70118265,
+              36.195698668
+            ],
+            [
+              -76.700915818,
+              36.195702461
+            ],
+            [
+              -76.700920498,
+              36.195918741
+            ],
+            [
+              -76.70118733,
+              36.195914948
+            ],
+            [
+              -76.70118265,
+              36.195698668
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "road_core_01",
+      "properties": {
+        "roi_id": "road_core_01",
+        "class_label": "road_surface",
+        "site_id": "farm_road_segment_01",
+        "analysis_status": "Included",
+        "visual_interpretation_confidence": "medium",
+        "evidence_source": "USGS NAIP imagery dated 2022-06-15",
+        "image_asset": "outputs/notebooks/06_waveform_gallery/method_improvement/casals_l1b_20241118T171757_001_02/search_3082120_naip.tif",
+        "image_service": "https://imagery.nationalmap.gov/arcgis/rest/services/USGSNAIPImagery/ImageServer",
+        "image_analysis_crs": "EPSG:32618",
+        "polygon_digitization_basis": "Visual interpretation of imagery only; no HAG, waveform amplitude, SNR, or classifier output used to draw the class boundary.",
+        "registration_limit": "Service georeferencing; no fitted shift; absolute footprint alignment is not independently validated.",
+        "temporal_limit": "Image predates CASALS acquisition by about two years; it supports probable context, not 2024 land-cover truth.",
+        "footprint_limit": "CASALS footprint is uncalibrated; point-in-polygon refers only to nominal H5 Refh coordinate centers.",
+        "note": "Narrow pale linear farm-road surface digitized from the visible centerline; verge is excluded, but the footprint can still mix road and verge.",
+        "granule_id": "casals_l1b_20241118T171757_001_02",
+        "landcover_class": "road_surface",
+        "label_source": "USGS NAIP imagery dated 2022-06-15",
+        "source_date": "2022-06-15",
+        "confidence": "medium",
+        "temporal_stability": "NAIP predates CASALS by about two years; land cover may have changed.",
+        "review_notes": "Narrow pale linear farm-road surface digitized from the visible centerline; verge is excluded, but the footprint can still mix road and verge."
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              -76.699641936,
+              36.19409586
+            ],
+            [
+              -76.699309805,
+              36.194165481
+            ],
+            [
+              -76.699303124,
+              36.194144539
+            ],
+            [
+              -76.699635255,
+              36.194074918
+            ],
+            [
+              -76.699641936,
+              36.19409586
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "tree_canopy_01",
+      "properties": {
+        "roi_id": "tree_canopy_01",
+        "class_label": "tree_canopy",
+        "site_id": "south_central_forest_patch",
+        "analysis_status": "Included",
+        "visual_interpretation_confidence": "high",
+        "evidence_source": "USGS NAIP imagery dated 2022-06-15",
+        "image_asset": "outputs/notebooks/06_waveform_gallery/method_improvement/casals_l1b_20241118T171757_001_02/case_A_naip.tif",
+        "image_service": "https://imagery.nationalmap.gov/arcgis/rest/services/USGSNAIPImagery/ImageServer",
+        "image_analysis_crs": "EPSG:32618",
+        "polygon_digitization_basis": "Visual interpretation of imagery only; no HAG, waveform amplitude, SNR, or classifier output used to draw the class boundary.",
+        "registration_limit": "Service georeferencing; no fitted shift; absolute footprint alignment is not independently validated.",
+        "temporal_limit": "Image predates CASALS acquisition by about two years; it supports probable context, not 2024 land-cover truth.",
+        "footprint_limit": "CASALS footprint is uncalibrated; point-in-polygon refers only to nominal H5 Refh coordinate centers.",
+        "note": "Dense contiguous tree-crown interior; polygon avoids the visible forest edge.",
+        "granule_id": "casals_l1b_20241118T171757_001_02",
+        "landcover_class": "tree_canopy",
+        "label_source": "USGS NAIP imagery dated 2022-06-15",
+        "source_date": "2022-06-15",
+        "confidence": "high",
+        "temporal_stability": "NAIP predates CASALS by about two years; land cover may have changed.",
+        "review_notes": "Dense contiguous tree-crown interior; polygon avoids the visible forest edge."
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              -76.689886341,
+              36.187282912
+            ],
+            [
+              -76.689752938,
+              36.187284796
+            ],
+            [
+              -76.689755262,
+              36.187392937
+            ],
+            [
+              -76.689888665,
+              36.187391053
+            ],
+            [
+              -76.689886341,
+              36.187282912
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "tree_canopy_02",
+      "properties": {
+        "roi_id": "tree_canopy_02",
+        "class_label": "tree_canopy",
+        "site_id": "south_central_forest_patch",
+        "analysis_status": "Included",
+        "visual_interpretation_confidence": "high",
+        "evidence_source": "USGS NAIP imagery dated 2022-06-15",
+        "image_asset": "outputs/notebooks/06_waveform_gallery/method_improvement/casals_l1b_20241118T171757_001_02/case_B_naip.tif",
+        "image_service": "https://imagery.nationalmap.gov/arcgis/rest/services/USGSNAIPImagery/ImageServer",
+        "image_analysis_crs": "EPSG:32618",
+        "polygon_digitization_basis": "Visual interpretation of imagery only; no HAG, waveform amplitude, SNR, or classifier output used to draw the class boundary.",
+        "registration_limit": "Service georeferencing; no fitted shift; absolute footprint alignment is not independently validated.",
+        "temporal_limit": "Image predates CASALS acquisition by about two years; it supports probable context, not 2024 land-cover truth.",
+        "footprint_limit": "CASALS footprint is uncalibrated; point-in-polygon refers only to nominal H5 Refh coordinate centers.",
+        "note": "Dense contiguous tree-crown interior; same forest patch as tree_canopy_01, so this is a second local ROI rather than an independent forest stand.",
+        "granule_id": "casals_l1b_20241118T171757_001_02",
+        "landcover_class": "tree_canopy",
+        "label_source": "USGS NAIP imagery dated 2022-06-15",
+        "source_date": "2022-06-15",
+        "confidence": "high",
+        "temporal_stability": "NAIP predates CASALS by about two years; land cover may have changed.",
+        "review_notes": "Dense contiguous tree-crown interior; same forest patch as tree_canopy_01, so this is a second local ROI rather than an independent forest stand."
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              -76.689642839,
+              36.187403448
+            ],
+            [
+              -76.689509436,
+              36.187405332
+            ],
+            [
+              -76.68951176,
+              36.187513472
+            ],
+            [
+              -76.689645163,
+              36.187511589
+            ],
+            [
+              -76.689642839,
+              36.187403448
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "id": "water_pond_candidate_01",
+      "properties": {
+        "roi_id": "water_pond_candidate_01",
+        "class_label": "water",
+        "site_id": "farm_pond_candidate_01",
+        "analysis_status": "Candidate",
+        "visual_interpretation_confidence": "medium",
+        "evidence_source": "USGS NAIP imagery dated 2022-06-15",
+        "image_asset": "outputs/notebooks/06_waveform_gallery/method_improvement/casals_l1b_20241118T171757_001_02/search_overview_naip.tif",
+        "image_service": "https://imagery.nationalmap.gov/arcgis/rest/services/USGSNAIPImagery/ImageServer",
+        "image_analysis_crs": "EPSG:32618",
+        "polygon_digitization_basis": "Visual interpretation of imagery only; no HAG, waveform amplitude, SNR, or classifier output used to draw the class boundary.",
+        "registration_limit": "Service georeferencing; no fitted shift; absolute footprint alignment is not independently validated.",
+        "temporal_limit": "Image predates CASALS acquisition by about two years; it supports probable context, not 2024 land-cover truth.",
+        "footprint_limit": "CASALS footprint is uncalibrated; point-in-polygon refers only to nominal H5 Refh coordinate centers.",
+        "note": "Small probable farm pond visible in 2022 NAIP; no November 18 H5 nominal centers fell inside the polygon, so it is not a waveform-response class sample.",
+        "granule_id": "casals_l1b_20241118T171757_001_02",
+        "landcover_class": "water",
+        "label_source": "USGS NAIP imagery dated 2022-06-15",
+        "source_date": "2022-06-15",
+        "confidence": "medium",
+        "temporal_stability": "NAIP predates CASALS by about two years; land cover may have changed.",
+        "review_notes": "Small probable farm pond visible in 2022 NAIP; no November 18 H5 nominal centers fell inside the polygon, so it is not a waveform-response class sample."
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              -76.69147842,
+              36.19576592
+            ],
+            [
+              -76.691368597,
+              36.195830574
+            ],
+            [
+              -76.691211974,
+              36.195787715
+            ],
+            [
+              -76.691087349,
+              36.195681303
+            ],
+            [
+              -76.691085217,
+              36.195582174
+            ],
+            [
+              -76.691161299,
+              36.195499969
+            ],
+            [
+              -76.691282822,
+              36.195462194
+            ],
+            [
+              -76.691383659,
+              36.195496826
+            ],
+            [
+              -76.691474543,
+              36.195585686
+            ],
+            [
+              -76.691498718,
+              36.195675489
+            ],
+            [
+              -76.69147842,
+              36.19576592
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              -75.28190779,
+              38.416898129
+            ],
+            [
+              -75.281220497,
+              38.41689978
+            ],
+            [
+              -75.281222593,
+              38.417440509
+            ],
+            [
+              -75.281909891,
+              38.417438858
+            ],
+            [
+              -75.28190779,
+              38.416898129
+            ]
+          ]
+        ]
+      },
+      "properties": {
+        "roi_id": "open_field_12_01",
+        "granule_id": "casals_l1b_20241112T165718_001_02",
+        "class_label": "open_field",
+        "landcover_class": "open_field",
+        "site_id": "nov12_east_cropland_01",
+        "analysis_status": "Candidate",
+        "visual_interpretation_confidence": "high",
+        "confidence": "high",
+        "evidence_source": "USGS NAIP imagery dated 2022-06-15",
+        "label_source": "USGS NAIP imagery dated 2022-06-15",
+        "source_date": "2022-06-15",
+        "image_asset": "outputs/notebooks/06_waveform_gallery/casals_l1b_20241112T165718_001_02/search_overview_naip.tif",
+        "image_service": "https://imagery.nationalmap.gov/arcgis/rest/services/USGSNAIPImagery/ImageServer",
+        "image_analysis_crs": "EPSG:32618",
+        "polygon_digitization_basis": "Manually drawn from visible NAIP imagery only; no waveform, HAG, SNR, Refh, or classifier values used for the land-cover label or boundary.",
+        "registration_limit": "Service georeferencing; no fitted shift; absolute pulse-footprint alignment is unverified.",
+        "temporal_limit": "The image predates CASALS acquisition by about two years; it supports probable context, not land-cover truth at acquisition.",
+        "temporal_stability": "NAIP predates CASALS by about two years; land cover may have changed.",
+        "footprint_limit": "CASALS footprint is uncalibrated; point-in-polygon refers to nominal H5 Refh coordinate centers.",
+        "note": "Uniform cultivated field interior shown in the June 2022 NAIP; the polygon stays in the open parcel east of the woodland edge.",
+        "review_notes": "Uniform cultivated field interior shown in the June 2022 NAIP; the polygon stays in the open parcel east of the woodland edge."
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              -75.281652102,
+              38.410049442
+            ],
+            [
+              -75.281079412,
+              38.410050817
+            ],
+            [
+              -75.281081506,
+              38.410591547
+            ],
+            [
+              -75.281654201,
+              38.410590172
+            ],
+            [
+              -75.281652102,
+              38.410049442
+            ]
+          ]
+        ]
+      },
+      "properties": {
+        "roi_id": "open_field_12_02",
+        "granule_id": "casals_l1b_20241112T165718_001_02",
+        "class_label": "open_field",
+        "landcover_class": "open_field",
+        "site_id": "nov12_southeast_cropland_02",
+        "analysis_status": "Candidate",
+        "visual_interpretation_confidence": "high",
+        "confidence": "high",
+        "evidence_source": "USGS NAIP imagery dated 2022-06-15",
+        "label_source": "USGS NAIP imagery dated 2022-06-15",
+        "source_date": "2022-06-15",
+        "image_asset": "outputs/notebooks/06_waveform_gallery/casals_l1b_20241112T165718_001_02/search_overview_naip.tif",
+        "image_service": "https://imagery.nationalmap.gov/arcgis/rest/services/USGSNAIPImagery/ImageServer",
+        "image_analysis_crs": "EPSG:32618",
+        "polygon_digitization_basis": "Manually drawn from visible NAIP imagery only; no waveform, HAG, SNR, Refh, or classifier values used for the land-cover label or boundary.",
+        "registration_limit": "Service georeferencing; no fitted shift; absolute pulse-footprint alignment is unverified.",
+        "temporal_limit": "The image predates CASALS acquisition by about two years; it supports probable context, not land-cover truth at acquisition.",
+        "temporal_stability": "NAIP predates CASALS by about two years; land cover may have changed.",
+        "footprint_limit": "CASALS footprint is uncalibrated; point-in-polygon refers to nominal H5 Refh coordinate centers.",
+        "note": "Uniform cultivated field interior in a separate southeastern parcel; visible field boundaries and buildings lie outside the polygon.",
+        "review_notes": "Uniform cultivated field interior in a separate southeastern parcel; visible field boundaries and buildings lie outside the polygon."
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              -75.283862337,
+              38.412882966
+            ],
+            [
+              -75.283175927,
+              38.41310092
+            ],
+            [
+              -75.283129758,
+              38.413010909
+            ],
+            [
+              -75.283816168,
+              38.412792955
+            ],
+            [
+              -75.283862337,
+              38.412882966
+            ]
+          ]
+        ]
+      },
+      "properties": {
+        "roi_id": "road_core_12_01",
+        "granule_id": "casals_l1b_20241112T165718_001_02",
+        "class_label": "road_surface",
+        "landcover_class": "road_surface",
+        "site_id": "nov12_county_road_segment_01",
+        "analysis_status": "Candidate",
+        "visual_interpretation_confidence": "high",
+        "confidence": "high",
+        "evidence_source": "USGS NAIP imagery dated 2022-06-15",
+        "label_source": "USGS NAIP imagery dated 2022-06-15",
+        "source_date": "2022-06-15",
+        "image_asset": "outputs/notebooks/06_waveform_gallery/casals_l1b_20241112T165718_001_02/search_overview_naip.tif",
+        "image_service": "https://imagery.nationalmap.gov/arcgis/rest/services/USGSNAIPImagery/ImageServer",
+        "image_analysis_crs": "EPSG:32618",
+        "polygon_digitization_basis": "Manually drawn from visible NAIP imagery only; no waveform, HAG, SNR, Refh, or classifier values used for the land-cover label or boundary.",
+        "registration_limit": "Service georeferencing; no fitted shift; absolute pulse-footprint alignment is unverified.",
+        "temporal_limit": "The image predates CASALS acquisition by about two years; it supports probable context, not land-cover truth at acquisition.",
+        "temporal_stability": "NAIP predates CASALS by about two years; land cover may have changed.",
+        "footprint_limit": "CASALS footprint is uncalibrated; point-in-polygon refers to nominal H5 Refh coordinate centers.",
+        "note": "Narrow polygon follows the visible paved county-road core in the June 2022 NAIP; possible footprint mixing with verge remains.",
+        "review_notes": "Narrow polygon follows the visible paved county-road core in the June 2022 NAIP; possible footprint mixing with verge remains."
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              -75.282666093,
+              38.405721123
+            ],
+            [
+              -75.281978906,
+              38.405722778
+            ],
+            [
+              -75.281981007,
+              38.406263508
+            ],
+            [
+              -75.282668199,
+              38.406261852
+            ],
+            [
+              -75.282666093,
+              38.405721123
+            ]
+          ]
+        ]
+      },
+      "properties": {
+        "roi_id": "tree_canopy_12_01",
+        "granule_id": "casals_l1b_20241112T165718_001_02",
+        "class_label": "tree_canopy",
+        "landcover_class": "tree_canopy",
+        "site_id": "nov12_south_forest_stand_01",
+        "analysis_status": "Candidate",
+        "visual_interpretation_confidence": "high",
+        "confidence": "high",
+        "evidence_source": "USGS NAIP imagery dated 2022-06-15",
+        "label_source": "USGS NAIP imagery dated 2022-06-15",
+        "source_date": "2022-06-15",
+        "image_asset": "outputs/notebooks/06_waveform_gallery/casals_l1b_20241112T165718_001_02/search_overview_naip.tif",
+        "image_service": "https://imagery.nationalmap.gov/arcgis/rest/services/USGSNAIPImagery/ImageServer",
+        "image_analysis_crs": "EPSG:32618",
+        "polygon_digitization_basis": "Manually drawn from visible NAIP imagery only; no waveform, HAG, SNR, Refh, or classifier values used for the land-cover label or boundary.",
+        "registration_limit": "Service georeferencing; no fitted shift; absolute pulse-footprint alignment is unverified.",
+        "temporal_limit": "The image predates CASALS acquisition by about two years; it supports probable context, not land-cover truth at acquisition.",
+        "temporal_stability": "NAIP predates CASALS by about two years; land cover may have changed.",
+        "footprint_limit": "CASALS footprint is uncalibrated; point-in-polygon refers to nominal H5 Refh coordinate centers.",
+        "note": "Dense closed-canopy interior in the southern forest patch, away from the visible field boundary.",
+        "review_notes": "Dense closed-canopy interior in the southern forest patch, away from the visible field boundary."
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              -75.287262785,
+              38.418291034
+            ],
+            [
+              -75.286953497,
+              38.418291791
+            ],
+            [
+              -75.286954995,
+              38.418670301
+            ],
+            [
+              -75.287264284,
+              38.418669544
+            ],
+            [
+              -75.287262785,
+              38.418291034
+            ]
+          ]
+        ]
+      },
+      "properties": {
+        "roi_id": "water_pond_12_01",
+        "granule_id": "casals_l1b_20241112T165718_001_02",
+        "class_label": "water",
+        "landcover_class": "water",
+        "site_id": "nov12_pond_01",
+        "analysis_status": "Candidate",
+        "visual_interpretation_confidence": "high",
+        "confidence": "high",
+        "evidence_source": "USGS NAIP imagery dated 2022-06-15",
+        "label_source": "USGS NAIP imagery dated 2022-06-15",
+        "source_date": "2022-06-15",
+        "image_asset": "outputs/notebooks/06_waveform_gallery/casals_l1b_20241112T165718_001_02/search_overview_naip.tif",
+        "image_service": "https://imagery.nationalmap.gov/arcgis/rest/services/USGSNAIPImagery/ImageServer",
+        "image_analysis_crs": "EPSG:32618",
+        "polygon_digitization_basis": "Manually drawn from visible NAIP imagery only; no waveform, HAG, SNR, Refh, or classifier values used for the land-cover label or boundary.",
+        "registration_limit": "Service georeferencing; no fitted shift; absolute pulse-footprint alignment is unverified.",
+        "temporal_limit": "The image predates CASALS acquisition by about two years; it supports probable context, not land-cover truth at acquisition.",
+        "temporal_stability": "NAIP predates CASALS by about two years; land cover may have changed.",
+        "footprint_limit": "CASALS footprint is uncalibrated; point-in-polygon refers to nominal H5 Refh coordinate centers.",
+        "note": "Interior of the dark, isolated pond visible in NAIP; the polygon avoids the shoreline and surrounding vegetation.",
+        "review_notes": "Interior of the dark, isolated pond visible in NAIP; the polygon avoids the shoreline and surrounding vegetation."
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [
+              -76.701969555,
+              36.196446494
+            ],
+            [
+              -76.701191287,
+              36.19645756
+            ],
+            [
+              -76.701202988,
+              36.19699826
+            ],
+            [
+              -76.701981261,
+              36.196987193
+            ],
+            [
+              -76.701969555,
+              36.196446494
+            ]
+          ]
+        ]
+      },
+      "properties": {
+        "roi_id": "tree_canopy_18_03",
+        "granule_id": "casals_l1b_20241118T171757_001_02",
+        "class_label": "tree_canopy",
+        "landcover_class": "tree_canopy",
+        "site_id": "nov18_northwest_woodlot_01",
+        "analysis_status": "Candidate",
+        "visual_interpretation_confidence": "high",
+        "confidence": "high",
+        "evidence_source": "USGS NAIP imagery dated 2022-06-15",
+        "label_source": "USGS NAIP imagery dated 2022-06-15",
+        "source_date": "2022-06-15",
+        "image_asset": "outputs/notebooks/06_waveform_gallery/method_improvement/casals_l1b_20241118T171757_001_02/search_overview_naip.tif",
+        "image_service": "https://imagery.nationalmap.gov/arcgis/rest/services/USGSNAIPImagery/ImageServer",
+        "image_analysis_crs": "EPSG:32618",
+        "polygon_digitization_basis": "Manually drawn from visible NAIP imagery only; no waveform, HAG, SNR, Refh, or classifier values used for the land-cover label or boundary.",
+        "registration_limit": "Service georeferencing; no fitted shift; absolute pulse-footprint alignment is unverified.",
+        "temporal_limit": "The image predates CASALS acquisition by about two years; it supports probable context, not land-cover truth at acquisition.",
+        "temporal_stability": "NAIP predates CASALS by about two years; land cover may have changed.",
+        "footprint_limit": "CASALS footprint is uncalibrated; point-in-polygon refers to nominal H5 Refh coordinate centers.",
+        "note": "Dense tree-canopy interior in a separate northwest woodlot, away from the visible agricultural edge.",
+        "review_notes": "Dense tree-canopy interior in a separate northwest woodlot, away from the visible agricultural edge."
+      }
+    }
+  ]
+}

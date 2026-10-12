@@ -39,7 +39,7 @@ The selected November 18 block was expanded symmetrically by 45 sweeps on each s
 
 Using the same candidate gates (occupancy at least 20%, median excess at least 5 sigma, and ghost score at least 0.45), no candidate band passed in the 180-sweep block. Maximum fixed-bin occupancy was 4/180 (2.22%; track 17, bin 566). The selected screen-event bin (track 194, bin 415) exceeded the threshold in 1/180 valid sweeps (0.56%). These recurrence summaries describe this bounded block only; they do not identify the transient's physical source or establish a reflection signature.
 
-A single large composite Figure 09-B2 pairs the three selected tracks' 180-sweep heatmaps with raw early-window waveforms from sweep 12022. Dashed bounds show the original 90-sweep screen; the waveform panels are same-sweep local comparisons. The combined figure is `track_sweep_context_180_composite.png`. Supporting outputs are `extended_180_sweep_track_bin_scores.csv`, `extended_180_sweep_candidate_bands.csv`, and `extended_180_sweep_summary.json`.
+Figure 09-B2 is one large heatmap with a single plotting area: three vertically stacked track blocks, each covering the same 180 sweeps. Rows show signed `RX - H5 bg_mean` counts over early RX bins; the blocks cover the unconfirmed screen-event track and two local comparison tracks. Dashed bounds show the original 90-sweep screen, while the selected sweep and event bin are marked for reference. The figure is `track_sweep_context_180.png`. Supporting outputs are `extended_180_sweep_track_bin_scores.csv`, `extended_180_sweep_candidate_bands.csv`, and `extended_180_sweep_summary.json`.
 
 ### Prespecified 16-sweep follow-up blocks
 

@@ -31,6 +31,15 @@ env/
 /config/local/
 /casals_gui_settings.json
 
+# Curated research annotation requested for the CASALS land-cover study.
+!/data/
+/data/*
+!/data/reference/
+/data/reference/*
+!/data/reference/landcover_rois/
+/data/reference/landcover_rois/*
+!/data/reference/landcover_rois/roi_manifest.geojson
+
 # OS metadata
 Thumbs.db
 Desktop.ini

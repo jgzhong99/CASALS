@@ -1,6 +1,6 @@
 # Research Experiments and Notebooks
 
-This index covers the ten active notebooks and distinguishes their bounded evidence from preserved historical work.
+This index covers the twelve active notebooks and distinguishes their bounded evidence from preserved historical work.
 
 ## Active notebooks
 
@@ -16,12 +16,14 @@ This index covers the ten active notebooks and distinguishes their bounded evide
 | `notebooks/07_georeferencing_geometry.ipynb` | How do stored instrument/window/Refh positions and audited H1/H2 mappings relate in ECEF and local ENU? |
 | `notebooks/08_waveform_decomposition.ipynb` | How do exploratory Gaussian component fits describe six selected real RX waveforms relative to existing detector markers and Refh context? |
 | `notebooks/09_nadir_window_reflection.ipynb` | Does a bounded real-H5 sweep block contain a recurring early-bin signature consistent with the proposed nadir-window reflection hypothesis, and what does cautious screening or mitigation show? |
+| `notebooks/10_3dep_elevation_validation.ipynb` | Do the two CASALS/3DEP pairs pass strict source-frame and Z-processing gates for elevation comparison, and what blockers remain? |
+| `notebooks/11_landcover_lidar_response.ipynb` | How do full-ROI H5 amplitude/SNR and waveform features vary across image-interpreted field, road, canopy and water candidates in both granules? |
 
-Each notebook names its local input and output paths. It uses package APIs for scientific processing and raises an actionable error if required data or prior workflow products are missing. The full collection is numbered 00 through 09. Clean-kernel execution and scientific review evidence are recorded in [notebook_scientific_review.md](notebook_scientific_review.md).
+Each notebook names its local input and output paths. It uses package APIs for scientific processing and raises an actionable error if required data or prior workflow products are missing. The full collection is numbered 00 through 11. Clean-kernel execution and scientific review evidence for notebooks 00–09 are recorded in [notebook_scientific_review.md](notebook_scientific_review.md); the new 10/11 analyses are recorded in [casals_l1b_validation_report.md](casals_l1b_validation_report.md).
 
 Notebooks 05 through 07 run independently from the repository root. Small numerical/input helpers are in `research/showcase.py`; scientific processing reuses the package and existing bin audit. New PNG/CSV/JSON and self-contained Plotly HTML outputs are generated below each notebook's `outputs/notebooks/<notebook>/method_improvement/<granule-stem>/` directory. Earlier `scientific_review/` outputs remain preserved. Execution, numerical closures, visual review, and preservation checks are recorded in [notebook_scientific_review.md](notebook_scientific_review.md).
 
-Notebooks 08 and 09 also run from the repository root. They reuse selected real pulses and the road-context anchor from Notebook 06; Notebook 08 reads the fresh screening event from Notebook 09. Their research helpers are `research/waveform_decomposition.py` and `research/nadir_window_reflection.py`; new outputs are isolated below each notebook's `method_improvement/<granule-stem>/` directory. The 08 Gaussian order is cap-limited on all six real examples and is not a return count. The 09 90-sweep null is retained with a supplemental symmetric 180-sweep sensitivity context, displayed with same-sweep local waveforms in one composite figure, and six prespecified all-bin follow-up blocks; screened events remain unattributed anomalies. See [notebook_scientific_review.md](notebook_scientific_review.md). Neither notebook changes production detection or geolocation behavior.
+Notebooks 08 and 09 also run from the repository root. They reuse selected real pulses and the road-context anchor from Notebook 06; Notebook 08 reads the fresh screening event from Notebook 09. Their research helpers are `research/waveform_decomposition.py` and `research/nadir_window_reflection.py`; new outputs are isolated below each notebook's `method_improvement/<granule-stem>/` directory. The 08 Gaussian order is cap-limited on all six real examples and is not a return count. The 09 90-sweep null is retained with a supplemental 180-sweep sensitivity context shown as one large signed, zero-centered heatmap; six prespecified all-bin follow-up blocks retain screened events as unattributed anomalies. See [notebook_scientific_review.md](notebook_scientific_review.md). Neither notebook changes production detection or geolocation behavior.
 
 ## Refh quality, surfaces, and classification
 
@@ -46,6 +48,12 @@ Notebooks 08 and 09 also run from the repository root. They reuse selected real 
 
 ## Preserved research records
 
-The 21 former topic notebooks and four superseded synthetic root demos remain under `research/archived_notebooks/` with their saved outputs. The active collection contains ten notebooks numbered 00 through 09. Historical evidence is inventoried in [refactor_baseline.md](refactor_baseline.md); implementation history is recorded in [refactor_inventory.md](refactor_inventory.md).
+The 21 former topic notebooks and four superseded synthetic root demos remain under `research/archived_notebooks/` with their saved outputs. The active collection contains twelve notebooks numbered 00 through 11. Historical evidence is inventoried in [refactor_baseline.md](refactor_baseline.md); implementation history is recorded in [refactor_inventory.md](refactor_inventory.md).
 
 Presentations, notes, PDFs, and source references remain under `docs/presentations/` and `docs/references/`. See [references/README.md](references/README.md).
+
+## Elevation reference gate and land-cover response
+
+- Notebook 10 records the H5/3DEP reference evidence, AOI-specific PROJ operation/grid availability, and blockers. It does not compute height residuals while the source frames and historical Z handling remain unresolved.
+- Notebook 11 uses every nominal pulse center inside the reviewed NAIP ROIs from both existing H5 granules. It preserves `good_snr`, fixed SNR thresholds, invalid/no-candidate denominators, and same-track sensitivity rows separately. Three-sigma waveform screening is descriptive, not an official return count.
+- Research helper and focused tests: `research/l1b_validation.py` and `tests/test_l1b_validation.py`. Inputs remain read-only; generated results are isolated under `outputs/notebooks/10_3dep_elevation_validation/` and `outputs/notebooks/11_landcover_lidar_response/`. See [casals_l1b_validation_report.md](casals_l1b_validation_report.md) for evidence, counts and limitations.

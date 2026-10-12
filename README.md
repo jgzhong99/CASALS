@@ -10,7 +10,7 @@ Each pulse has one official geolocated `refh` point associated with the maximum-
 casals_l1b/       Shared H5, refh, waveform, classification, and geolocation code
 research/         Reference comparison and parameter/geolocation research
 tools/            Standalone viewers, animations, and data utilities
-notebooks/        Ten current real-data research notebooks
+notebooks/        Twelve current real-data research notebooks
 casals_tdms_viewer/ Qt TDMS viewer implementation; casals_gui.py is its launcher
 data/             Local raw and reference data (ignored by Git)
 outputs/          Local workflow results (ignored by Git)
@@ -69,7 +69,7 @@ The principal APIs can also be called directly: `export_refh`, `filter_refh`, `m
 
 Notebook 00 uses paginated public S3 listing with no per-object `HeadObject` calls by default. Notebook 02 uses one explicit transfer-eligibility mask for both its evaluated sample and metrics, reports per-class precision/recall/F1, and separates strict status 1 from status 1+2 coverage. Notebook 04 compares production H1 with audited H2 on the same pulse/component population while retaining the legacy Refh-anchored beam diagnostic. The full review and measured execution status are in [notebook scientific review](docs/notebook_scientific_review.md).
 
-The active collection contains ten notebooks numbered 00 through 09. The first five are [S3 inventory](notebooks/00_s3_data_inventory.ipynb), [refh quality and products](notebooks/01_refh_quality.ipynb), [classification and 3DEP pseudo-reference](notebooks/02_refh_classification.ipynb), [waveform analysis](notebooks/03_waveform_analysis.ipynb), and [peak geolocation](notebooks/04_peak_geolocation.ipynb). They use explicit inputs and package functions. Start Jupyter from the repository root. The 21 earlier research notebooks and four superseded synthetic root demos remain under `research/archived_notebooks/` with their saved outputs.
+The active collection contains twelve notebooks numbered 00 through 11, including strict 3DEP reference gating and image-backed land-cover response analysis. The first five are [S3 inventory](notebooks/00_s3_data_inventory.ipynb), [refh quality and products](notebooks/01_refh_quality.ipynb), [classification and 3DEP pseudo-reference](notebooks/02_refh_classification.ipynb), [waveform analysis](notebooks/03_waveform_analysis.ipynb), and [peak geolocation](notebooks/04_peak_geolocation.ipynb). They use explicit inputs and package functions. Start Jupyter from the repository root. The 21 earlier research notebooks and four superseded synthetic root demos remain under `research/archived_notebooks/` with their saved outputs.
 
 Three independently runnable research showcases are [forest transect](notebooks/05_forest_transect_showcase.ipynb), [waveform gallery](notebooks/06_waveform_gallery.ipynb), and [georeferencing geometry](notebooks/07_georeferencing_geometry.ipynb). They use real L1B H5, existing products located through workflow metadata, dated NAIP crops, and the audited research H1/H2 mapping. New review artifacts are isolated under each notebook's `outputs/notebooks/<notebook>/method_improvement/` directory; earlier `scientific_review/` outputs remain preserved. Historical imagery supports probable canopy labels, not exact 2024 footprint truth. These are exploratory demonstrations, not official L2 products. See [the executed showcase report](docs/showcase_execution_report.md).
 

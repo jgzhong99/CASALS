@@ -1,6 +1,9 @@
+from types import SimpleNamespace
+
 import numpy as np
 
-from research.waveform_decomposition import estimate_baseline, fit_gaussian_components
+import research.waveform_decomposition as decomposition
+from research.waveform_decomposition import estimate_baseline, fit_gaussian_components, residual_diagnostics
 
 
 def test_baseline_uses_h5_background_and_has_robust_fallback():
@@ -62,6 +65,99 @@ def test_fit_window_rejects_invalid_bin_indices():
     y = np.ones(16, dtype=float)
     with np.testing.assert_raises(ValueError):
         fit_gaussian_components(y, 1.0, 1.0, fit_indices=[1, 1, 2, 3, 4])
+
+
+def test_baseline_only_is_compared_on_the_same_samples_and_estimated():
+    x = np.arange(96, dtype=float)
+    y = 3.0 + 9.0 * np.exp(-0.5 * ((x - 44.0) / 2.0) ** 2)
+    result = fit_gaussian_components(y, 3.0, 0.5,
+                                     detector_peaks=[{"peak_bin": 44.0, "width_bins": 5.0}],
+                                     max_components=3)
+
+    models = {model["chosen_k"]: model for model in result["models"]}
+    assert set(models) == {0, 1}
+    assert models[0]["parameter_count"] == 2
+    assert models[1]["parameter_count"] == 5
+    assert models[0]["fit_sample_count"] == models[1]["fit_sample_count"] == y.size
+    assert models[0]["baseline"] != 3.0
+    assert result["chosen_k"] == 1
+
+
+def test_failed_optimizer_run_is_retained_but_not_selectable(monkeypatch):
+    def fail(residuals, x0, bounds, **kwargs):
+        return SimpleNamespace(success=False, status=0, message="evaluation limit", nfev=1,
+                                x=np.asarray(x0, dtype=float))
+
+    monkeypatch.setattr(decomposition, "least_squares", fail)
+    x = np.arange(64, dtype=float)
+    y = 2.0 + 10.0 * np.exp(-0.5 * ((x - 30.0) / 2.0) ** 2)
+    result = fit_gaussian_components(y, 2.0, 0.5,
+                                     detector_peaks=[{"peak_bin": 30.0, "width_bins": 5.0}],
+                                     max_components=2)
+
+    model1 = next(model for model in result["models"] if model["chosen_k"] == 1)
+    assert not model1["success"]
+    assert model1["fit_status"] == "optimizer_failed"
+    assert all(not attempt["optimizer_success"] for attempt in model1["attempts"])
+    assert result["chosen_k"] == 0
+    assert result["success"]
+
+
+def test_boundary_hits_are_reported_per_parameter(monkeypatch):
+    def lower_bound_fit(residuals, x0, bounds, **kwargs):
+        return SimpleNamespace(success=True, status=1, message="synthetic bound solution", nfev=1,
+                                x=np.asarray(bounds[0], dtype=float))
+
+    monkeypatch.setattr(decomposition, "least_squares", lower_bound_fit)
+    x = np.arange(64, dtype=float)
+    y = 2.0 + 10.0 * np.exp(-0.5 * ((x - 30.0) / 2.0) ** 2)
+    result = fit_gaussian_components(y, 2.0, 0.5,
+                                     detector_peaks=[{"peak_bin": 30.0, "width_bins": 5.0}],
+                                     max_components=1)
+
+    model1 = next(model for model in result["models"] if model["chosen_k"] == 1)
+    component = model1["boundary_diagnostics"]["components"][0]
+    assert component["boundary_hit"]
+    assert component["amplitude"]["at_lower"]
+    assert component["sigma_bins"]["at_lower"]
+    assert model1["boundary_hit_components"] == [1]
+
+
+def test_seed_cap_and_residual_diagnostics_are_explicit():
+    x = np.arange(128, dtype=float)
+    y = (4.0 + 12.0 * np.exp(-0.5 * ((x - 34.0) / 2.2) ** 2)
+         + 8.0 * np.exp(-0.5 * ((x - 81.0) / 3.1) ** 2))
+    result = fit_gaussian_components(
+        y, 4.0, 0.25,
+        detector_peaks=[{"peak_bin": 34.0, "width_bins": 5.0},
+                        {"peak_bin": 81.0, "width_bins": 7.0}],
+        max_components=5,
+    )
+    assert result["configured_cap"] == 5
+    assert result["available_seed_cap"] == 2
+    assert result["searched_k_cap"] == 2
+    assert result["seed_limited"]
+    diagnostics = residual_diagnostics(np.array([1.0, 2.0, 3.0, 4.0]), 1.0,
+                                       sample_indices=[0, 1, 3])
+    assert diagnostics["sample_count"] == 3
+    assert diagnostics["adjacent_pairs"] == 1
+    assert diagnostics["lag1_autocorrelation_adjacent_bins"] is None
+    assert diagnostics["adjacent_sign_change_fraction"] == 0.0
+
+
+def test_selected_model_reports_component_separability_screen():
+    x = np.arange(128, dtype=float)
+    y = (2.0 + 12.0 * np.exp(-0.5 * ((x - 50.0) / 6.0) ** 2)
+         + 10.0 * np.exp(-0.5 * ((x - 55.5) / 6.0) ** 2))
+    result = fit_gaussian_components(
+        y, 2.0, 0.2,
+        detector_peaks=[{"peak_bin": 50.0, "width_bins": 14.0},
+                        {"peak_bin": 55.5, "width_bins": 14.0}],
+        max_components=2,
+    )
+    two_component_model = next(model for model in result["models"] if model["chosen_k"] == 2)
+    assert len(two_component_model["pairwise_component_overlap"]) == 1
+    assert two_component_model["pairwise_component_overlap"][0]["strong_overlap_screen"]
 
 
 def test_low_snr_noise_does_not_create_components():

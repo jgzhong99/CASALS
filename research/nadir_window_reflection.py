@@ -7,6 +7,7 @@ from typing import Any, Iterable, Sequence
 import h5py
 import numpy as np
 import pandas as pd
+from scipy.signal import find_peaks, peak_widths
 
 from casals_l1b.waveform import build_record_index_grid, infer_waveform_record_axis, read_waveform_records
 
@@ -63,6 +64,19 @@ def score_track_bins(
     count = detected.sum(axis=0)
     valid_sweeps = valid.sum(axis=0)
     occupancy = count / np.maximum(valid_sweeps, 1)
+    # Wilson 95% intervals make the small-block recurrence denominator visible.
+    # These are descriptive binomial intervals; sweep dependence is not modeled.
+    wilson_z = 1.959963984540054
+    wilson_denom = 1.0 + wilson_z**2 / np.maximum(valid_sweeps, 1)
+    wilson_center = (occupancy + wilson_z**2 / (2.0 * np.maximum(valid_sweeps, 1))) / wilson_denom
+    wilson_half = (
+        wilson_z * np.sqrt(
+            occupancy * (1.0 - occupancy) / np.maximum(valid_sweeps, 1)
+            + wilson_z**2 / (4.0 * np.maximum(valid_sweeps, 1) ** 2)
+        ) / wilson_denom
+    )
+    occupancy_ci_low = np.where(valid_sweeps > 0, np.clip(wilson_center - wilson_half, 0.0, 1.0), np.nan)
+    occupancy_ci_high = np.where(valid_sweeps > 0, np.clip(wilson_center + wilson_half, 0.0, 1.0), np.nan)
 
     # The median is computed over threshold exceedances only; no-hit bins stay NaN.
     hit_values = np.where(detected, z, np.inf)
@@ -70,8 +84,10 @@ def score_track_bins(
     median_rank = np.maximum(count - 1, 0) // 2
     median_z = np.take_along_axis(sorted_hits, median_rank[None, :, :], axis=0)[0]
     median_z = np.where(count > 0, median_z, np.nan)
-    typical_noise = np.nanmedian(noise, axis=0)
-    median_excess = median_z * typical_noise[:, None]
+    hit_excess_counts = np.where(detected, rx[:, :, :limit] - mean[:, :, None], np.inf)
+    sorted_excess_counts = np.sort(hit_excess_counts, axis=0)
+    median_excess = np.take_along_axis(sorted_excess_counts, median_rank[None, :, :], axis=0)[0]
+    median_excess = np.where(count > 0, median_excess, np.nan)
 
     current = np.zeros((n_tracks, limit), dtype=np.uint16)
     longest = np.zeros_like(current)
@@ -107,6 +123,8 @@ def score_track_bins(
             "track_num": track_grid.ravel(),
             "bin": bin_grid.ravel(),
             "occupancy": occupancy.ravel(),
+            "occupancy_ci95_low": occupancy_ci_low.ravel(),
+            "occupancy_ci95_high": occupancy_ci_high.ravel(),
             "event_count": count.ravel(),
             "valid_sweep_count": valid_sweeps.ravel(),
             "median_excess_counts": median_excess.ravel(),
@@ -118,6 +136,77 @@ def score_track_bins(
             "ghost_score": score.ravel(),
         }
     )
+
+
+def scan_all_bins_events(
+    waveforms: np.ndarray,
+    background_mean: np.ndarray,
+    background_std: np.ndarray,
+    *,
+    threshold_sigma: float = 8.0,
+    min_prominence_sigma: float = 4.0,
+    min_distance_bins: int = 5,
+    sweep_numbers: Sequence[int] | None = None,
+) -> pd.DataFrame:
+    """Find prominent standardized peaks over every RX bin in a bounded block.
+
+    This is a sensitive Stage-A anomaly list. Its thresholds are screening
+    heuristics and its events do not identify an instrument mechanism.
+    """
+
+    rx = np.asarray(waveforms, dtype=np.float32)
+    mean = np.asarray(background_mean, dtype=np.float32)
+    noise = np.asarray(background_std, dtype=np.float32)
+    if rx.ndim != 3 or mean.shape != rx.shape[:2] or noise.shape != mean.shape:
+        raise ValueError("waveforms must be sweeps x tracks x bins; background fields must match sweeps x tracks")
+    if not np.isfinite(threshold_sigma) or threshold_sigma <= 0:
+        raise ValueError("threshold_sigma must be finite and positive")
+    if not np.isfinite(min_prominence_sigma) or min_prominence_sigma < 0:
+        raise ValueError("min_prominence_sigma must be finite and non-negative")
+    if int(min_distance_bins) < 1:
+        raise ValueError("min_distance_bins must be positive")
+    sweeps = np.arange(rx.shape[0]) if sweep_numbers is None else np.asarray(sweep_numbers, dtype=np.int64)
+    if sweeps.shape != (rx.shape[0],):
+        raise ValueError("sweep_numbers must contain one value per waveform sweep")
+
+    rows: list[dict[str, Any]] = []
+    for sweep_offset in range(rx.shape[0]):
+        for track in range(rx.shape[1]):
+            if not np.isfinite(mean[sweep_offset, track]) or not np.isfinite(noise[sweep_offset, track]) or noise[sweep_offset, track] <= 0:
+                continue
+            z = (rx[sweep_offset, track] - mean[sweep_offset, track]) / noise[sweep_offset, track]
+            finite = np.isfinite(z)
+            if not finite.any():
+                continue
+            starts = np.flatnonzero(finite & ~np.r_[False, finite[:-1]])
+            stops = np.flatnonzero(finite & ~np.r_[finite[1:], False]) + 1
+            for start, stop in zip(starts, stops):
+                segment = z[start:stop]
+                if segment.size < 3:
+                    continue
+                peaks, properties = find_peaks(
+                    segment, height=float(threshold_sigma), prominence=float(min_prominence_sigma),
+                    distance=int(min_distance_bins),
+                )
+                if not peaks.size:
+                    continue
+                widths = peak_widths(segment, peaks, rel_height=0.5)[0]
+                prominences = properties.get("prominences", np.full(peaks.size, np.nan))
+                for position, local_bin in enumerate(peaks):
+                    bin_index = int(start + local_bin)
+                    rows.append({
+                        "sweep_num": int(sweeps[sweep_offset]), "sweep_offset": int(sweep_offset),
+                        "track_num": int(track), "bin": bin_index,
+                        "excess_sigma": float(z[bin_index]),
+                        "prominence_sigma": float(prominences[position]),
+                        "width_bins": float(widths[position]),
+                        "raw_count": float(rx[sweep_offset, track, bin_index]),
+                        "valid_rx_samples": int(finite.sum()),
+                    })
+    return pd.DataFrame(rows, columns=[
+        "sweep_num", "sweep_offset", "track_num", "bin", "excess_sigma",
+        "prominence_sigma", "width_bins", "raw_count", "valid_rx_samples",
+    ])
 
 
 def extract_candidate_bands(
@@ -153,6 +242,8 @@ def extract_candidate_bands(
                     "n_bins": int(len(run)),
                     "mean_occupancy": float(run["occupancy"].mean()),
                     "max_occupancy": float(run["occupancy"].max()),
+                    "occupancy_ci95_low_min": float(run["occupancy_ci95_low"].min()) if "occupancy_ci95_low" in run else None,
+                    "occupancy_ci95_high_max": float(run["occupancy_ci95_high"].max()) if "occupancy_ci95_high" in run else None,
                     "median_excess_counts": float(run["median_excess_counts"].median()),
                     "median_excess_sigma": float(run["median_excess_sigma"].median()),
                     "mean_ghost_score": float(run["ghost_score"].mean()),
@@ -163,6 +254,7 @@ def extract_candidate_bands(
             )
     return pd.DataFrame(rows, columns=[
         "track_num", "start_bin", "end_bin", "n_bins", "mean_occupancy", "max_occupancy",
+        "occupancy_ci95_low_min", "occupancy_ci95_high_max",
         "median_excess_counts", "median_excess_sigma", "mean_ghost_score",
         "mean_scene_correlation", "scene_assessed", "max_persistence_sweeps",
     ])

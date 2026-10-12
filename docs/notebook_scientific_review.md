@@ -2,7 +2,7 @@
 
 ## Scope and baseline
 
-Reviewed and revised active notebooks `00`–`09` on `master`, starting from commit `26421667aebd49c975785ea4cfd8a349fd8bb661`. Changes are limited to the ten active notebooks, three research helpers, their focused tests, and the README/documentation index. No production classifier, waveform detector, or geolocation implementation was changed. Research outputs are isolated under each notebook's `scientific_review/` directory.
+Reviewed and revised active notebooks `00`–`09` on `master`, starting from commit `697379b2136c5b70e380b36bcdc23a0643b42230`. Changes are limited to the ten active notebooks, two research-only helpers, focused tests, and user/developer documentation. No production classifier, waveform detector, or geolocation implementation was changed. New research outputs are isolated under each notebook's `method_improvement/` directory; prior output folders remain preserved.
 
 Every notebook ran independently from a clean kernel on real input data where applicable. The table records the question, substantive repair, fresh result, figure output, and scientific boundary.
 
@@ -18,8 +18,8 @@ Every notebook ran independently from a clean kernel on real input data where ap
 | `05_forest_transect_showcase` | Validated classifier metadata against the actual input H5 and preserved full point-index/row identity checks; showed six AOI candidates, a fixed transect, strict/filled support, and saved noise reasons. Transect: 36,763 points; strict DSM support 96.026%, filled DSM and DTM support 100%. Noise labels: 16,947 (46.10%); 1,057 high-SNR points with HAG 5–25 m occur in 14 ten-metre bins. | PASS; 12 figures | 2022 NAIP supports “probable forest canopy,” not exact 2024 footprint truth. Noise reasons reflect classifier rules, not independently confirmed physical causes. |
 | `06_waveform_gallery` | Verified all six waveform records against the H5 sweep/track grid and tied each case to dated local NAIP context. A/B remain probable canopy, C probable field, D probable road/mixed verge, and E/F unknown. Added bounded retries for transient NAIP 502/503/504 responses. | PASS; 2 figures; all six cases rendered | Illustrative cases, not a representative land-cover sample. Imagery is dated 2022-06-15 and does not provide 2024 ground truth. |
 | `07_georeferencing_geometry` | Kept actual stored instrument, RWSTART/RWSTOP, and Refh fields; made ENU axes metric and separated vertical display compression. Selected pulse 2,128,614: H1 closure 13.119 mm and H2 closure 0.537 mm. | PASS; 3 figures | H2 closure is internal consistency. Vertical convention/epoch semantics remain unconfirmed; aircraft glyph is schematic. |
-| `08_waveform_decomposition` | Used fresh Notebook 06/09 metadata; compared the full waveform window with detector/noise-supported windows; counted model parameters and reported BIC/RMSE within each window only. Six pulses fit; 0 fit failures; median RMSE 99.04 digital counts; K=0–5 each occurred once; three cases changed model order across windows and five reached the candidate limit. | PASS; 3 figures | Gaussian terms are descriptive candidates, not validated physical returns. BIC values from different windows are not directly comparable; candidate-limit cases may be underfit. |
-| `09_nadir_window_reflection` | Screened a bounded block using each bin's finite-sweep denominator; empty candidate intervals now preserve the input waveform and produce an explicit no-op mitigation result. Block: 90 sweeps × 256 tracks (23,040 pulses), bins 0–600. No recurring band; maximum fixed-bin occupancy 3.33%; 36 pulses had an early sample above 8σ. Strongest event: pulse 3,077,720, bin 415, 11.41σ, unconfirmed. | PASS; 7 figures | One isolated block cannot establish or exclude a reflection mechanism. Thresholds are heuristic; no bins were masked and no template was subtracted. |
+| `08_waveform_decomposition` | Compared K=0 with fitted baseline plus Gaussian candidates on the same samples, full 2,728-bin and detector-supported windows, and Kmax 3/5/7 sensitivity. Six pulses fit with no optimizer failures; median full-waveform RMSE 98.57 counts. At the default K cap, A-D selected K=5 and low-SNR E/F selected K=1; all six reached a parameter boundary and the configured cap. Kmax sensitivity followed the cap for A-D; B-D changed order across windows. TX-informed fitting remains unavailable because the H5 lacks a timing/system-response contract. | PASS; 8 figures | Gaussian terms are descriptive candidates, not validated physical returns. BIC margin only ranks the tested candidate set; the selected order is unresolved under the cap and window sensitivity. |
+| `09_nadir_window_reflection` | Preserved the 90-sweep baseline with finite per-bin denominators: 23,040 pulses, first 601 samples (bins 0-600), maximum fixed-bin occupancy 3.33%, 36 pulses above 8 sigma, and zero candidate bands. Added a symmetric 180-sweep sensitivity context (46,080 pulses): zero candidate bands; maximum occupancy 4/180 (2.22%) at track 17, bin 566; the selected event bin occurred once in 180 sweeps. Stage A scanned the baseline plus six preselected 16-sweep blocks across both dates. | PASS; clean-kernel execution, no code-cell errors | The 90-sweep fixed-bin null remains preserved. The 180-sweep recurrence check does not identify the transient source or confirm reflection; Stage A peaks remain anomalies, and no real RX bins were masked or subtracted. TX/RX timing and receiver-response contracts remain unresolved. |
 
 ## Material before/after changes
 
@@ -30,7 +30,7 @@ Every notebook ran independently from a clean kernel on real input data where ap
 | Geolocation in `04` | H1 segment mapping was compared with the legacy beam mapping; paired H1/beam median/p95 separation was 57.463/236.448 mm. | Audited H2 is added to the same pulse/bin population; H2/beam median/p95 separation is 38.804/173.271 mm, while H1 and the beam comparison are retained. | The smaller internal discrepancy does not show that either method is closer to true secondary-return position. |
 | Reflection screen in `09` | The empty candidate result was not fully tied to a valid-sweep denominator and explicit no-op contract. | Per-bin denominators use finite sweeps; empty intervals produce zero flagged bins and preserve components (6 before/after for the selected comparison), with template subtraction skipped. | The measured null result is retained; no attenuation or masking was introduced to force a candidate. |
 
-Other changes improve source identity, support masks, plots, and explanatory wording without changing scientific algorithms or manufacturing a better metric. The full 48 inline PNG outputs (counts shown above) were generated during the clean-kernel runs and visually checked. Plot support masks preserve gaps; no unsupported raster cells were filled for display. The two prior Matplotlib backend warnings in notebooks 01 and 04 were fixed by selecting the inline backend after imports that configure Agg; both now render actual inline figures without those warnings.
+Other changes improve source identity, support masks, plots, and explanatory wording without changing production scientific algorithms or manufacturing a better metric. Figures from clean-kernel runs were visually reviewed using notebook-output contact sheets and full-size inspection of the key 05–09 boards. Plot support masks preserve gaps; no unsupported raster cells were filled for display. The two prior Matplotlib backend warnings in notebooks 01 and 04 were fixed by selecting the inline backend after imports that configure Agg; both now render actual inline figures without those warnings.
 
 ### Principal figure groups
 
@@ -42,19 +42,19 @@ Other changes improve source identity, support masks, plots, and explanatory wor
 - 05: dated NAIP and HAG context, support-aware surface and transect profiles, comparison boards, and noise reasons.
 - 06: six raw waveforms alongside independently dated spatial context.
 - 07: scene geometry, one-pulse ENU geometry, and the H1/H2 bin-mapping explanation.
-- 08: full-window and detector-supported Gaussian fits, residuals, and fit/model-order summaries.
-- 09: early-bin occupancy and candidate bands, selected pulse context, and the explicit no-op mitigation check.
+- 08: full-window and detector-supported Gaussian fits, residuals, cap/boundary diagnostics, and Kmax sensitivity.
+- 09: baseline early-bin occupancy, six prespecified all-bin follow-up blocks, pulse 3,077,720 diagnosis, synthetic controls, and the explicit no-op mitigation check.
 
-Notebook images are embedded from the same clean-kernel runs; research artifacts are written below the corresponding outputs/notebooks/<notebook>/scientific_review/ directories.
+Notebook images are embedded from the same clean-kernel runs; new research artifacts are written below the corresponding outputs/notebooks/<notebook>/method_improvement/ directories. Existing scientific_review and production output trees were left in place.
 
 ## Validation and preservation
 
 - Clean-kernel execution: all ten notebooks `00`–`09` passed; no stored exception/error outputs. Notebook 00 used the live public S3 listing. Notebooks 01–09 used the explicitly configured real inputs and isolated output paths.
-- Tests: `python -m pytest -q -p no:cacheprovider` — **65 passed**.
+- Tests: `python -m pytest -q -p no:cacheprovider` — **73 passed**.
 - Compilation: `python -m compileall -q casals_l1b research tests` — **passed**.
 - Git whitespace validation: `git diff --check` — **passed**.
-- Preservation check: all 209 baseline output files remain present with matching sizes and SHA-256 hashes. All 13 protected input files retain baseline size/timestamp metadata; protected H5/3DEP files with baseline hashes also match.
-- Scope check: production modules, archived notebooks, backup/history, and source data are unchanged. Newly generated research artifacts are under their corresponding notebook `scientific_review/` directories.
+- Preservation check: all 550 pre-existing output files remain present with matching sizes and SHA-256 hashes. All 13 protected input files retain baseline size/timestamp metadata; protected H5/3DEP files with baseline hashes also match.
+- Scope check: production modules, archived notebooks, backup/history, and source data are unchanged. Newly generated research artifacts are under their corresponding notebook `method_improvement/` directories.
 
 Run tests and compile checks from the repository root using the existing `map` environment:
 
@@ -68,6 +68,11 @@ Run tests and compile checks from the repository root using the existing `map` e
 - Notebook 02 evaluates against transferred 3DEP pseudo-labels. Status filtering, alignment, and confusion accounting are validated; independent truth is unavailable.
 - H1/H2 closure compares mappings to the same official Refh anchor. It does not certify secondary-return geolocation or replace production H1.
 - Notebook 05/06 land-cover readings rely on historical imagery, tentative DTM/HAG, and selected examples; labels remain probable or unknown.
-- Notebook 08 model fits summarize waveform shapes; physical interpretation, model adequacy beyond the tested windows, and independent validation remain open.
-- Notebook 09 found no recurring band in one bounded block. The isolated event remains unexplained, and the exploratory thresholds do not justify production filtering or mitigation.
+- Notebook 08 model fits summarize waveform shapes. Every real-data selection reached the configured model-order cap or a parameter boundary; higher-order fits reduce residual error but do not identify a unique physical or global model order. TX-informed fitting remains blocked by missing sample timing and response metadata. Residual lag-1 autocorrelation is 0.913?0.951 across all six records; pulse 3,077,720 has residual skewness 2.13 and excess kurtosis 10.78, so the independent-Gaussian BIC assumption is not empirically supported.
+- Notebook 09 found no fixed-bin recurring band in its retained 90-sweep baseline or its supplemental 180-sweep context. The selected event bin appeared once in 180 sweeps, and the transient remains unexplained. Six small follow-up blocks contain sensitive Stage A events, but recurrence and morphology do not establish a reflection mechanism or justify production filtering.
 
+
+
+## Final visual and interactive review (2026-10-11)
+
+After the final Notebook 08 and 09 code edits, both notebooks were re-executed from clean kernels. The 08 TX/RX/residual panels and the 09 optical-path and qualitative timing figures were opened at full size; the final timing figure contains no numerical time or bin ticks. Notebook 07's static geometry PNGs were reviewed. Its standalone Plotly HTML files were not live-tested because the computer-use runtime exposed no browser surfaces (`iab` and `chrome` both returned unavailable); the HTML interaction status remains unverified.

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -392,6 +393,11 @@ def aggregate_roi_track_responses(
             record["n_valid_waveforms"] = int((group.waveform_status != "invalid_waveform").sum())
         else:
             record["n_valid_waveforms"] = int(len(group))
+        for column in ("sweep_num", "delta_time_s"):
+            if column in group:
+                values = np.asarray(group[column], dtype=np.float64)
+                values = values[np.isfinite(values)]
+                record[f"{column}_median"] = float(np.median(values)) if values.size else None
         for column in metric_columns:
             if column not in group:
                 continue
@@ -439,6 +445,222 @@ def matched_track_differences(
             "roi_b_pulse_n": int(right["n_pulses"]),
         })
     return result
+
+
+def sample_real_background_windows(
+    h5_path: str,
+    *,
+    window: tuple[int, int] = (2600, 2728),
+    block_count: int = 24,
+    rows_per_block: int = 256,
+) -> np.ndarray:
+    """Read deterministic late-window noise samples from a real CASALS H5."""
+
+    import h5py
+
+    windows = []
+    with h5py.File(h5_path, "r") as h5:
+        rx = h5["rx_waveform"]
+        n, bin_count = rx.shape
+        lo, hi = map(int, window)
+        if lo < 0 or hi > bin_count or hi - lo < 16 or block_count < 1 or rows_per_block < 1:
+            raise ValueError(f"Invalid background sampling window or block count: {window}.")
+        starts = np.linspace(0, max(0, n - rows_per_block), block_count, dtype=int)
+        for start in starts:
+            stop = min(start + rows_per_block, n)
+            wave = np.asarray(rx[start:stop, lo:hi], dtype=np.float32)
+            mean = np.asarray(h5["bg_mean"][start:stop], dtype=np.float32)
+            std = np.asarray(h5["bg_std"][start:stop], dtype=np.float32)
+            valid = np.isfinite(mean) & np.isfinite(std) & (std > 0) & np.all(np.isfinite(wave), axis=1)
+            if valid.any():
+                windows.append((wave[valid] - mean[valid, None]) / std[valid, None])
+    if not windows:
+        raise ValueError(f"No valid background windows were found in {h5_path}.")
+    return np.concatenate(windows, axis=0).astype(np.float32, copy=False)
+
+
+def background_stationarity_summary(windows: np.ndarray) -> tuple[Any, float | None]:
+    """Summarize four tail segments before using a block-bootstrap null."""
+
+    import pandas as pd
+
+    values = np.asarray(windows, dtype=np.float64)
+    if values.ndim != 2 or values.shape[1] < 16 or values.shape[1] % 4:
+        raise ValueError("Background windows must have a bin count divisible by four.")
+    rows = []
+    width = values.shape[1] // 4
+    for segment in range(4):
+        start, stop = segment * width, (segment + 1) * width
+        part = values[:, start:stop]
+        centered = part - part.mean(axis=1, keepdims=True)
+        denom = np.sqrt(np.sum(centered[:, :-1] ** 2, axis=1) * np.sum(centered[:, 1:] ** 2, axis=1))
+        lag1 = np.divide(
+            np.sum(centered[:, :-1] * centered[:, 1:], axis=1),
+            denom,
+            out=np.zeros(len(part), dtype=np.float64),
+            where=denom > 0,
+        )
+        rows.append({
+            "tail_segment": f"{start}:{stop}",
+            "bin_count": stop - start,
+            "window_count": len(part),
+            "median_standardized_mean": float(np.median(part.mean(axis=1))),
+            "median_standardized_sd": float(np.median(part.std(axis=1))),
+            "p95_absolute_standardized_sample": float(np.percentile(np.abs(part), 95)),
+            "median_lag1_correlation": float(np.median(lag1)),
+        })
+    table = pd.DataFrame(rows)
+    sd = table["median_standardized_sd"].to_numpy(dtype=np.float64)
+    ratio = float(sd.max() / sd.min()) if sd.size and sd.min() > 0 else None
+    return table, ratio
+
+
+def extract_roi_waveform_features(
+    h5_path: str,
+    membership: Any,
+    *,
+    prominence_threshold_sigma: float,
+    minimum_width_bins: float = 2.0,
+    minimum_peak_distance: int = 5,
+) -> tuple[Any, Any]:
+    """Re-read selected real H5 waveforms and recompute all candidate fields."""
+
+    import h5py
+    import pandas as pd
+
+    required = {"granule_id", "pulse_index", "sweep_num", "track_num", "roi_id"}
+    missing = required - set(membership.columns)
+    if missing:
+        raise ValueError(f"ROI membership is missing columns: {sorted(missing)}")
+    stem = Path(h5_path).stem
+    if set(membership["granule_id"].astype(str)) != {stem}:
+        raise ValueError("ROI membership granule IDs do not match the source H5.")
+    pulse_ids = np.unique(membership["pulse_index"].to_numpy(dtype=np.int64))
+    if not pulse_ids.size or pulse_ids[0] < 0:
+        raise ValueError(f"No valid ROI pulse IDs were supplied for {stem}.")
+
+    scalar_names = (
+        "refh", "refh_amp", "refh_snr", "good_snr", "bg_mean", "bg_std",
+        "sweep_num", "track_num", "delta_time", "refh_longitude", "refh_latitude",
+    )
+    rows = []
+    with h5py.File(h5_path, "r") as h5:
+        rx = h5["rx_waveform"]
+        if pulse_ids[-1] >= rx.shape[0]:
+            raise ValueError("An ROI pulse ID exceeds the source H5 record count.")
+        row_chunk = int(rx.chunks[0]) if rx.chunks else 512
+        for start in range(0, rx.shape[0], row_chunk):
+            stop = min(start + row_chunk, rx.shape[0])
+            left = int(np.searchsorted(pulse_ids, start, side="left"))
+            right = int(np.searchsorted(pulse_ids, stop, side="left"))
+            if left == right:
+                continue
+            ids = pulse_ids[left:right]
+            waves = np.asarray(rx[start:stop, :])
+            scalar = {name: np.asarray(h5[name][start:stop]) for name in scalar_names}
+            for pulse_id in ids:
+                row = int(pulse_id - start)
+                waveform = np.asarray(waves[row], dtype=np.float64)
+                bg_mean, bg_std = float(scalar["bg_mean"][row]), float(scalar["bg_std"][row])
+                detected = candidate_signal_features(
+                    waveform,
+                    bg_mean,
+                    bg_std,
+                    prominence_threshold_sigma=prominence_threshold_sigma,
+                    minimum_width_bins=minimum_width_bins,
+                    minimum_peak_distance=minimum_peak_distance,
+                )
+                peak = detected["candidate_peak_bin"]
+                feature = {
+                    "candidate_signal_status": detected["candidate_signal_status"],
+                    "waveform_status": (
+                        "invalid_waveform"
+                        if detected["candidate_signal_status"].startswith("invalid_")
+                        else ("candidate" if detected["candidate_signal_detected"] else "no_candidate")
+                    ),
+                    "waveform_quality_reason": detected["candidate_signal_status"],
+                    "candidate_signal_detected": bool(detected["candidate_signal_detected"]),
+                    "candidate_peak_bin": peak,
+                    "candidate_peak_height_sigma": detected["candidate_peak_height_sigma"],
+                    "candidate_peak_prominence_sigma": detected["candidate_peak_prominence_sigma"],
+                    "maximum_interior_peak_prominence_sigma": detected["maximum_local_peak_prominence_sigma"],
+                    "candidate_peak_width_bins": detected["candidate_peak_width_bins"],
+                    "width_halfmax_bins": detected["candidate_peak_width_bins"],
+                    "candidate_local_peak_count": int(detected["candidate_local_peak_count"]),
+                    "finite_waveform_fraction": float(detected["finite_fraction"]),
+                    "raw_max_bin": int(np.nanargmax(waveform)) if np.isfinite(waveform).any() else None,
+                    "raw_max_counts": float(np.nanmax(waveform)) if np.isfinite(waveform).any() else None,
+                    "dominant_support_energy_counts_bin": None,
+                    "signal_extent_bins": None,
+                    "asymmetry_skewness": None,
+                    "candidate_peak_excess_counts": None,
+                }
+                if detected["candidate_signal_detected"]:
+                    peak = int(peak)
+                    z = (waveform - bg_mean) / bg_std
+                    above = np.isfinite(z) & (z >= 1.0)
+                    lo = peak
+                    hi = peak + 1
+                    while lo > 0 and above[lo - 1]:
+                        lo -= 1
+                    while hi < len(z) and above[hi]:
+                        hi += 1
+                    bins = np.arange(lo, hi, dtype=np.float64)
+                    excess = np.maximum(waveform[lo:hi] - bg_mean, 0.0)
+                    energy = float(excess.sum())
+                    feature.update({
+                        "dominant_support_energy_counts_bin": energy,
+                        "signal_extent_bins": int(hi - lo),
+                        "candidate_peak_excess_counts": float(waveform[peak] - bg_mean),
+                    })
+                    if energy > 0 and len(bins) >= 3:
+                        center = float(np.dot(bins, excess) / energy)
+                        variance = float(np.dot((bins - center) ** 2, excess) / energy)
+                        feature["asymmetry_skewness"] = (
+                            float(np.dot((bins - center) ** 3, excess) / energy / variance ** 1.5)
+                            if variance > 0 else None
+                        )
+                row_data = {
+                    "granule_id": stem,
+                    "pulse_index": int(pulse_id),
+                    "sweep_num": int(scalar["sweep_num"][row]),
+                    "track_num": int(scalar["track_num"][row]),
+                    "refh_m": float(scalar["refh"][row]) if np.isfinite(scalar["refh"][row]) else np.nan,
+                    "refh_amp_counts": int(scalar["refh_amp"][row]),
+                    "refh_snr": float(scalar["refh_snr"][row]) if np.isfinite(scalar["refh_snr"][row]) else np.nan,
+                    "good_snr": bool(scalar["good_snr"][row]),
+                    "bg_mean_counts": bg_mean,
+                    "bg_std_counts": bg_std,
+                    "delta_time_s": float(scalar["delta_time"][row]),
+                    "longitude_deg": float(scalar["refh_longitude"][row]),
+                    "latitude_deg": float(scalar["refh_latitude"][row]),
+                    "noise_calibrated_prominence_threshold_sigma": float(prominence_threshold_sigma),
+                    **feature,
+                }
+                row_data["refh_amp_matches_raw_max"] = bool(
+                    row_data["raw_max_counts"] is not None
+                    and np.isclose(row_data["refh_amp_counts"], row_data["raw_max_counts"], rtol=0.0, atol=0.0)
+                )
+                rows.append(row_data)
+
+    pulse_features = pd.DataFrame(rows)
+    if len(pulse_features) != len(pulse_ids):
+        raise RuntimeError(f"Waveform extraction lost selected pulse records for {stem}.")
+    actual = pulse_features.set_index("pulse_index")
+    membership_tracks = membership.drop_duplicates("pulse_index").set_index("pulse_index")
+    if not np.array_equal(actual.loc[membership_tracks.index, "sweep_num"], membership_tracks["sweep_num"]):
+        raise RuntimeError("ROI sweep IDs do not match the current source H5.")
+    if not np.array_equal(actual.loc[membership_tracks.index, "track_num"], membership_tracks["track_num"]):
+        raise RuntimeError("ROI track IDs do not match the current source H5.")
+    per_roi = membership.merge(
+        pulse_features,
+        on=["granule_id", "pulse_index", "sweep_num", "track_num"],
+        how="left",
+        validate="many_to_one",
+    )
+    if per_roi["candidate_signal_detected"].isna().any():
+        raise RuntimeError("Some ROI memberships did not receive a recomputed H5 waveform result.")
+    return pulse_features, per_roi
 
 
 def _max_peak_prominence(values: np.ndarray, minimum_peak_distance: int) -> tuple[float, float, int]:
@@ -534,9 +756,11 @@ def candidate_signal_features(
     empty = {
         "candidate_signal_detected": False,
         "candidate_peak_bin": None,
+        "candidate_peak_height_sigma": None,
         "candidate_peak_prominence_sigma": None,
         "candidate_peak_width_bins": None,
         "candidate_local_peak_count": 0,
+        "maximum_local_peak_prominence_sigma": None,
     }
     if not values.size or finite_fraction < minimum_finite_fraction:
         return {"candidate_signal_status": "invalid_waveform", "finite_fraction": finite_fraction, **empty}
@@ -552,16 +776,36 @@ def candidate_signal_features(
     widths = peak_widths(z_for_peaks, peaks, rel_height=0.5)[0] if peaks.size else np.array([], dtype=float)
     if not peaks.size:
         return {"candidate_signal_status": "no_candidate", "finite_fraction": finite_fraction, **empty}
-    best = int(np.argmax(prominences))
-    detected = bool(prominences[best] >= prominence_threshold_sigma and widths[best] >= minimum_width_bins)
+    heights = z_for_peaks[peaks]
+    qualified = np.flatnonzero(
+        (heights > 0.0)
+        & (prominences >= prominence_threshold_sigma)
+        & (widths >= minimum_width_bins)
+    )
+    maximum_prominence = float(np.max(prominences))
+    if not qualified.size:
+        return {
+            "candidate_signal_status": "no_candidate",
+            "finite_fraction": finite_fraction,
+            **empty,
+            "maximum_local_peak_prominence_sigma": maximum_prominence,
+        }
+
+    # Prefer the strongest qualified peak, then the wider peak, then the first bin.
+    best = max(
+        qualified.tolist(),
+        key=lambda i: (float(prominences[i]), float(widths[i]), -int(peaks[i])),
+    )
     return {
-        "candidate_signal_status": "candidate" if detected else "no_candidate",
+        "candidate_signal_status": "candidate",
         "finite_fraction": finite_fraction,
-        "candidate_signal_detected": detected,
+        "candidate_signal_detected": True,
         "candidate_peak_bin": int(peaks[best]),
+        "candidate_peak_height_sigma": float(heights[best]),
         "candidate_peak_prominence_sigma": float(prominences[best]),
         "candidate_peak_width_bins": float(widths[best]),
-        "candidate_local_peak_count": int(np.count_nonzero((prominences >= prominence_threshold_sigma) & (widths >= minimum_width_bins))),
+        "candidate_local_peak_count": int(qualified.size),
+        "maximum_local_peak_prominence_sigma": maximum_prominence,
     }
 
 

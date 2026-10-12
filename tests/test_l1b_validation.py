@@ -2,7 +2,12 @@ import numpy as np
 import pytest
 
 import research.l1b_validation as validation
-from research.l1b_validation import reference_readiness, transform_xyz_with_verified_frames, waveform_response_features
+from research.l1b_validation import (
+    candidate_signal_features,
+    reference_readiness,
+    transform_xyz_with_verified_frames,
+    waveform_response_features,
+)
 
 
 def _complete_reference_evidence():
@@ -188,4 +193,81 @@ def test_waveform_response_features_detects_edge_peaks_and_integer_clipping():
     clipped_result = waveform_response_features(clipped, 10.0, 1.0)
     assert clipped_result["is_clipped"] is True
     assert clipped_result["clipped_bin_count"] == 1
+
+
+def test_candidate_detector_uses_weaker_qualified_peak_when_strongest_is_too_narrow():
+    bins = np.arange(201, dtype=float)
+    waveform = 24.0 * np.exp(-0.5 * ((bins - 42.0) / 0.5) ** 2)
+    waveform += 8.0 * np.exp(-0.5 * ((bins - 130.0) / 4.0) ** 2)
+
+    result = candidate_signal_features(
+        waveform, 0.0, 1.0, prominence_threshold_sigma=5.0, minimum_width_bins=4.0
+    )
+
+    assert result["candidate_signal_detected"] is True
+    assert result["candidate_peak_bin"] == 130
+    assert result["candidate_peak_width_bins"] >= 4.0
+    assert result["maximum_local_peak_prominence_sigma"] > result["candidate_peak_prominence_sigma"]
+
+
+def test_candidate_detector_rejects_deterministic_noise_only_waveform():
+    noise = np.random.default_rng(20261012).normal(0.0, 1.0, 2728)
+    result = candidate_signal_features(
+        noise, 0.0, 1.0, prominence_threshold_sigma=15.0, minimum_width_bins=2.0
+    )
+
+    assert result["candidate_signal_detected"] is False
+    assert result["candidate_signal_status"] == "no_candidate"
+    assert result["candidate_peak_bin"] is None
+
+
+def test_candidate_detector_accepts_a_normal_positive_peak():
+    bins = np.arange(101, dtype=float)
+    waveform = 12.0 * np.exp(-0.5 * ((bins - 50.0) / 4.0) ** 2)
+    result = candidate_signal_features(
+        waveform, 0.0, 1.0, prominence_threshold_sigma=8.0, minimum_width_bins=2.0
+    )
+
+    assert result["candidate_signal_detected"] is True
+    assert result["candidate_peak_bin"] == 50
+    assert result["candidate_peak_height_sigma"] == pytest.approx(12.0)
+
+
+def test_candidate_detector_rejects_negative_peak_with_large_prominence():
+    bins = np.arange(101, dtype=float)
+    waveform = -10.0 + 9.0 * np.exp(-0.5 * ((bins - 28.0) / 4.0) ** 2)
+    waveform[70] = -30.0
+    result = candidate_signal_features(
+        waveform, 0.0, 1.0, prominence_threshold_sigma=5.0, minimum_width_bins=2.0
+    )
+
+    assert result["maximum_local_peak_prominence_sigma"] >= 5.0
+    assert result["candidate_signal_detected"] is False
+    assert result["candidate_peak_bin"] is None
+
+
+def test_candidate_detector_selects_strongest_among_multiple_qualified_peaks():
+    bins = np.arange(181, dtype=float)
+    waveform = 8.0 * np.exp(-0.5 * ((bins - 42.0) / 4.0) ** 2)
+    waveform += 12.0 * np.exp(-0.5 * ((bins - 132.0) / 5.0) ** 2)
+    result = candidate_signal_features(
+        waveform, 0.0, 1.0, prominence_threshold_sigma=5.0, minimum_width_bins=3.0
+    )
+
+    assert result["candidate_signal_detected"] is True
+    assert result["candidate_local_peak_count"] == 2
+    assert result["candidate_peak_bin"] == 132
+
+
+def test_candidate_detector_returns_no_candidate_when_no_peak_qualifies():
+    bins = np.arange(101, dtype=float)
+    waveform = 3.0 * np.exp(-0.5 * ((bins - 50.0) / 4.0) ** 2)
+    result = candidate_signal_features(
+        waveform, 0.0, 1.0, prominence_threshold_sigma=8.0, minimum_width_bins=3.0
+    )
+
+    assert result["candidate_signal_detected"] is False
+    assert result["candidate_signal_status"] == "no_candidate"
+    assert result["candidate_peak_bin"] is None
+    assert result["candidate_peak_prominence_sigma"] is None
 

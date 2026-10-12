@@ -4,6 +4,8 @@
 数据范围：2024-11-12 与 2024-11-18 两个 CASALS L1B granule，以及现有的两个 3DEP LAZ 和现有 NAIP 影像。  
 状态：3DEP 绝对高程验证 **BLOCKED**；地物波形响应 **DIAGNOSTIC_ONLY**。
 
+> Updated 2026-10-12: Sections 1-8 retain the earlier audit snapshot. Section 9 reports the revised Notebook 10/11 execution and supersedes earlier statements that no raw or empirical elevation comparison was performed. Strict absolute accuracy remains unavailable.
+
 ## 1. 研究问题与结论
 
 本次工作分别审计 CASALS Refh 与 3DEP 的高程参考框架，并比较历史 NAIP 图像解释 ROI 内的 CASALS 接收幅度、SNR 与波形形态。
@@ -84,3 +86,67 @@ NAIP 标签的时间差、中心位置与真实光斑 footprint 不确定、少�
 ## 8. 验证记录
 
 Notebook 10 和 11 均在 `casals-showcase` 干净内核下从仓库根目录独立执行成功；两个 notebook 都没有保存的执行错误。全套 pytest 为 **93 passed**；`compileall` 和 `git diff --check` 均通过。原始两份 H5 与两份 3DEP LAZ 的 SHA-256 均与任务前保存的基线一致。测试中的 WGS84 经纬高到地心 XYZ 转换及逆转换只验证合成坐标的代码路径，不构成当前 CASALS–3DEP 框架证据。
+
+## 9. Revised Notebook 10 and 11 results (2026-10-12)
+
+This section records the fresh-kernel execution of Notebooks 10 and 11. New outputs are isolated under `outputs/notebooks/10_3dep_elevation_validation/revised/` and `outputs/notebooks/11_landcover_lidar_response/revised/`. Earlier output folders were preserved.
+
+### Study A: actual CASALS-3DEP height comparison
+
+Both 3DEP LAZ files were read and their ASPRS class-2 points were streamed into the local ground surfaces. November 12 contained 4,646,895 class-2 points in a 9,081,045-point LAZ; November 18 contained 63,226,508 class-2 points in a 117,530,910-point LAZ. Supported, locally acceptable surfaces matched 3,369,562 of 3,604,480 H5 pulses (93.5%) on November 12 and 3,457,681 (95.9%) on November 18.
+
+The archived sidecars identify the November 12 source as workunit `MD_Southeast_1_2019` / project `MD_Southeast_2019_D20`, and November 18 as `NC_HurricaneFlorence_9_2020` / `NC_HurricaneFlorence_2020_D20`. They record horizontal output EPSG:6347, `vert_crs=5703`, GEOID18 context, and `vertical_datum_transform_applied=false`. The sidecar H5 basenames and clip point counts match the current inputs and LAZ headers. Reprojecting the recorded EPSG:26918 clip boxes to EPSG:6347 reproduces the LAZ header XY bounds within 0.605 m and 0.200 m, respectively. This confirms horizontal file/footprint linkage only; it does not prove point-level Z preservation. The LAZ headers have no vertical CRS axis, and the H5 metadata still does not establish the Refh vertical frame or coordinate epoch.
+
+Raw differences retain all matched observations and are defined as CASALS H5 Refh minus the local 3DEP class-2 plane height. Vertical reference mismatch may remain.
+
+| Granule | Matched / valid H5 pulses | Coverage | Mean (m) | Median (m) | SD (m) | RMSE (m) | MAE (m) | NMAD (m) | P05 to P95 (m) |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 2024-11-12 | 3,369,562 / 3,604,480 | 93.5% | -12.164 | -37.571 | 92.949 | 93.741 | 75.181 | 43.237 | -166.311 to 173.579 |
+| 2024-11-18 | 3,457,681 / 3,604,480 | 95.9% | -31.297 | -37.962 | 32.713 | 45.273 | 38.923 | 0.227 | -38.240 to -15.186 |
+
+The large raw tails are preserved in these metrics; no evaluation point was selected or removed by its residual. The empirical offsets were recalculated from the current, predeclared calibration sites. Each calibration site is spatially separate from its test site. Values below describe holdout agreement after subtracting the calibration median; they are not absolute-accuracy estimates.
+
+| Granule | SNR stratum | Calibration n | Test n / denominator | Offset (m) | Test bias (m) | RMSE (m) | MAE (m) | NMAD (m) | Abs. P95 (m) | Coverage |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 2024-11-12 | All valid | 17,974 | 14,885 / 17,171 | -37.663 | 24.208 | 84.332 | 45.213 | 0.295 | 209.175 | 86.7% |
+| 2024-11-12 | SNR >= 3 | 5,203 | 4,274 / 4,852 | -37.659 | 0.271 | 8.522 | 0.606 | 0.117 | 0.278 | 88.1% |
+| 2024-11-12 | SNR >= 5 | 302 | 445 / 478 | -37.659 | 0.086 | 0.132 | 0.112 | 0.088 | 0.230 | 93.1% |
+| 2024-11-18 | All valid | 7,140 | 8,924 / 8,924 | -37.980 | 1.547 | 19.123 | 2.227 | 0.095 | 0.243 | 100.0% |
+| 2024-11-18 | SNR >= 3 | 7,015 | 8,623 / 8,623 | -37.981 | -0.048 | 0.469 | 0.087 | 0.092 | 0.212 | 100.0% |
+| 2024-11-18 | SNR >= 5 | 6,225 | 6,615 / 6,615 | -37.979 | -0.037 | 0.097 | 0.076 | 0.087 | 0.190 | 100.0% |
+
+The SNR strata expose substantial residual tails, especially in the November 12 data: its all-valid and SNR >= 3 RMSE values are much larger than the corresponding NMAD and central percentile range. The November 18 all-valid RMSE is also tail-sensitive. The stricter SNR >= 5 subsets are smaller and show tighter empirical holdout agreement. Across-track raw-difference summaries are provided as a diagnostic; tracks are nested observations and do not establish independent accuracy.
+
+`reference_frame_status=UNRESOLVED`, `raw_height_comparison_status=COMPLETED`, `empirical_alignment_status=COMPLETED`, and `strict_absolute_accuracy_status=UNAVAILABLE` for both granules. No empirical offset is presented as a datum transformation, and no metric in these tables is certified absolute elevation accuracy.
+
+Key Notebook 10 outputs: [November 12 raw difference distribution](../outputs/notebooks/10_3dep_elevation_validation/revised/casals_l1b_20241112T165718_001_02/raw_difference_distribution.png), [November 12 holdout map](../outputs/notebooks/10_3dep_elevation_validation/revised/casals_l1b_20241112T165718_001_02/empirical_holdout_spatial_map.png), [November 18 holdout map](../outputs/notebooks/10_3dep_elevation_validation/revised/casals_l1b_20241118T171757_001_02/empirical_holdout_spatial_map.png), and [November 12 audit JSON](../outputs/notebooks/10_3dep_elevation_validation/revised/casals_l1b_20241112T165718_001_02/reference_frame_audit.json).
+
+### Study B: land-cover waveform response
+
+The image dates were re-read from the NAIP metadata: 2023-06-02 for the November 12 granule and 2022-06-15 for November 18. The imagery predates CASALS acquisition by 529 and 887 days, respectively. It remains historical image context, not a contemporaneous field label. Of 12 manifest ROIs, 11 contained H5 pulse centers and 9 were primary ROI polygons spanning 8 independent sites; two November 12 ROIs remain exploratory, and the zero-pulse November 18 water ROI remains excluded.
+
+All 128,427 ROI pulse waveforms were valid and retained in the denominators. The provisional candidate screen uses a full-record maximum threshold estimated from 6,144 real standardized background-tail windows per granule: 10.885 sigma on November 12 and 10.195 sigma on November 18. Synthetic-null false-alarm rates were 0.0058 and 0.0029. These are noise-only controls under the tail-window bootstrap assumptions; `detection_probability_calibrated=false` and candidate rates are not official return-detection probabilities.
+
+| Granule / ROI | Pulse n | Candidate rate | Median Refh SNR | Median Refh amplitude (counts) |
+|---|---:|---:|---:|---:|
+| 2024-11-12 open field 01 | 17,974 | 29.1% | 2.38 | 656 |
+| 2024-11-12 open field 02 | 17,171 | 25.5% | 2.26 | 665 |
+| 2024-11-12 forest site | 32,014 | 4.0% | 1.91 | 495 |
+| 2024-11-12 exploratory road | 3,820 | 26.9% | 2.25 | 588 |
+| 2024-11-12 exploratory water | 10,160 | 5.6% | 1.95 | 479 |
+| 2024-11-18 open field 01 | 7,140 | 98.2% | 7.12 | 1,799 |
+| 2024-11-18 open field 02 | 8,924 | 97.1% | 6.07 | 1,992 |
+| 2024-11-18 road | 1,040 | 91.8% | 6.34 | 1,690 |
+| 2024-11-18 canopy polygon 01 | 3,503 | 73.8% | 3.49 | 864 |
+| 2024-11-18 canopy polygon 02 | 4,329 | 65.2% | 3.25 | 864 |
+| 2024-11-18 separate woodlot site | 22,352 | 75.9% | 4.48 | 1,467 |
+
+The adjacent November 18 canopy polygons count as one site (2 ROIs, 7,832 pulses), not two independent sites. H5 `good_snr` equals `refh_snr >= 5` over all 7,208,960 granule records; this is field consistency, not independent return validation. `refh_amp` remains native digital counts and is not reflectance.
+
+The conservative intersection across every primary ROI contains no track in November 12 and tracks 56-78 (23 tracks) in November 18. Pairwise intersections remain in `common_track_coverage.csv`; the primary matched-track figure and the new all-primary tables use the 23-track intersection. Within that shared-track subset, open-field 01 minus canopy polygon 01/02 had median SNR differences of +5.259/+5.384 and median amplitude differences of +1,354/+1,375 counts. These directional within-granule contrasts are descriptive: tracks are nested, the two canopy polygons are one site, and the small number of sites cannot support a general land-cover effect or significance claim. The much higher candidate rates, SNR, and amplitude in November 18 than November 12 also leave acquisition and instrument conditions confounded with class.
+
+Key Notebook 11 outputs: [ROI audit CSV](../outputs/notebooks/11_landcover_lidar_response/revised/roi_audit.csv), [ROI response summary](../outputs/notebooks/11_landcover_lidar_response/revised/roi_response_summary.csv), [all-primary shared tracks](../outputs/notebooks/11_landcover_lidar_response/revised/all_primary_roi_common_tracks.csv), [matched-track figure](../outputs/notebooks/11_landcover_lidar_response/revised/matched_track_landcover_comparison.png), [November 18 NAIP ROI board](../outputs/notebooks/11_landcover_lidar_response/revised/naip_roi_board_casals_l1b_20241118T171757_001_02.png), and [summary JSON](../outputs/notebooks/11_landcover_lidar_response/revised/landcover_response_summary.json).
+
+### Execution and interpretation status
+
+Both revised notebooks completed from a clean `casals-showcase` kernel without cell errors. Notebook 10 now performs actual raw and spatially held-out empirical comparisons for both granules; Notebook 11 performs the noise-control, ROI, site, and matched-track summaries described above. The strict vertical-frame audit remains unresolved, and the land-cover analysis remains descriptive. `python -m pytest -q -p no:cacheprovider` passed with 109 tests; `python -m compileall -q casals_l1b research tests` passed; and `git diff --check` passed (Git emitted only an LF-to-CRLF advisory for `research/l1b_validation.py`). Both notebooks were freshly executed after the final figure edits with no cell errors. This work did not modify raw H5/LAZ inputs or production algorithms.

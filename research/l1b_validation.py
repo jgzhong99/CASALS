@@ -9,7 +9,7 @@ from typing import Any
 import numpy as np
 from pyproj import CRS
 from pyproj.transformer import AreaOfInterest, TransformDirection, TransformerGroup
-from scipy.signal import find_peaks
+from scipy.signal import find_peaks, peak_prominences, peak_widths
 
 
 _REFERENCE_EVIDENCE = (
@@ -324,4 +324,256 @@ def waveform_response_features(
         "asymmetry_skewness": skewness,
         "signal_support_components": components,
         "peak_count": int(len(peak_indices)),
+    }
+
+
+def roi_primary_eligibility(
+    properties: Mapping[str, Any],
+    *,
+    expected_granule_id: str,
+    observed_image_date: str,
+) -> dict[str, Any]:
+    """Require an included ROI, exact granule identity, and verified image date."""
+
+    reasons = []
+    if properties.get("analysis_status") != "Included":
+        reasons.append("roi_not_marked_included")
+    if properties.get("granule_id") != expected_granule_id:
+        reasons.append("granule_identity_mismatch")
+    if str(properties.get("source_date", "")) != str(observed_image_date):
+        reasons.append("source_date_mismatch")
+    return {
+        "primary_eligible": not reasons,
+        "roi_id": properties.get("roi_id"),
+        "site_id": properties.get("site_id"),
+        "granule_id": properties.get("granule_id"),
+        "source_date": properties.get("source_date"),
+        "observed_image_date": observed_image_date,
+        "reasons": reasons,
+    }
+
+
+def common_track_ids(left_tracks: Any, right_tracks: Any) -> list[int]:
+    """Return sorted shared track IDs for an in-granule ROI pair."""
+
+    left = {int(value) for value in left_tracks if np.isfinite(value)}
+    right = {int(value) for value in right_tracks if np.isfinite(value)}
+    return sorted(left & right)
+
+
+def aggregate_roi_track_responses(
+    rows: Any,
+    *,
+    metric_columns: tuple[str, ...] = (
+        "refh_snr",
+        "refh_amp_counts",
+        "width_halfmax_bins",
+        "dominant_support_energy_counts_bin",
+        "asymmetry_skewness",
+    ),
+) -> list[dict[str, Any]]:
+    """Robustly aggregate every pulse in each ROI-track, retaining no-detects."""
+
+    required = {"granule_id", "roi_id", "site_id", "class_label", "track_num", "candidate_signal_detected"}
+    missing = required - set(rows.columns)
+    if missing:
+        raise ValueError(f"ROI-track response table is missing columns: {sorted(missing)}")
+    keys = ["granule_id", "roi_id", "site_id", "class_label", "track_num"]
+    output = []
+    for group_key, group in rows.groupby(keys, sort=True, dropna=False):
+        record = dict(zip(keys, group_key))
+        detected = group["candidate_signal_detected"].fillna(False).astype(bool)
+        record.update({
+            "n_pulses": int(len(group)),
+            "n_candidate_signal": int(detected.sum()),
+            "candidate_signal_rate": float(detected.mean()) if len(group) else None,
+        })
+        if "waveform_status" in group:
+            record["n_valid_waveforms"] = int((group.waveform_status != "invalid_waveform").sum())
+        else:
+            record["n_valid_waveforms"] = int(len(group))
+        for column in metric_columns:
+            if column not in group:
+                continue
+            values = np.asarray(group[column], dtype=np.float64)
+            values = values[np.isfinite(values)]
+            record[f"{column}_n"] = int(values.size)
+            record[f"{column}_median"] = float(np.median(values)) if values.size else None
+            record[f"{column}_p10"] = float(np.percentile(values, 10)) if values.size else None
+            record[f"{column}_p90"] = float(np.percentile(values, 90)) if values.size else None
+        output.append(record)
+    return output
+
+
+def matched_track_differences(
+    track_rows: Any,
+    *,
+    roi_a: str,
+    roi_b: str,
+    metric: str,
+) -> list[dict[str, Any]]:
+    """Compare ROI-track medians only on common track IDs; never sample pulses."""
+
+    by_roi: dict[str, dict[int, Any]] = {roi_a: {}, roi_b: {}}
+    for row in track_rows:
+        roi = row.get("roi_id")
+        if roi in by_roi:
+            by_roi[roi][int(row["track_num"])] = row
+    result = []
+    for track in sorted(set(by_roi[roi_a]) & set(by_roi[roi_b])):
+        left = by_roi[roi_a][track]
+        right = by_roi[roi_b][track]
+        left_value = left.get(f"{metric}_median")
+        right_value = right.get(f"{metric}_median")
+        if left_value is None or right_value is None:
+            continue
+        result.append({
+            "track_num": track,
+            "roi_a": roi_a,
+            "roi_b": roi_b,
+            "metric": metric,
+            "roi_a_median": float(left_value),
+            "roi_b_median": float(right_value),
+            "difference_a_minus_b": float(left_value) - float(right_value),
+            "roi_a_pulse_n": int(left["n_pulses"]),
+            "roi_b_pulse_n": int(right["n_pulses"]),
+        })
+    return result
+
+
+def _max_peak_prominence(values: np.ndarray, minimum_peak_distance: int) -> tuple[float, float, int]:
+    peaks, _ = find_peaks(values, distance=max(1, int(minimum_peak_distance)))
+    if not peaks.size:
+        return 0.0, 0.0, -1
+    prominences = peak_prominences(values, peaks)[0]
+    widths = peak_widths(values, peaks, rel_height=0.5)[0]
+    best = int(np.argmax(prominences))
+    return float(prominences[best]), float(widths[best]), int(peaks[best])
+
+
+def calibrate_noise_peak_threshold(
+    real_background_windows: np.ndarray,
+    *,
+    waveform_length: int = 2728,
+    quantile: float = 0.995,
+    minimum_peak_distance: int = 5,
+    calibration_simulations: int = 10_000,
+    validation_simulations: int = 10_000,
+    seed: int = 20261012,
+) -> dict[str, Any]:
+    """Block-bootstrap full-waveform null maxima from standardized real noise windows."""
+
+    windows = np.asarray(real_background_windows, dtype=np.float32)
+    if windows.ndim != 2 or windows.shape[0] < 20 or windows.shape[1] < 16:
+        raise ValueError("Provide at least 20 real background windows of 16 or more bins.")
+    if not 0.90 <= quantile < 1.0 or waveform_length < windows.shape[1]:
+        raise ValueError("Invalid null quantile or waveform length.")
+    keep = np.mean(np.isfinite(windows), axis=1) >= 0.95
+    windows = windows[keep]
+    windows = windows[np.all(np.isfinite(windows), axis=1)]
+    if windows.shape[0] < 20:
+        raise ValueError("Fewer than 20 finite real background windows remain.")
+
+    block_length = windows.shape[1]
+    n_blocks = int(np.ceil(waveform_length / block_length))
+    rng = np.random.default_rng(seed)
+
+    def simulate(replicates: int) -> tuple[np.ndarray, np.ndarray]:
+        maxima = np.zeros(replicates, dtype=np.float32)
+        widths = np.zeros(replicates, dtype=np.float32)
+        batch_size = 256
+        for start in range(0, replicates, batch_size):
+            stop = min(start + batch_size, replicates)
+            count = stop - start
+            block_ids = rng.integers(0, len(windows), size=(count, n_blocks))
+            synthetic = np.empty((count, n_blocks * block_length), dtype=np.float32)
+            for block in range(n_blocks):
+                synthetic[:, block * block_length : (block + 1) * block_length] = windows[block_ids[:, block]]
+            synthetic = synthetic[:, :waveform_length]
+            for i, values in enumerate(synthetic):
+                maxima[start + i], widths[start + i], _ = _max_peak_prominence(values, minimum_peak_distance)
+        return maxima, widths
+
+    calibration_maxima, calibration_widths = simulate(int(calibration_simulations))
+    threshold = float(np.quantile(calibration_maxima, quantile))
+    validation_maxima, validation_widths = simulate(int(validation_simulations))
+    false_alarms = (validation_maxima >= threshold) & (validation_widths >= 2.0)
+    return {
+        "threshold_peak_prominence_sigma": threshold,
+        "threshold_quantile": float(quantile),
+        "real_background_window_count": int(len(windows)),
+        "background_window_length_bins": int(block_length),
+        "synthetic_null_waveform_length_bins": int(waveform_length),
+        "calibration_simulation_count": int(calibration_simulations),
+        "validation_simulation_count": int(validation_simulations),
+        "validation_false_alarm_count": int(false_alarms.sum()),
+        "validation_false_alarm_rate": float(false_alarms.mean()),
+        "validation_null_peak_prominence_p50_sigma": float(np.median(validation_maxima)),
+        "validation_null_peak_prominence_p95_sigma": float(np.percentile(validation_maxima, 95)),
+        "minimum_detected_width_bins": 2.0,
+        "multiple_testing_method": "block bootstrap of real standardized noise windows to the full RX length",
+        "seed": int(seed),
+    }
+
+
+def candidate_signal_features(
+    waveform: np.ndarray,
+    background_mean: float,
+    background_std: float,
+    *,
+    prominence_threshold_sigma: float,
+    minimum_width_bins: float = 2.0,
+    minimum_peak_distance: int = 5,
+    minimum_finite_fraction: float = 0.95,
+) -> dict[str, Any]:
+    """Flag a waveform candidate using noise-calibrated peak prominence."""
+
+    values = np.asarray(waveform, dtype=np.float64).reshape(-1)
+    finite = np.isfinite(values)
+    finite_fraction = float(finite.mean()) if values.size else 0.0
+    empty = {
+        "candidate_signal_detected": False,
+        "candidate_peak_bin": None,
+        "candidate_peak_prominence_sigma": None,
+        "candidate_peak_width_bins": None,
+        "candidate_local_peak_count": 0,
+    }
+    if not values.size or finite_fraction < minimum_finite_fraction:
+        return {"candidate_signal_status": "invalid_waveform", "finite_fraction": finite_fraction, **empty}
+    if not np.isfinite(background_mean) or not np.isfinite(background_std) or background_std <= 0:
+        return {"candidate_signal_status": "invalid_background", "finite_fraction": finite_fraction, **empty}
+    if prominence_threshold_sigma <= 0 or minimum_width_bins < 0:
+        raise ValueError("The calibrated prominence threshold must be positive and width non-negative.")
+
+    z = (values - float(background_mean)) / float(background_std)
+    z_for_peaks = np.where(finite, z, -np.inf)
+    peaks, _ = find_peaks(z_for_peaks, distance=max(1, int(minimum_peak_distance)))
+    prominences = peak_prominences(z_for_peaks, peaks)[0] if peaks.size else np.array([], dtype=float)
+    widths = peak_widths(z_for_peaks, peaks, rel_height=0.5)[0] if peaks.size else np.array([], dtype=float)
+    if not peaks.size:
+        return {"candidate_signal_status": "no_candidate", "finite_fraction": finite_fraction, **empty}
+    best = int(np.argmax(prominences))
+    detected = bool(prominences[best] >= prominence_threshold_sigma and widths[best] >= minimum_width_bins)
+    return {
+        "candidate_signal_status": "candidate" if detected else "no_candidate",
+        "finite_fraction": finite_fraction,
+        "candidate_signal_detected": detected,
+        "candidate_peak_bin": int(peaks[best]),
+        "candidate_peak_prominence_sigma": float(prominences[best]),
+        "candidate_peak_width_bins": float(widths[best]),
+        "candidate_local_peak_count": int(np.count_nonzero((prominences >= prominence_threshold_sigma) & (widths >= minimum_width_bins))),
+    }
+
+
+def site_level_unit_counts(rows: Any) -> dict[str, Any]:
+    """Count independent site IDs by land-cover class, not by pulse or ROI."""
+
+    if not {"site_id", "class_label"}.issubset(rows.columns):
+        raise ValueError("Site summary needs site_id and class_label columns.")
+    sites_by_class: dict[str, set[str]] = {}
+    for row in rows[["site_id", "class_label"]].drop_duplicates().to_dict("records"):
+        sites_by_class.setdefault(str(row["class_label"]), set()).add(str(row["site_id"]))
+    return {
+        class_label: {"n_independent_sites": len(sites), "site_ids": sorted(sites)}
+        for class_label, sites in sorted(sites_by_class.items())
     }

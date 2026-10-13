@@ -561,7 +561,7 @@ def plot_landcover_signal_board(roi_summary: pd.DataFrame, output_path: str | Pa
     """Keep granules separate and show ROI-level SNR, screen rate, and amplitude."""
 
     granules = list(dict.fromkeys(roi_summary.granule_id.astype(str)))
-    fig, axes = plt.subplots(2, 3, figsize=(17, 9), squeeze=False, constrained_layout=True)
+    fig, axes = plt.subplots(2, 3, figsize=(17, 9), squeeze=False, sharey="col", constrained_layout=True)
     metrics = [
         ("refh_snr_median", "refh_snr_p10", "refh_snr_p90", "Refh SNR (dimensionless)", "Median Refh SNR by ROI"),
         ("candidate_signal_rate_all_roi_pulses", None, None, "Qualified candidate fraction", "Candidate-screen fraction by ROI"),
@@ -611,7 +611,7 @@ def plot_waveform_morphology(roi_features: pd.DataFrame, output_path: str | Path
 
     selected = roi_features[roi_features.candidate_signal_detected.astype(bool)].copy()
     granules = list(dict.fromkeys(roi_features.granule_id.astype(str)))
-    fig, axes = plt.subplots(2, 3, figsize=(16, 8.5), squeeze=False, constrained_layout=True)
+    fig, axes = plt.subplots(2, 3, figsize=(16, 8.5), squeeze=False, sharey="col", constrained_layout=True)
     metrics = [
         ("width_halfmax_bins", "Candidate peak width (bins)"),
         ("dominant_support_energy_counts_bin", "Dominant support energy (counts·bin)"),

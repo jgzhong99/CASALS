@@ -1,6 +1,6 @@
 # CASALS L1B Elevation and Waveform Response Validation
 
-**Status (2026-10-12):** A GEOID18-consistent 3D CASALS-to-3DEP comparison is complete for two granules. The selected transformation remains provisional because the CASALS source realization, coordinate epoch, and Refh processing conventions are undocumented. The empirical alignment and land-cover waveform results remain descriptive.
+**Status (2026-10-13):** A GEOID18-consistent 3D CASALS-to-3DEP comparison and a full-granule Refh correction audit are complete for two granules. The selected transformation remains provisional because the CASALS source realization, coordinate epoch, and Refh processing conventions are undocumented. Stored correction fields support numerical model matches and conditional sensitivities, but do not establish applied status. Empirical alignment and land-cover waveform results remain descriptive.
 
 ## 1. Scientific questions
 
@@ -183,6 +183,136 @@ The separate held-out class-2 interpolation check is very small near the reviewe
 
 The new figures show the reviewed context and road cores on NAIP, class-2 neighborhoods, C0–C7 comparison, full residual tails, four fixed waveform examples, and test-track elevation profiles: [scene overview](../outputs/notebooks/10_3dep_elevation_validation/ground_aware/figures/ground_scene_overview.png), [reference support](../outputs/notebooks/10_3dep_elevation_validation/ground_aware/figures/reference_ground_context.png), [candidate comparison](../outputs/notebooks/10_3dep_elevation_validation/ground_aware/figures/ground_candidate_comparison.png), [residual distributions](../outputs/notebooks/10_3dep_elevation_validation/ground_aware/figures/ground_residual_distributions.png), [waveform cases](../outputs/notebooks/10_3dep_elevation_validation/ground_aware/figures/ground_vs_nonground_cases.png), and [elevation profile](../outputs/notebooks/10_3dep_elevation_validation/ground_aware/figures/ground_elevation_profile.png). See the [ground-aware result folder](../outputs/notebooks/10_3dep_elevation_validation/ground_aware/), including the [context manifest](../outputs/notebooks/10_3dep_elevation_validation/ground_aware/ground_context_manifest.csv), [population summary](../outputs/notebooks/10_3dep_elevation_validation/ground_aware/ground_context_population_summary.csv), [frozen spatial split](../outputs/notebooks/10_3dep_elevation_validation/ground_aware/ground_spatial_split_manifest.csv), [test metrics](../outputs/notebooks/10_3dep_elevation_validation/ground_aware/ground_conditional_test_metrics.csv), [ground-target large-difference review list](../outputs/notebooks/10_3dep_elevation_validation/ground_aware/large_ground_target_residuals_for_review.csv), [historical large-difference context crosswalk](../outputs/notebooks/10_3dep_elevation_validation/ground_aware/historical_large_difference_context_crosswalk.csv), and [class-2 interpolation check](../outputs/notebooks/10_3dep_elevation_validation/ground_aware/independent_class2_interpolation_check.csv). The per-file SHA-256 manifest is stored in the same folder.
 
+### CASALS Refh Processing Corrections and Residual Vertical Bias
+
+Both source H5 files were read across all 3,604,480 pulses using chunked field reads. The audit reused the existing bin-georeferencing beam helper, the saved GEOID18 sample comparison, and the frozen ground-target tables. The CASALS L1B tutorial describes `Refh` as the maximum-amplitude waveform-bin height in WGS84 ellipsoidal coordinates, and notes that some correction datasets can be marked not applied; it does not provide per-field application flags for these two files. The H5 fields and root metadata contain no per-field units, sign conventions, source model declarations, applied flags, source-frame realization, or coordinate epoch. [CASALS L1B tutorial](https://book.cryointhecloud.com/l1b-waveforms-tutorial/)
+
+#### Measured H5 fields and application status
+
+The following are measured full-granule numeric values, with all 3,604,480 samples valid under declared HDF5 missing-value attributes. Units remain unknown where the H5 does not declare them.
+
+| Field | 2024-11-12 median [min, max] | 2024-11-18 median [min, max] | H5 units attribute |
+| --- | --- | --- | --- |
+| Refh neutral delay total | 1.593985 [1.524848, 1.645126] | 1.180952 [1.110669, 1.283471] | UNKNOWN |
+| Refh neutral delay derivative | 0.000278 [0.000271, 0.000282] | 0.000278 [0.000271, 0.000282] | UNKNOWN |
+| Range-window start neutral delay | 1.527246 [1.524806, 1.532220] | 1.113098 [1.110623, 1.171893] | UNKNOWN |
+| Range-window start neutral-delay derivative | 0.000271 [0.000271, 0.000272] | 0.000271 [0.000271, 0.000272] | UNKNOWN |
+| Range-window stop neutral delay | 1.640370 [1.637892, 1.645459] | 1.226318 [1.223732, 1.285335] | UNKNOWN |
+| Range-window stop neutral-delay derivative | 0.000282 [0.000282, 0.000282] | 0.000282 [0.000281, 0.000283] | UNKNOWN |
+| Range-bias correction | 0.000000 [0.000000, 0.000000] | 0.000000 [0.000000, 0.000000] | UNKNOWN |
+| H5 geoid | -36.832462 [-36.846004, -36.819122] | -37.431847 [-37.448933, -37.382866] | UNKNOWN |
+| Geoid free-to-mean field | -0.019859 [-0.019936, -0.019788] | -0.005459 [-0.005510, -0.005432] | UNKNOWN |
+| Earth tide | -0.015728 [-0.016005, -0.015476] | -0.075044 [-0.075115, -0.074997] | UNKNOWN |
+| Earth tide free-to-mean | -0.009538 [-0.009574, -0.009505] | -0.002770 [-0.002794, -0.002757] | UNKNOWN |
+| Load tide | 0.006266 [0.006228, 0.006313] | 0.001652 [0.001618, 0.001679] | UNKNOWN |
+| Pole tide | -0.004368 [-0.004368, -0.004367] | -0.004380 [-0.004381, -0.004380] | UNKNOWN |
+| Ocean tide | 0.000000 [0.000000, 0.000000] | 0.000000 [0.000000, 0.000000] | UNKNOWN |
+| Ocean pole tide | 0.000348 [0.000347, 0.000348] | 0.000319 [0.000318, 0.000319] | UNKNOWN |
+| Dynamic atmospheric correction | -0.127479 [-0.128610, -0.126058] | -0.041126 [-0.043564, -0.037339] | UNKNOWN |
+
+
+`range_bias_correction` is exactly zero for every pulse in both granules. Its HDF5 storage fill value is also zero, but there is no `_FillValue` or `missing_value` attribute; zero cannot be distinguished from a placeholder or zero calibration using this metadata alone. The per-field application matrix therefore reports `UNKNOWN` for neutral delay, range bias, geoid, free-to-mean, other tides, and DAC. The geoid fields are `NUMERICALLY_SUPPORTED` as model/formula matches, not confirmed as applied or unapplied. The full application matrix and evidence registry are in [correction_application_matrix.csv](../outputs/notebooks/10_3dep_elevation_validation/correction_audit/correction_application_matrix.csv) and [correction_evidence_registry.csv](../outputs/notebooks/10_3dep_elevation_validation/correction_audit/correction_evidence_registry.csv).
+
+Track, spatial, and time-bin summaries are retained for every correction field. For example, the track medians of the neutral-delay field span 1.579112 to 1.594533 on November 12 and 1.178568 to 1.181056 on November 18. The range-bias field remains zero in every track, 4x4 region, and time bin. The full group-level rows are in [correction_statistics.csv](../outputs/notebooks/10_3dep_elevation_validation/correction_audit/correction_statistics.csv) and [correction_time_trends.csv](../outputs/notebooks/10_3dep_elevation_validation/correction_audit/correction_time_trends.csv).
+
+#### Atmospheric and range sensitivity
+
+Using the measured beam geometry and existing audit convention (downward sensor-to-target vector; local angles empirically interpreted in radians), removing a positive excess slant range raises the target height. If `refh_neutat_delay_total` is interpreted as metres of excess geometric range and is not already applied, the full-granule median height sensitivities are 1.591955 m (P05-P95 1.533928 to 1.628034) and 1.179909 m (P05-P95 1.173675 to 1.180569). If the numeric values instead use nanoseconds and the root `ns_to_meters` factor is appropriate, the corresponding medians are 0.238628 m and 0.176864 m. Both unit scenarios are conditional; no H5 or processor evidence selects between them.
+
+On the frozen common independent-test support (147 and 165 targets), the metre-assumption median sensitivities are 1.592204 m and 1.180472 m. This sign can move the negative C7 median residual toward zero. The `ns_to_meters` scenario is much smaller. Since applied status is unknown, reapplying the field carries a double-correction risk and neither scenario is a corrected Refh result.
+
+The range-bias height sensitivity is zero because the stored field is zero; its status remains unknown. Stored `refh_neutat_delay_total` is numerically close to linear interpolation between the stored range-window endpoint delays: the full-granule median residual is -0.000527 and -0.000529 in undeclared field units. This is internal continuity within the same L1B product, not proof that the delay was applied. The existing bin audit favors its H2 bin-center convention empirically, while its physical range model remains unavailable because `bin_size` units and processor semantics are undocumented; no half-bin or timing value was fitted to the 3DEP residuals. [Bin-georeferencing audit findings](../research/geolocation/bin_georeferencing_audit/findings.md)
+
+Descriptive Spearman associations on the fixed common independent-test targets are:
+
+| Granule | Context variable | n | Spearman correlation with C7 residual |
+| --- | --- | --- | --- |
+| 2024-11-12 | neutral_delay_field_numeric | 147 | -0.869 |
+| 2024-11-12 | range_bias_field_numeric | 147 | — |
+| 2024-11-12 | beam_incidence_deg | 147 | 0.502 |
+| 2024-11-12 | H5_geoid_minus_GEOID18_m | 147 | 0.790 |
+| 2024-11-18 | neutral_delay_field_numeric | 165 | -0.635 |
+| 2024-11-18 | range_bias_field_numeric | 165 | — |
+| 2024-11-18 | beam_incidence_deg | 165 | 0.394 |
+| 2024-11-18 | H5_geoid_minus_GEOID18_m | 165 | 0.473 |
+
+
+The range-bias association is undefined because the field is constant. These correlations, especially the neutral-delay and beam-incidence patterns, are descriptive and may reflect location/track covariation; they do not establish a correction's application state or causal attribution.
+
+#### H5 geoid, EGM2008, GEOID18, and tide convention
+
+At the 1,200 common coordinates per granule already used in the saved GEOID18 audit, the H5 `geoid` field agrees with the official NGA EGM2008 2.5-minute WGS84 Tide-Free grid to a median of +0.000438 m and -0.002074 m. The same sample shows the following model differences:
+
+| Granule | n | H5 - EGM2008 median (m) | H5 - GEOID18 median (m) | EGM2008 - GEOID18 median (m) |
+| --- | --- | --- | --- | --- |
+| 2024-11-12 | 1200 | 0.000438 | -0.935584 | -0.935980 |
+| 2024-11-18 | 1200 | -0.002074 | -1.030103 | -1.028116 |
+
+
+The archive checksum is `0f65f16e6fd3f89a6b8022d7a89375d0c29fb275a551927175669bb610904cd0`. The grid reader passed NGA's six bundled `OUTPUT3.DAT` sample points with maximum absolute difference 0.009916 m (the bundled interpolation reference is stated to agree within 1 cm). This strongly supports a numerical EGM2008 match for the H5 field, while its H5 source-model declaration remains absent. NGA describes EGM2008 as the WGS84 Tide-Free model; NOAA describes GEOID18 for NAVD88 use with NAD83(2011), epoch 2010.0 ellipsoid heights. [NGA EGM2008](https://earth-info.nga.mil/index.php?dir=wgs84&action=wgs84), [NOAA GEOID18 technical details](https://geodesy.noaa.gov/GEOID/GEOID18/geoid18_tech_details.shtml)
+
+On the high-SNR common targets, C1's median residual is higher than C7 by +0.935569 m and +1.028278 m, matching the opposite sign of the H5-minus-GEOID18 differences. This accounts numerically for almost all of the roughly 1 m C1/C7 separation. It does not establish that CASALS generated `Refh` using EGM2008. The H5 `geoid_free2mean` field matches `0.1287 - 0.3848 sin(latitude)^2` to median absolute differences of 6.73e-07 m and 9.70e-08 m. The corresponding C3-minus-C1 median residual shifts are +0.01985 m and +0.00548 m. These are numerical formula/convention matches; the exact H5 tide-system meaning and application stage remain unknown. IERS documents the distinct permanent-tide systems, but cannot identify the H5 field's convention without CASALS metadata. [IERS Conventions (2010)](https://www.iers.org/SharedDocs/Publikationen/EN/IERS/Publications/tn/TechnNote36/tn36.pdf?__blob=publicationFile&v=1)
+
+Other stored tide fields have full-granule medians of -0.015728/-0.075044 (`tide_earth`), -0.009538/-0.002770 (`tide_earth_free2mean`), +0.006266/+0.001652 (`tide_load`), -0.004368/-0.004380 (`tide_pole`), zero (`tide_ocean`), +0.000348/+0.000319 (`tide_ocean_pole`), and -0.127479/-0.041126 (`dac`) for November 12/18. Their units, signs, and applied states are unknown, so they were not summed or added as a combined correction.
+
+#### C7 operation and common-sample bias comparison
+
+The selected C7 pipeline is `proj=pipeline step proj=unitconvert xy_in=deg xy_out=rad step inv proj=vgridshift grids=us_noaa_g2018u0.tif multiplier=1 step proj=utm zone=18 ellps=GRS80`. It exactly reproduces the saved C7 coordinates on all 312 common independent-test rows. The WGS84 3D ensemble to NAD83(2011) 3D component resolves numerically to `proj=noop ellps=GRS80` (2.0 m stated operation accuracy); the selected combined operation reports 2.015 m accuracy. The observed C7 vertical shifts are:
+
+| Granule | C7 vertical shift median (m) | WGS84-NAD83(2011) step median (m) | Fixed test rows | Selected operation accuracy (m) |
+| --- | --- | --- | --- | --- |
+| 2024-11-12 | 35.898712 | 0.000000 | 147 | 2.015 |
+| 2024-11-18 | 36.372920 | 0.000000 | 165 | 2.015 |
+
+
+Thus the selected C7 operation's numeric vertical change is GEOID18; the separate frame step contributes zero in the reconstructed operation. Since the CASALS source realization and coordinate epoch are absent, this is not evidence that a zero-shift WGS84-ensemble assumption is physically correct for these measurements.
+
+The next table uses the same frozen independent-test pulse IDs within each SNR stratum. Residuals are candidate height minus the saved local 3DEP ground plane. H1 assumes the stored neutral-delay values are metres of positive excess slant range; H2 uses the stored range-bias value with the same sign convention. C1/C3 and H1/H2 are sensitivity comparisons, not verified corrected heights.
+
+| Granule | Hypothesis | Evidence status | n | Mean bias (m) | Median bias (m) | RMSE (m) | NMAD (m) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 2024-11-12 | C7 | DOCUMENTED_ALTERNATIVE | 14 | -1.8234 | -1.8377 | 1.8262 | 0.0456 |
+| 2024-11-12 | C1 | PHYSICAL_SENSITIVITY_ONLY | 14 | -0.8878 | -0.9021 | 0.8936 | 0.0456 |
+| 2024-11-12 | C3 | PHYSICAL_SENSITIVITY_ONLY | 14 | -0.8680 | -0.8822 | 0.8739 | 0.0456 |
+| 2024-11-12 | H1 atmospheric sensitivity | PHYSICAL_SENSITIVITY_ONLY | 14 | -0.2312 | -0.2454 | 0.2525 | 0.0456 |
+| 2024-11-12 | H2 range-bias sensitivity | PHYSICAL_SENSITIVITY_ONLY | 14 | -1.8234 | -1.8377 | 1.8262 | 0.0456 |
+| 2024-11-12 | H3 verified source-frame alternative | UNAVAILABLE | 0 | — | — | — | — |
+| 2024-11-12 | H5 physically justified combined chain | UNAVAILABLE | 0 | — | — | — | — |
+| 2024-11-12 | H4 geoid/tide convention alternative (C3) | PHYSICAL_SENSITIVITY_ONLY | 14 | -0.8680 | -0.8822 | 0.8739 | 0.0456 |
+| 2024-11-18 | C7 | DOCUMENTED_ALTERNATIVE | 70 | -1.5713 | -1.5494 | 1.5752 | 0.1115 |
+| 2024-11-18 | C1 | PHYSICAL_SENSITIVITY_ONLY | 70 | -0.5430 | -0.5211 | 0.5541 | 0.1115 |
+| 2024-11-18 | C3 | PHYSICAL_SENSITIVITY_ONLY | 70 | -0.5375 | -0.5156 | 0.5488 | 0.1115 |
+| 2024-11-18 | H1 atmospheric sensitivity | PHYSICAL_SENSITIVITY_ONLY | 70 | -0.3908 | -0.3689 | 0.4061 | 0.1115 |
+| 2024-11-18 | H2 range-bias sensitivity | PHYSICAL_SENSITIVITY_ONLY | 70 | -1.5713 | -1.5494 | 1.5752 | 0.1115 |
+| 2024-11-18 | H3 verified source-frame alternative | UNAVAILABLE | 0 | — | — | — | — |
+| 2024-11-18 | H5 physically justified combined chain | UNAVAILABLE | 0 | — | — | — | — |
+| 2024-11-18 | H4 geoid/tide convention alternative (C3) | PHYSICAL_SENSITIVITY_ONLY | 70 | -0.5375 | -0.5156 | 0.5488 | 0.1115 |
+
+
+For the wider common-supported set, C7 RMSE/NMAD are 97.810/0.318 m and 20.570/0.114 m. In the SNR>=3 stratum they are 11.533/0.126 m and 1.596/0.110 m. These large RMSE/NMAD gaps show the gross-error tail remains in the target population; the SNR filter is a reporting stratum, not proof of ground return. The SNR>=5 support is only 14 targets on November 12 and 70 on November 18.
+
+| Granule | Population | Hypothesis | n | Mean bias (m) | Median bias (m) | RMSE (m) | NMAD (m) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 2024-11-12 | all_common_support | C7 | 147 | 30.9070 | -1.7951 | 97.8103 | 0.3180 |
+| 2024-11-12 | all_common_support | H1 atmospheric sensitivity | 147 | 32.4902 | -0.2029 | 98.2979 | 0.3180 |
+| 2024-11-12 | snr_ge_3 | C7 | 54 | -0.2499 | -1.8268 | 11.5334 | 0.1265 |
+| 2024-11-12 | snr_ge_3 | H1 atmospheric sensitivity | 54 | 1.3419 | -0.2346 | 11.6053 | 0.1265 |
+| 2024-11-18 | all_common_support | C7 | 165 | 1.8476 | -1.5769 | 20.5699 | 0.1136 |
+| 2024-11-18 | all_common_support | H1 atmospheric sensitivity | 165 | 3.0271 | -0.3964 | 20.7036 | 0.1136 |
+| 2024-11-18 | snr_ge_3 | C7 | 138 | -1.5915 | -1.5771 | 1.5956 | 0.1103 |
+| 2024-11-18 | snr_ge_3 | H1 atmospheric sensitivity | 138 | -0.4110 | -0.3966 | 0.4266 | 0.1103 |
+
+
+The H1 metre-assumption sensitivity reduces the high-SNR RMSE to 0.252 m and 0.406 m, respectively, while the nanosecond interpretation changes the candidate by only about 0.239 m and 0.177 m in median height. The better numerical fit cannot establish that the delay was omitted from L1B. H2 is unchanged from C7. H3 (verified source-frame alternative) and H5 (physically justified combined chain) are explicitly `UNAVAILABLE`; H4 duplicates the C3 geoid/tide sensitivity. The existing road-target C8 support gate remains `INSUFFICIENT_CALIBRATION_SUPPORT` for both granules, with zero high-quality SNR>=5 calibration support; C8 is excluded from attribution.
+
+#### Findings, limits, and required processing evidence
+
+The available evidence identifies three separate facts: (1) the stored delay has a positive height effect under a physically plausible excess-range interpretation; (2) the H5 geoid is numerically almost identical to NGA EGM2008 and differs from GEOID18 by about 1 m; and (3) the selected C7 pipeline applies GEOID18 but no numeric WGS84-to-NAD83(2011) frame shift. It does not identify whether the neutral delay, range bias, or other H5 fields were already applied when Refh was written. The remaining negative C7 residual on high-SNR supported targets is therefore not uniquely attributable, and double-correction risk remains.
+
+A conclusive CASALS processing record needs: the exact L1B Refh bin/time-to-range formula; field-by-field units, signs, fill-value semantics, and applied/not-applied flags; the neutral-delay conversion (including optical-path versus one-way/two-way range and application stage); range-bias calibration values and zero-fill convention; the geoid model/version and tide system and whether it contributes to Refh or is exposed as a diagnostic; the GNSS/INS reference realization and coordinate epoch; and the per-file processor version/configuration or L1A-to-L1B provenance log.
+
+The reproducible tables, six figures, H5 attributes, and source hashes are under [correction_audit](../outputs/notebooks/10_3dep_elevation_validation/correction_audit/); the [summary](../outputs/notebooks/10_3dep_elevation_validation/correction_audit/correction_audit_summary.json), [field inventory](../outputs/notebooks/10_3dep_elevation_validation/correction_audit/correction_field_inventory.csv), [same-sample metrics](../outputs/notebooks/10_3dep_elevation_validation/correction_audit/physical_hypothesis_comparison.csv), and [audit manifest](../outputs/notebooks/10_3dep_elevation_validation/correction_audit/audit_manifest.json) record provenance and denominators.
+
 ## 4. Gross-error behavior
 
 The central and tail metrics tell different stories. For the November 12 SNR ≥ 3 holdout, 20 of 4,274 reference-return-to-ground residuals exceed 2 m (0.47%); none of the 445 SNR ≥ 5 residuals exceed 2 m. For November 18, one of 8,623 SNR ≥ 3 residuals exceeds 2 m (0.012%), and none of the 6,615 SNR ≥ 5 residuals do. In the all-valid populations, the corresponding exceedance counts are 5,646/14,885 for November 12 and 150/8,924 for November 18. Thus the lower-SNR and all-valid RMSE values are dominated by long tails even where the central residual distributions are tight. These are large differences between CASALS reference-return height and the local 3DEP class-2 surface; they do not establish that a CASALS pulse is a ground return or that a difference is a confirmed ground-elevation error. Large cases remain listed with pulse, sweep, track, coordinates, SNR, and local-reference support. The spatial residual map caps its diverging color scale at the absolute 97th percentile to show central patterns; every difference above 2 m remains outlined and listed in the linked table.
@@ -232,6 +362,8 @@ Notebook 10's earlier real-pulse boards pair local 3DEP support, raw RX waveform
 - [Notebook 10 November 12 error board](../outputs/notebooks/10_3dep_elevation_validation/visual_revision/10-B_error_board_casals_l1b_20241112T165718_001_02.png), [November 18 error board](../outputs/notebooks/10_3dep_elevation_validation/visual_revision/10-B_error_board_casals_l1b_20241118T171757_001_02.png), [November 12 spatial board](../outputs/notebooks/10_3dep_elevation_validation/visual_revision/10-C_spatial_snr_error_casals_l1b_20241112T165718_001_02.png), [November 18 spatial board](../outputs/notebooks/10_3dep_elevation_validation/visual_revision/10-C_spatial_snr_error_casals_l1b_20241118T171757_001_02.png), [November 12 cases](../outputs/notebooks/10_3dep_elevation_validation/visual_revision/10-D_real_pulse_cases_casals_l1b_20241112T165718_001_02.png), [November 18 cases](../outputs/notebooks/10_3dep_elevation_validation/visual_revision/10-D_real_pulse_cases_casals_l1b_20241118T171757_001_02.png), [November 12 ground profile](../outputs/notebooks/10_3dep_elevation_validation/visual_revision/10-E_ground_profile_casals_l1b_20241112T165718_001_02_track_24.png), [November 18 ground profile](../outputs/notebooks/10_3dep_elevation_validation/visual_revision/10-E_ground_profile_casals_l1b_20241118T171757_001_02_track_115.png), [raw metrics](../outputs/notebooks/10_3dep_elevation_validation/visual_revision/raw_elevation_metrics.csv), [holdout metrics](../outputs/notebooks/10_3dep_elevation_validation/visual_revision/empirical_holdout_metrics.csv), and [November 12 gross-case table](../outputs/notebooks/10_3dep_elevation_validation/visual_revision/casals_l1b_20241112T165718_001_02_all_gross_errors_snr_ge_3.csv) / [November 18 gross-case table](../outputs/notebooks/10_3dep_elevation_validation/visual_revision/casals_l1b_20241118T171757_001_02_all_gross_errors_snr_ge_3.csv).
 - [Notebook 11 November 12 NAIP context](../outputs/notebooks/11_landcover_lidar_response/visual_revision/11-A_naip_roi_context_casals_l1b_20241112T165718_001_02.png), [November 18 NAIP context](../outputs/notebooks/11_landcover_lidar_response/visual_revision/11-A_naip_roi_context_casals_l1b_20241118T171757_001_02.png), [waveform gallery](../outputs/notebooks/11_landcover_lidar_response/visual_revision/11-B_real_waveform_gallery.png), [ROI signal board](../outputs/notebooks/11_landcover_lidar_response/visual_revision/11-C_roi_signal_summary.png), [candidate morphology](../outputs/notebooks/11_landcover_lidar_response/visual_revision/11-D_candidate_waveform_morphology.png), [matched-track board](../outputs/notebooks/11_landcover_lidar_response/visual_revision/11-E_primary_matched_tracks.png), and [ROI response table](../outputs/notebooks/11_landcover_lidar_response/visual_revision/roi_response_summary.csv).
 - [Reference-frame audit](../outputs/notebooks/10_3dep_elevation_validation/visual_revision/reference_frame_audit.json), [Notebook 10 input hashes](../outputs/notebooks/10_3dep_elevation_validation/visual_revision/input_manifest.json), [Notebook 11 input hashes](../outputs/notebooks/11_landcover_lidar_response/visual_revision/input_manifest.json), [track-pair summary](../outputs/notebooks/11_landcover_lidar_response/visual_revision/matched_track_site_pair_summary.csv), [representative waveform IDs](../outputs/notebooks/11_landcover_lidar_response/visual_revision/representative_waveform_manifest.csv), and [road-target C8 support gate](../outputs/notebooks/10_3dep_elevation_validation/visual_revision/ground_c8_calibration_support_gate.csv).
+- [Correction-audit summary](../outputs/notebooks/10_3dep_elevation_validation/correction_audit/correction_audit_summary.json), [application matrix](../outputs/notebooks/10_3dep_elevation_validation/correction_audit/correction_application_matrix.csv), [same-pulse hypothesis metrics](../outputs/notebooks/10_3dep_elevation_validation/correction_audit/physical_hypothesis_comparison.csv), [geoid-model evidence](../outputs/notebooks/10_3dep_elevation_validation/correction_audit/geoid_model_evidence.json), and [audit hashes](../outputs/notebooks/10_3dep_elevation_validation/correction_audit/audit_manifest.json).
+- Correction-audit figures: [stored correction fields](../outputs/notebooks/10_3dep_elevation_validation/correction_audit/figures/correction_magnitudes.png), [range-to-height sensitivity](../outputs/notebooks/10_3dep_elevation_validation/correction_audit/figures/range_height_sensitivity.png), [geoid-model comparison](../outputs/notebooks/10_3dep_elevation_validation/correction_audit/figures/geoid_comparison.png), [common-target bias comparison](../outputs/notebooks/10_3dep_elevation_validation/correction_audit/figures/c1_c3_c7_bias_comparison.png), [C7 frame decomposition](../outputs/notebooks/10_3dep_elevation_validation/correction_audit/figures/frame_decomposition.png), and [bias attribution sensitivities](../outputs/notebooks/10_3dep_elevation_validation/correction_audit/figures/bias_attribution.png).
 
 ## 7. Limitations and conclusions
 
@@ -241,4 +373,4 @@ Other limits are the two-granule scope, local interpolation and support criteria
 
 ### Execution and preservation record
 
-Notebooks 10 and 11 were executed from fresh `casals-showcase` kernels with no cell errors. Notebook 10 verified current H5/LAZ hashes and all 26 cached ground-aware artifacts, loaded those results read-only, and wrote the C8 support-gate CSV under `visual_revision/`. Notebook 11 recomputed its 128,427 ROI waveforms from the current H5 inputs and refreshed its `visual_revision/` tables and figures; candidate counts matched the prior summary with zero flag transitions. The regenerated 11-C candidate-rate labels were visually checked after moving high-rate labels below their points. The full test suite passed (147 tests); compileall and `git diff --check` passed. All Notebook 10 and 11 figures were opened and visually inspected for axes, outlier visibility, NAIP marker alignment, case labels, and legends. Historical `revised/`, `datum_comparison/`, and `ground_aware/` files, source H5/LAZ files, production code, and notebooks 00-09 were not modified. Preflight hashes and sizes matched for all 98 protected source and historical-result files.
+Notebooks 10 and 11 were executed from fresh `casals-showcase` kernels with no cell errors. Notebook 10 verified current H5/LAZ hashes and all 26 cached ground-aware artifacts, loaded those results read-only, and wrote the C8 support-gate CSV under `visual_revision/`. Notebook 11 recomputed its 128,427 ROI waveforms from the current H5 inputs and refreshed its `visual_revision/` tables and figures; candidate counts matched the prior summary with zero flag transitions. The regenerated 11-C candidate-rate labels were visually checked after moving high-rate labels below their points. The full test suite passed (164 tests); compileall and `git diff --check` passed. The six correction-audit figures and the Notebook 10/11 core boards were opened and visually inspected for axes, outlier visibility, NAIP marker alignment, case labels, legends, and inline completeness. The NAIP overlays show nominal H5 centers, but their image-to-footprint registration remains uncalibrated. The audit read and hashed all 3,604,480 pulses in each source H5; it did not alter Refh or apply any candidate correction. Historical `revised/`, `datum_comparison/`, and `ground_aware/` files, source H5/LAZ files, production code, and notebooks 00-09 were not modified. Preflight hashes and sizes matched for all 96 protected reference and historical-result files; source H5 hashes are recorded separately in the correction-audit manifest.

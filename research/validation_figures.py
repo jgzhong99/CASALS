@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 import rasterio
 from matplotlib.colors import TwoSlopeNorm
-from matplotlib.ticker import FuncFormatter, MaxNLocator
+from matplotlib.ticker import FuncFormatter, MaxNLocator, ScalarFormatter
 from rasterio.windows import Window, bounds as window_bounds
 from scipy.spatial import cKDTree
 
@@ -688,5 +688,378 @@ def plot_matched_track_board(pairs: pd.DataFrame, output_path: str | Path) -> Pa
         ax.grid(axis="y", alpha=0.2)
     fig.suptitle("Matched-track differences by independent site pair\n"
                  "Descriptions only; adjacent ROIs from one site are combined before matching.",
+                 fontsize=12, fontweight="bold")
+    return save_figure(fig, output_path)
+
+
+def plot_ground_scene_overview(views: list[dict[str, Any]], output_path: str | Path) -> Path:
+    """Show all reviewed contexts and the geometry-frozen road split over NAIP."""
+    from pyproj import Transformer
+    from rasterio.windows import from_bounds, bounds as window_bounds
+
+    fig, axes = plt.subplots(max(len(views), 1), 2, figsize=(15.5, 6.4 * max(len(views), 1)), squeeze=False,
+                             constrained_layout=True)
+    role_colors = {"calibration_offset": "#247ba0", "candidate_selection": "#e09f3e",
+                   "independent_test": "#2a9d8f", "guard_gap": "#777777"}
+    context_colors = {"ground_target_eligible": "#24a589", "non_ground_context": "#8f5da2", "uncertain": "#e09f3e"}
+    for row_index, view in enumerate(views):
+        overview_ax, road_ax = axes[row_index]
+        road = next((item for item in view["features"] if item["ground_context_status"] == "ground_target_eligible"), None)
+        with rasterio.open(view["image_path"]) as ds:
+            _check_naip_raster(ds)
+            projected = []
+            for feature in view["features"]:
+                transformer = Transformer.from_crs("EPSG:6347", ds.crs, always_xy=True)
+                px, py = transformer.transform(feature["polygon_xy"][:, 0], feature["polygon_xy"][:, 1])
+                projected.append((feature, np.asarray(px), np.asarray(py)))
+            all_x = np.concatenate([item[1] for item in projected])
+            all_y = np.concatenate([item[2] for item in projected])
+            min_x, max_x = float(np.min(all_x)), float(np.max(all_x))
+            min_y, max_y = float(np.min(all_y)), float(np.max(all_y))
+            pad = max(45.0, 0.06 * max(max_x - min_x, max_y - min_y))
+            window = from_bounds(max(ds.bounds.left, min_x - pad), max(ds.bounds.bottom, min_y - pad),
+                                 min(ds.bounds.right, max_x + pad), min(ds.bounds.top, max_y + pad), ds.transform)
+            window = window.round_offsets().round_lengths().intersection(Window(0, 0, ds.width, ds.height))
+            image = np.moveaxis(ds.read([1, 2, 3], window=window), 0, -1)
+            left, bottom, right, top = window_bounds(window, ds.transform)
+            overview_ax.imshow(image, extent=(left, right, bottom, top), origin="upper")
+            point_transformer = Transformer.from_crs("EPSG:4326", ds.crs, always_xy=True)
+            for status, color in context_colors.items():
+                points = view["population"].loc[view["population"].ground_context_status.astype(str) == status]
+                if points.empty:
+                    continue
+                gx, gy = point_transformer.transform(points.longitude_deg.to_numpy(), points.latitude_deg.to_numpy())
+                overview_ax.scatter(gx, gy, s=2.2, color=color, alpha=0.55,
+                                    label=f"{status.replace('_', ' ')} centers ({len(points):,})", rasterized=True)
+            seen_polygon_status = set()
+            for feature, px, py in projected:
+                status = feature["ground_context_status"]
+                overview_ax.plot(px, py, color=context_colors[status], lw=1.5,
+                                 label="Reviewed ROI boundaries" if not seen_polygon_status else "_nolegend_")
+                seen_polygon_status.add(status)
+                ix, iy = transformer.transform(feature["interior_xy"][:, 0], feature["interior_xy"][:, 1])
+                if status == "ground_target_eligible":
+                    overview_ax.plot(ix, iy, color="#fff04a", lw=1.4, ls="--", label="Trimmed road target")
+                centroid = (float(np.mean(px[:-1])), float(np.mean(py[:-1])))
+                overview_ax.annotate(feature["roi_id"], centroid, fontsize=6.5, color="white",
+                                     bbox={"boxstyle": "round,pad=0.15", "fc": "#202020", "alpha": 0.65})
+            overview_ax.set_xlim(max(ds.bounds.left, min_x - pad), min(ds.bounds.right, max_x + pad))
+            overview_ax.set_ylim(max(ds.bounds.bottom, min_y - pad), min(ds.bounds.top, max_y + pad))
+            overview_ax.set_aspect("equal", adjustable="box")
+            overview_ax.set(xlabel=f"Easting (m, {ds.crs.to_string()})", ylabel="Northing (m)",
+                            title=f"{view['h5_date']} CASALS | NAIP {view['naip_date']} | reviewed scene contexts")
+            overview_ax.xaxis.set_major_locator(MaxNLocator(nbins=4))
+            overview_ax.yaxis.set_major_locator(MaxNLocator(nbins=4))
+            for axis in (overview_ax.xaxis, overview_ax.yaxis):
+                formatter = ScalarFormatter(useOffset=False)
+                formatter.set_scientific(False)
+                axis.set_major_formatter(formatter)
+            overview_ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.11),
+                               fontsize=6.2, framealpha=0.9, ncol=2)
+            overview_ax.grid(alpha=0.12)
+
+            if road is None:
+                road_ax.text(0.5, 0.5, "No reviewed road target", transform=road_ax.transAxes, ha="center", va="center")
+                road_ax.axis("off")
+                continue
+            px, py = transformer.transform(road["polygon_xy"][:, 0], road["polygon_xy"][:, 1])
+            min_x, max_x = float(np.min(px)), float(np.max(px))
+            min_y, max_y = float(np.min(py)), float(np.max(py))
+            pad = max(35.0, 0.3 * max(max_x - min_x, max_y - min_y))
+            window = from_bounds(min_x - pad, min_y - pad, max_x + pad, max_y + pad, ds.transform)
+            window = window.round_offsets().round_lengths().intersection(Window(0, 0, ds.width, ds.height))
+            image = np.moveaxis(ds.read([1, 2, 3], window=window), 0, -1)
+            left, bottom, right, top = window_bounds(window, ds.transform)
+            road_ax.imshow(image, extent=(left, right, bottom, top), origin="upper")
+            road_ax.plot(px, py, color="#ffcb47", lw=2.0, ls="--", label="Reviewed road polygon")
+            ix, iy = transformer.transform(road["interior_xy"][:, 0], road["interior_xy"][:, 1])
+            road_ax.plot(ix, iy, color="#31ddbd", lw=1.6, label="Fixed inward-trimmed target")
+            points = view["ground_rows"].copy()
+            if len(points):
+                gx, gy = point_transformer.transform(points.longitude_deg.to_numpy(), points.latitude_deg.to_numpy())
+                road_ax.scatter(gx, gy, s=5, color="#f5f5f5", alpha=0.45, linewidths=0,
+                           label=f"Nominal H5 centers ({len(points):,})", rasterized=True)
+                if "research_role" in points:
+                    for role, color in role_colors.items():
+                        use = points.research_role.astype(str).to_numpy() == role
+                        if use.any():
+                            road_ax.scatter(gx[use], gy[use], s=10, color=color, alpha=0.9,
+                                       label=f"{role.replace('_', ' ')} ({int(use.sum()):,})", rasterized=True)
+            road_ax.set_xlim(max(ds.bounds.left, min_x - pad), min(ds.bounds.right, max_x + pad))
+            road_ax.set_ylim(max(ds.bounds.bottom, min_y - pad), min(ds.bounds.top, max_y + pad))
+            road_ax.set_aspect("equal", adjustable="box")
+            road_ax.set(xlabel=f"Easting (m, {ds.crs.to_string()})", ylabel="Northing (m)",
+                        title=f"{view['h5_date']} | {road['roi_id']} role split | NAIP {view['naip_date']}")
+            road_ax.xaxis.set_major_locator(MaxNLocator(nbins=4))
+            road_ax.yaxis.set_major_locator(MaxNLocator(nbins=4))
+            for axis in (road_ax.xaxis, road_ax.yaxis):
+                formatter = ScalarFormatter(useOffset=False)
+                formatter.set_scientific(False)
+                axis.set_major_formatter(formatter)
+            road_ax.legend(loc="best", fontsize=6.6, framealpha=0.9)
+            road_ax.grid(alpha=0.12)
+    fig.suptitle("Reviewed ground, non-ground-context, and uncertain scene evidence\n"
+                 "NAIP imagery predates CASALS; image-to-footprint registration and Refh return origin are unresolved.",
+                 fontsize=12, fontweight="bold")
+    return save_figure(fig, output_path)
+
+
+def plot_reference_ground_context(views: list[dict[str, Any]], output_path: str | Path) -> Path:
+    """Map original and transformed class-2 reference support for road targets."""
+    fig, axes = plt.subplots(1, max(len(views), 1), figsize=(8.0 * max(len(views), 1), 7.0), squeeze=False,
+                             constrained_layout=True)
+    for ax, view in zip(axes[0], views):
+        road = next((item for item in view["features"] if item["ground_context_status"] == "ground_target_eligible"), None)
+        rows = view["ground_rows"]
+        if road is None or rows.empty:
+            ax.text(0.5, 0.5, "No road-target support sample", transform=ax.transAxes, ha="center", va="center")
+            ax.axis("off")
+            continue
+        px, py = road["polygon_xy"][:, 0], road["polygon_xy"][:, 1]
+        ix, iy = road["interior_xy"][:, 0], road["interior_xy"][:, 1]
+        ax.plot(px, py, color="#333333", lw=1.1, ls="--", label="Reviewed road boundary")
+        ax.plot(ix, iy, color="#2a9d8f", lw=1.5, label="Ground-target interior")
+        x = rows.easting_m_epsg6347.to_numpy(dtype=float)
+        y = rows.northing_m_epsg6347.to_numpy(dtype=float)
+        common = rows.get("common_support_all_candidates", pd.Series(False, index=rows.index)).fillna(False).to_numpy(dtype=bool)
+        original = rows.original_surface_acceptable.to_numpy(dtype=bool)
+        roles = rows.get("research_role", pd.Series("", index=rows.index)).fillna("").astype(str).to_numpy()
+        guard_gap = roles == "guard_gap"
+        categories = [
+            (~original, "Original surface unsupported or rejected", "#d97941", "x"),
+            (original & guard_gap, "Original accepted; guard-gap exclusion", "#777777", "s"),
+            (original & ~common & ~guard_gap, "Original accepted; C7/candidate support rejected", "#e0ad3f", "o"),
+            (common, "Common C0–C7 support", "#247ba0", "."),
+        ]
+        for mask, label, color, marker in categories:
+            if mask.any():
+                ax.scatter(x[mask], y[mask], s=8 if marker == "." else 16, c=color, marker=marker,
+                           alpha=0.72, linewidths=0.35, label=f"{label} ({int(mask.sum()):,})", rasterized=True)
+        ax.set_aspect("equal", adjustable="datalim")
+        ax.set(xlabel="Easting (m, EPSG:6347)", ylabel="Northing (m, EPSG:6347)",
+               title=f"{view['h5_date']} | road-target pulses n={len(rows):,}")
+        ax.legend(loc="best", fontsize=7, framealpha=0.9)
+        ax.grid(alpha=0.18)
+    for ax in axes[0][len(views):]:
+        ax.axis("off")
+    fig.suptitle("Local reference support inside likely-ground target areas\n"
+                 "The 3DEP reference is built from class-2 LAZ points; unsupported points are not extrapolated.",
+                 fontsize=12, fontweight="bold")
+    return save_figure(fig, output_path)
+
+
+def plot_ground_candidate_comparison(
+    candidate_metrics: pd.DataFrame,
+    test_metrics: pd.DataFrame,
+    output_path: str | Path,
+) -> Path:
+    """Compare candidate agreement on geometry-frozen selection and test segments."""
+    granules = list(dict.fromkeys((
+        candidate_metrics.get("granule_id", pd.Series(dtype=str)).astype(str).tolist()
+        + test_metrics.get("granule_id", pd.Series(dtype=str)).astype(str).tolist()
+    )))
+    granules = list(dict.fromkeys(granules))
+    fig, axes = plt.subplots(max(len(granules), 1), 2, figsize=(15.5, 5.0 * max(len(granules), 1)), squeeze=False,
+                             constrained_layout=True)
+    for row_index, granule in enumerate(granules):
+        for col_index, metric in enumerate(("rmse_m", "nmad_m")):
+            ax = axes[row_index, col_index]
+            selection = candidate_metrics.loc[
+                (candidate_metrics.granule_id.astype(str) == granule)
+                & (candidate_metrics.research_role.astype(str) == "candidate_selection")
+                & (candidate_metrics.snr_stratum.astype(str) == "snr_ge_3")
+            ] if not candidate_metrics.empty else candidate_metrics
+            test = test_metrics.loc[
+                (test_metrics.granule_id.astype(str) == granule)
+                & (test_metrics.research_role.astype(str) == "independent_test")
+                & (test_metrics.snr_stratum.astype(str) == "snr_ge_3")
+            ] if not test_metrics.empty else test_metrics
+            ids = [f"C{i}" for i in range(8)]
+            vals_a, vals_b, labels = [], [], []
+            for candidate_id in ids:
+                left = selection.loc[selection.candidate_id.astype(str) == candidate_id]
+                right = test.loc[test.configuration_id.astype(str) == candidate_id]
+                vals_a.append(float(left[metric].iloc[0]) if len(left) and pd.notna(left[metric].iloc[0]) else np.nan)
+                vals_b.append(float(right[metric].iloc[0]) if len(right) and pd.notna(right[metric].iloc[0]) else np.nan)
+                if len(right):
+                    labels.append(f"{candidate_id}\n{int(right.n_common_c0_c7_support.iloc[0]):,}")
+                else:
+                    labels.append(candidate_id)
+            c8 = test.loc[test.configuration_id.astype(str) == "C8"]
+            vals_a.append(np.nan)
+            vals_b.append(float(c8[metric].iloc[0]) if len(c8) and pd.notna(c8[metric].iloc[0]) else np.nan)
+            labels.append("C8*" + (f"\n{int(c8.n_common_c0_c7_support.iloc[0]):,}" if len(c8) else ""))
+            x = np.arange(len(labels), dtype=float)
+            width = 0.36
+            ax.bar(x - width / 2, vals_a, width, color="#9ba9b5", label="Candidate comparison segment")
+            ax.bar(x + width / 2, vals_b, width, color="#247ba0", label="Independent test segment")
+            ax.set_xticks(x, labels, fontsize=7)
+            ax.set_ylabel("RMSE (m)" if metric == "rmse_m" else "NMAD (m)")
+            ax.set_title(f"{granule.split('_')[2][:8]} | SNR ≥ 3 | {metric.replace('_m', '').upper()}")
+            ax.grid(axis="y", alpha=0.2)
+            if row_index == 0 and col_index == 0:
+                ax.legend(fontsize=8)
+            ax.text(0.99, 0.98, "C7 remains provisional. C8 is empirical-only; its fit uses the calibration segment.",
+                    transform=ax.transAxes, ha="right", va="top", fontsize=7,
+                    bbox={"facecolor": "white", "alpha": 0.8, "edgecolor": "none"})
+    fig.suptitle("Conditional candidate agreement on common likely-ground target pulses\n"
+                 "All C0–C7 values within each role use identical pulse IDs and original plus transformed reference support.",
+                 fontsize=12, fontweight="bold")
+    return save_figure(fig, output_path)
+
+
+def plot_ground_residual_distributions(test_residuals: pd.DataFrame, output_path: str | Path) -> Path:
+    """Show the complete C7 test residual range and an explicit central zoom."""
+    granules = list(dict.fromkeys(test_residuals.granule_id.astype(str))) if not test_residuals.empty else []
+    fig, axes = plt.subplots(max(len(granules), 1), 2, figsize=(15.0, 4.8 * max(len(granules), 1)), squeeze=False,
+                             constrained_layout=True)
+    for row_index, granule in enumerate(granules):
+        group = test_residuals.loc[
+            (test_residuals.granule_id.astype(str) == granule)
+            & (test_residuals.research_role.astype(str) == "independent_test")
+            & test_residuals.common_support_all_candidates.astype(bool)
+        ]
+        values = group.C7_residual_m.to_numpy(dtype=np.float64)
+        values = values[np.isfinite(values)]
+        label_date = "2024-11-12" if "20241112" in granule else "2024-11-18"
+        if not values.size:
+            for ax in axes[row_index]:
+                ax.text(0.5, 0.5, "No common-support independent-test pulses", transform=ax.transAxes, ha="center", va="center")
+                ax.axis("off")
+            continue
+        median = float(np.median(values))
+        maximum = float(np.max(np.abs(values)))
+        bins = np.histogram_bin_edges(values, bins=100)
+        axes[row_index, 0].hist(values, bins=bins, color="#247ba0", alpha=0.82)
+        axes[row_index, 0].set_xscale("symlog", linthresh=0.2)
+        axes[row_index, 0].axvline(0, color="#222222", ls="--", lw=1)
+        axes[row_index, 0].axvline(median, color="#d17a22", lw=1.5, label=f"Median {median:.3f} m")
+        axes[row_index, 0].set(title=f"{label_date} | complete residual range | n={len(values):,}; max |e|={maximum:.2f} m",
+                               xlabel="C7 minus local ground plane (m; symmetric-log axis)", ylabel="Pulse count")
+        axes[row_index, 0].legend(fontsize=8)
+        zoom = max(0.5, min(1.0, float(np.percentile(np.abs(values - median), 90))))
+        in_view = (values >= median - zoom) & (values <= median + zoom)
+        axes[row_index, 1].hist(values[in_view], bins=45, color="#2a9d8f", alpha=0.82)
+        axes[row_index, 1].axvline(0, color="#222222", ls="--", lw=1, label="Zero residual")
+        axes[row_index, 1].axvline(median, color="#d17a22", lw=1.5, label=f"Median {median:.3f} m")
+        axes[row_index, 1].set_xlim(median - zoom, median + zoom)
+        axes[row_index, 1].set(title=f"Central view ±{zoom:.2f} m around median | outside {int((~in_view).sum()):,} ({100*(~in_view).mean():.2f}%)",
+                               xlabel="C7 minus local ground plane (m)", ylabel="Pulse count")
+        axes[row_index, 1].legend(fontsize=8)
+        for ax in axes[row_index]:
+            ax.grid(alpha=0.18)
+    for ax in axes[0][len(granules):]:
+        ax.axis("off")
+    fig.suptitle("Ground-target independent-test residuals | tails retained\n"
+                 "Conditional on road-core geography and common class-2 support; this is not verified absolute-elevation error.",
+                 fontsize=12, fontweight="bold")
+    return save_figure(fig, output_path)
+
+
+def plot_ground_vs_nonground_cases(cases: list[dict[str, Any]], output_path: str | Path) -> Path:
+    """Pair actual NAIP context patches with deterministic raw RX examples."""
+    from pyproj import Transformer
+
+    if not cases:
+        fig, ax = plt.subplots(figsize=(8, 3.5), constrained_layout=True)
+        ax.text(0.5, 0.5, "No waveform cases intersected the reviewed contexts.", transform=ax.transAxes, ha="center", va="center")
+        ax.axis("off")
+        return save_figure(fig, output_path)
+    fig, axes = plt.subplots(len(cases), 2, figsize=(13.0, 3.15 * len(cases)), squeeze=False,
+                             constrained_layout=True)
+    for row_index, case in enumerate(cases):
+        image_ax, waveform_ax = axes[row_index]
+        with rasterio.open(case["image_path"]) as ds:
+            _check_naip_raster(ds)
+            _show_naip_patch(image_ax, ds, case["image_x"], case["image_y"], half_width_m=24.0)
+            support_xy = np.asarray(case.get("support_points_xy", np.empty((0, 2))), dtype=np.float64)
+            if support_xy.size:
+                support_transformer = Transformer.from_crs("EPSG:6347", ds.crs, always_xy=True)
+                support_x, support_y = support_transformer.transform(support_xy[:, 0], support_xy[:, 1])
+                image_ax.scatter(support_x, support_y, s=12, c="#a23e48", marker="o", alpha=0.78,
+                                 edgecolors="white", linewidths=0.25,
+                                 label=f"3DEP class-2 grid support ({len(support_xy)})", rasterized=True)
+            image_ax.scatter([case["image_x"]], [case["image_y"]], marker="*", s=80, c="#ffdf32",
+                             edgecolors="#202020", linewidths=0.5, label="Nominal H5 center")
+            image_ax.set(title=f"{case['granule_id'].split('_')[2][:8]} | {case['case_label']}\n"
+                               f"{case['roi_id']} | {case['target_context']}",
+                         xlabel=f"Easting (m, {ds.crs.to_string()})", ylabel="Northing (m)")
+            image_ax.title.set_fontsize(9)
+            image_ax.xaxis.set_major_locator(MaxNLocator(nbins=4))
+            image_ax.yaxis.set_major_locator(MaxNLocator(nbins=4))
+            for axis in (image_ax.xaxis, image_ax.yaxis):
+                formatter = ScalarFormatter(useOffset=False)
+                formatter.set_scientific(False)
+                axis.set_major_formatter(formatter)
+            image_ax.legend(loc="best", fontsize=7)
+        bins = np.asarray(case["rx_bins"], dtype=np.float64)
+        waveform = np.asarray(case["waveform"], dtype=np.float64)
+        if bins.size != waveform.size:
+            bins = np.arange(waveform.size, dtype=np.float64)
+        waveform_ax.plot(bins, waveform, color="#247ba0", lw=0.8, label="Raw RX counts")
+        waveform_ax.axhline(float(case["background_mean"]), color="#d17a22", ls="--", lw=1.2, label="Background mean")
+        maximum_bin = int(np.nanargmax(waveform))
+        waveform_ax.axvline(bins[maximum_bin], color="#557153", ls=":", lw=1.2, label="Raw maximum")
+        differences = []
+        for label, key, qualifier in (
+            ("C0−ground", "refh_minus_ground_m", "descriptive"),
+            ("C7−ground", "C7_residual_m", "provisional"),
+            ("C8−ground", "C8_residual_m", "empirical"),
+        ):
+            value = float(case.get(key, np.nan))
+            if np.isfinite(value):
+                differences.append(f"{label} {value:.2f} m ({qualifier})")
+        diff_text = " · ".join(differences) if differences else "Local ground support unavailable"
+        waveform_ax.set(title=f"P {case['pulse_index']:,} | Track {case['track_num']} / Sweep {case['sweep_num']} | SNR {case['snr']:.2f}\n"
+                              f"{diff_text} · Refh {case['refh_m']:.2f} m",
+                        xlabel="RX bin", ylabel="Native RX counts")
+        waveform_ax.title.set_fontsize(9)
+        waveform_ax.legend(loc="best", fontsize=7)
+        waveform_ax.grid(alpha=0.18)
+    fig.suptitle("Four deterministic waveform cases: road-test low/high difference, canopy context, and uncertain boundary\n"
+                 "Waveforms are raw; Refh return origin is unresolved and no bin is labeled as an official Refh bin.",
+                 fontsize=12, fontweight="bold")
+    return save_figure(fig, output_path)
+
+
+def plot_ground_elevation_profile(test_residuals: pd.DataFrame, output_path: str | Path) -> Path:
+    """Plot supported road-target heights against distance along the reviewed road axis."""
+    fig, axes = plt.subplots(1, max(test_residuals.granule_id.nunique() if not test_residuals.empty else 1, 1),
+                             figsize=(8.0 * max(test_residuals.granule_id.nunique() if not test_residuals.empty else 1, 1), 6.2),
+                             squeeze=False, constrained_layout=True)
+    granules = list(dict.fromkeys(test_residuals.granule_id.astype(str))) if not test_residuals.empty else []
+    for ax, granule in zip(axes[0], granules):
+        rows = test_residuals.loc[
+            (test_residuals.granule_id.astype(str) == granule)
+            & (test_residuals.research_role.astype(str) == "independent_test")
+            & test_residuals.common_support_all_candidates.astype(bool)
+        ].sort_values("axis_distance_m", kind="mergesort")
+        if rows.empty:
+            ax.text(0.5, 0.5, "No supported independent-test profile", transform=ax.transAxes, ha="center", va="center")
+            ax.axis("off")
+            continue
+        distance = rows.axis_distance_m.to_numpy(dtype=float).copy()
+        distance -= np.nanmin(distance)
+        ref = rows.c7_reference_height_local_plane_m.to_numpy(dtype=float)
+        ref_median = rows.c7_reference_height_local_median_m.to_numpy(dtype=float)
+        ax.plot(distance, ref, color="#222222", lw=1.4, label="3DEP class-2 local plane")
+        ax.plot(distance, ref_median, color="#888888", lw=1.0, ls="--", label="3DEP local median")
+        snr = rows.refh_snr.to_numpy(dtype=float)
+        reliable = snr >= 3.0
+        ax.scatter(distance[~reliable], rows.C7_height_m.to_numpy(dtype=float)[~reliable], s=13, color="#d97941", alpha=0.7,
+                   label="C7 height; SNR < 3")
+        ax.scatter(distance[reliable], rows.C7_height_m.to_numpy(dtype=float)[reliable], s=17, color="#247ba0", alpha=0.78,
+                   label="C7 height; SNR ≥ 3")
+        if "C8_height_m" in rows:
+            ax.scatter(distance, rows.C8_height_m.to_numpy(dtype=float), s=14, facecolors="none", edgecolors="#2a9d8f",
+                       linewidths=0.7, label="C8 empirical alignment")
+        ax.set(title=f"{'2024-11-12' if '20241112' in granule else '2024-11-18'} | n={len(rows):,} common-support test pulses",
+               xlabel="Distance along road axis (m; geometry-derived)", ylabel="Height / local ground (m)")
+        ax.grid(alpha=0.2)
+        ax.legend(loc="best", fontsize=7)
+    for ax in axes[0][len(granules):]:
+        ax.axis("off")
+    fig.suptitle("Ground-target road profile | geometry-based distance\n"
+                 "C7 is provisional; C8 is empirical alignment and neither establishes absolute datum accuracy.",
                  fontsize=12, fontweight="bold")
     return save_figure(fig, output_path)

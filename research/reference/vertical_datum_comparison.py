@@ -2209,7 +2209,8 @@ def build_local_class2_query_grid(
     validation_stride: int = 10_000,
     chunk_size: int = 1_000_000,
     neighbor_radius_m: float = 3.6,
-) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
+    return_validation_points: bool = False,
+) -> tuple[np.ndarray, np.ndarray, dict[str, Any]] | tuple[np.ndarray, np.ndarray, dict[str, Any], pd.DataFrame]:
     """Stream class-2 LAZ records and grid only cells near fixed C7 queries.
 
     The cell origin, record-index validation holdout, and resolution match the
@@ -2226,6 +2227,7 @@ def build_local_class2_query_grid(
         raise ValueError("Invalid query-grid parameters.")
     query_tree = cKDTree(query)
     xs, ys, zs = [], [], []
+    validation_xs, validation_ys, validation_zs, validation_indices = [], [], [], []
     training_n = validation_n = scan_n = 0
     with laspy.open(laz_path) as reader:
         header = reader.header
@@ -2259,6 +2261,12 @@ def build_local_class2_query_grid(
             candidate_idx = candidate_idx[near]
             is_validation = (record_index[candidate_idx] % validation_stride) == 0
             validation_n += int(is_validation.sum())
+            if return_validation_points and is_validation.any():
+                validation_idx = candidate_idx[is_validation]
+                validation_xs.append(x[validation_idx])
+                validation_ys.append(y[validation_idx])
+                validation_zs.append(z[validation_idx])
+                validation_indices.append(record_index[validation_idx])
             candidate_idx = candidate_idx[~is_validation]
             if candidate_idx.size:
                 xs.append(x[candidate_idx]); ys.append(y[candidate_idx]); zs.append(z[candidate_idx])
@@ -2285,12 +2293,28 @@ def build_local_class2_query_grid(
         "validation_stride_las_records": int(validation_stride),
         "query_search_radius_m": float(neighbor_radius_m),
         "crs": crs.to_string(),
+        "held_out_validation_points_returned": bool(return_validation_points),
         "rule": "Same 0.75 m cell origin and class-2 record-index holdout as existing reference builder; retain only ground points within 3.6 m of any frozen transformed query.",
     }
-    return ground_xy, ground_z, metadata
+    if not return_validation_points:
+        return ground_xy, ground_z, metadata
+    held_out = pd.DataFrame({
+        "easting_m_epsg6347": np.concatenate(validation_xs) if validation_xs else np.array([], dtype=np.float64),
+        "northing_m_epsg6347": np.concatenate(validation_ys) if validation_ys else np.array([], dtype=np.float64),
+        "elevation_m": np.concatenate(validation_zs) if validation_zs else np.array([], dtype=np.float64),
+        "source_las_record_index": np.concatenate(validation_indices) if validation_indices else np.array([], dtype=np.int64),
+    })
+    metadata["held_out_validation_point_count"] = int(len(held_out))
+    return ground_xy, ground_z, metadata, held_out
 
 
-def _surface_query(spec: GranuleSpec, frame: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, Any]]:
+def _surface_query(
+    spec: GranuleSpec,
+    frame: pd.DataFrame,
+    *,
+    return_validation_points: bool = False,
+    validation_query_xy: np.ndarray | None = None,
+) -> tuple[pd.DataFrame, dict[str, Any]] | tuple[pd.DataFrame, dict[str, Any], pd.DataFrame, np.ndarray, np.ndarray]:
     """Requery the same 3DEP class-2 reference at C7-transformed XY."""
     from research.elevation_comparison import interpolate_ground_surface
 
@@ -2302,7 +2326,20 @@ def _surface_query(spec: GranuleSpec, frame: pd.DataFrame) -> tuple[pd.DataFrame
     )
     x, y, z = np.asarray(x), np.asarray(y), np.asarray(z)
     query = np.column_stack([x, y])
-    ground_xy, ground_z, grid_meta = build_local_class2_query_grid(spec.laz_path, query)
+    grid_query = query
+    if validation_query_xy is not None:
+        extra_query = np.asarray(validation_query_xy, dtype=np.float64)
+        if extra_query.ndim != 2 or extra_query.shape[1] != 2 or not np.all(np.isfinite(extra_query)):
+            raise ValueError("validation_query_xy must be a finite (n, 2) array.")
+        if len(extra_query):
+            grid_query = np.vstack([query, extra_query])
+    grid_result = build_local_class2_query_grid(
+        spec.laz_path, grid_query, return_validation_points=return_validation_points,
+    )
+    if return_validation_points:
+        ground_xy, ground_z, grid_meta, held_out = grid_result
+    else:
+        ground_xy, ground_z, grid_meta = grid_result
     surface = interpolate_ground_surface(query, ground_xy, ground_z)
     out = frame.copy()
     out["c7_easting_m_epsg6347"] = x
@@ -2331,8 +2368,12 @@ def _surface_query(spec: GranuleSpec, frame: pd.DataFrame) -> tuple[pd.DataFrame
     )
     out["common_support_all_candidates"] = common
     grid_meta["c7_query_count"] = int(len(out))
+    grid_meta["additional_validation_query_count"] = int(max(0, len(grid_query) - len(query)))
     grid_meta["c7_surface_acceptable_count"] = int(out.c7_surface_acceptable.sum())
     grid_meta["common_all_candidate_support_count"] = int(common.sum())
-    return out, {"transform": transform_audit, "reference_grid": grid_meta}
+    audit = {"transform": transform_audit, "reference_grid": grid_meta}
+    if return_validation_points:
+        return out, audit, held_out, ground_xy, ground_z
+    return out, audit
 
 

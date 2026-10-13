@@ -47,9 +47,9 @@ The separate-site holdout comparison quantifies agreement after each calibration
 | 2024-11-18 | Field site 01 → field site 02 | SNR ≥ 3 | 8,623 / 8,623 | -37.981 | -0.048 | 0.469 | 0.092 | 0.212 |
 | 2024-11-18 | Field site 01 → field site 02 | SNR ≥ 5 | 6,615 / 6,615 | -37.979 | -0.037 | 0.097 | 0.087 | 0.190 |
 
-## Gross-error behavior
+## Large reference-return-to-ground differences
 
-The central and tail metrics tell different stories. For the November 12 SNR ≥ 3 holdout, 20 of 4,274 residuals exceed 2 m (0.47%); none of the 445 SNR ≥ 5 residuals exceed 2 m. For November 18, one of 8,623 SNR ≥ 3 residuals exceeds 2 m (0.012%), and none of the 6,615 SNR ≥ 5 residuals do. In the all-valid populations, the corresponding exceedance counts are 5,646/14,885 for November 12 and 150/8,924 for November 18. Thus the lower-SNR and all-valid RMSE values are dominated by long tails even where the central residual distributions are tight. Gross cases are retained and listed with pulse, sweep, track, coordinates, SNR, and local-reference support; they were not removed to improve the metrics. The spatial residual map caps its diverging color scale at the absolute 97th percentile to show central patterns; every residual above 2 m remains outlined and listed in the linked table.
+The central and tail metrics tell different stories. For the November 12 SNR ≥ 3 holdout, 20 of 4,274 reference-return-to-ground residuals exceed 2 m (0.47%); none of the 445 SNR ≥ 5 residuals exceed 2 m. For November 18, one of 8,623 SNR ≥ 3 residuals exceeds 2 m (0.012%), and none of the 6,615 SNR ≥ 5 residuals do. In the all-valid populations, the corresponding exceedance counts are 5,646/14,885 for November 12 and 150/8,924 for November 18. Thus the lower-SNR and all-valid RMSE values are dominated by long tails even where the central residual distributions are tight. These are large differences between CASALS reference-return height and the local 3DEP class-2 surface; they do not establish that a CASALS pulse is a ground return or that a difference is a confirmed ground-elevation error. Large cases remain listed with pulse, sweep, track, coordinates, SNR, and local-reference support. The spatial residual map caps its diverging color scale at the absolute 97th percentile to show central patterns; every difference above 2 m remains outlined and listed in the linked table.
 
 ## Vertical-datum audit and selected provisional path
 
@@ -102,7 +102,76 @@ The selected configuration is C7, with status `PROVISIONAL_NOT_DATUM_VERIFIED`. 
 
 On the independent-test pulses, the SNR ≥ 5 C7 comparison has a −1.67 m bias and 1.67 m RMSE on November 12 (445 / 478 eligible, 93.1% support) and a −1.65 m bias and 1.65 m RMSE on November 18 (6,615 / 6,615). The central NMAD is about 0.088 m for both. Native C0 remains about −37.6 to −38.0 m from the target. C8 remains a separate site-calibrated baseline: its current SNR ≥ 5 RMSE is 0.113 m and 0.098 m, compared with the previous full-calibration values of 0.132 m and 0.097 m. The differences are −0.019 m and +0.001 m. This is a descriptive comparison: the current C8 offset uses half the calibration ROI, whereas the earlier analysis used the full calibration ROI, and the common-support rules differ.
 
-The SNR ≥ 3 and all-valid test tails remain visible in the saved metrics and figures. C7 SNR ≥ 3 RMSE is 8.65 m on November 12 and 1.73 m on November 18; the all-valid RMSE is 83.84 m and 19.06 m. These high values arise from low-SNR gross errors and are not removed. C7's lower central NMAD does not certify absolute vertical accuracy.
+The SNR ≥ 3 and all-valid test tails remain visible in the saved metrics and figures. C7 SNR ≥ 3 RMSE is 8.65 m on November 12 and 1.73 m on November 18; the all-valid RMSE is 83.84 m and 19.06 m. These high values arise from retained large residuals, many at low SNR. C7's lower central NMAD does not certify absolute vertical accuracy.
+
+## Ground-Surface Evaluation versus Reference-Return Height
+
+This supplemental analysis evaluates whether existing matched CASALS pulse centers fall in a reviewed likely-ground target area and have nearby 3DEP class-2 support. It reuses the existing matched rows, applies C7 only as the already selected provisional coordinate transformation, and re-queries the local class-2 surface at transformed coordinates. It does not classify the origin of an individual CASALS `Refh` return. The reference is a local plane fit to 3DEP LAZ class-2 points, not an official DEM raster. All residuals below are `C7 transformed Refh − re-queried local plane`; they are conditional comparisons, not certified elevation accuracy.
+
+The context population contains 118,220 matched pulse centers: 61,498 in non-ground contexts, 53,742 in uncertain contexts, and 2,980 in road-core target areas. The two reviewed road polygons contain 3,820 November 12 and 1,040 November 18 pulse centers. Inward edge trims of 2.0 m and 0.5 m, respectively, leave 2,375 and 605 geometry-only target-eligible centers; the remaining 1,445 and 435 centers stay uncertain because they fall in the road boundary band. Canopy, water, open-field, and other non-road contexts remain descriptive context or uncertain cases rather than presumed ground returns. Every context row records `return_origin_status=unresolved_for_CASALS_Refh`.
+
+| Acquisition | NAIP acquisition date (age at CASALS) | Road pulse centers | Inward trim | Ground-target-eligible centers | Boundary centers retained as uncertain |
+|---|---:|---:|---:|---:|---:|
+| 2024-11-12 | 2023-06-02 (529 days) | 3,820 | 2.0 m | 2,375 | 1,445 |
+| 2024-11-18 | 2022-06-15 (887 days) | 1,040 | 0.5 m | 605 | 435 |
+
+| Acquisition | H5 pulses | Existing matched reference rows | Original road-polygon centers | Interior target | Boundary uncertain | Original class-2 support rejected | Original support accepted in guard gap | Additional C7/candidate support rejection | Final common C0–C7 support |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 2024-11-12 | 3,604,480 | 3,559,190 | 3,820 | 2,375 | 1,445 | 1,962 | 24 | 0 | 389 |
+| 2024-11-18 | 3,604,480 | 3,598,281 | 1,040 | 605 | 435 | 352 | 33 | 0 | 220 |
+
+The 24 and 33 originally supported guard-gap points are excluded by the frozen spatial split, not by C7. Among the remaining non-guard target points, every original-surface-acceptable point also passes the C7 and common-candidate support checks (389/389 and 220/220). The main loss is the original local-surface support gate; the SNR-specific test denominators below show the further signal-quality stratification without treating SNR as ground classification.
+
+NAIP is historical scene context and is not a contemporaneous ground label. Geometry-only road roles were frozen before any candidate residuals: November 12 has 165 calibration, 918 candidate-selection, 161 guard-gap, and 1,131 independent-test pulses; November 18 has 62, 204, 114, and 225. The split uses a two-meter total guard gap at each one-third axis boundary. The segments are portions of one road per granule, so the test portions are spatially separated but are not independent sites. C0–C7 common support includes 389 pulses on November 12 and 220 on November 18. At SNR ≥ 3, common support covers 54/453 (11.9%) and 138/195 (70.8%) of test target pulses; at SNR ≥ 5 it covers 14/84 (16.7%) and 70/117 (59.8%). These low and date-dependent support fractions constrain interpretation.
+
+| Granule | SNR stratum | C7 common-support test n / eligible target denominator | RMSE (m) | NMAD (m) | P95 absolute difference (m) | Maximum absolute difference (m) |
+|---|---|---:|---:|---:|---:|---:|
+| 2024-11-12 | All valid Refh | 147 / 1,131 | 97.810 | 0.318 | 213.815 | 232.336 |
+| 2024-11-12 | SNR ≥ 3 | 54 / 453 | 11.533 | 0.126 | 2.062 | 83.690 |
+| 2024-11-18 | All valid Refh | 165 / 225 | 20.570 | 0.114 | 2.108 | 136.375 |
+| 2024-11-18 | SNR ≥ 3 | 138 / 195 | 1.596 | 0.110 | 1.797 | 2.062 |
+
+For the SNR ≥ 3 common-support test population, candidate metrics are:
+
+| Granule | Candidate | n | Bias (m) | RMSE (m) | NMAD (m) |
+|---|---|---:|---:|---:|---:|
+| 2024-11-12 | C0 | 54 | −36.149 | 37.943 | 0.127 |
+| 2024-11-12 | C1 | 54 | 0.686 | 11.551 | 0.126 |
+| 2024-11-12 | C3 | 54 | 0.706 | 11.552 | 0.126 |
+| 2024-11-12 | C7 | 54 | −0.250 | 11.533 | 0.126 |
+| 2024-11-12 | C8 | 54 | −160.222 | 160.636 | 0.127 |
+| 2024-11-18 | C0 | 138 | −37.964 | 37.965 | 0.110 |
+| 2024-11-18 | C1 | 138 | −0.563 | 0.575 | 0.110 |
+| 2024-11-18 | C3 | 138 | −0.558 | 0.569 | 0.110 |
+| 2024-11-18 | C7 | 138 | −1.591 | 1.596 | 0.110 |
+| 2024-11-18 | C8 | 138 | 0.139 | 0.180 | 0.110 |
+
+At SNR ≥ 5, C7 bias/RMSE/NMAD is −1.823/1.826/0.046 m on November 12 (n=14) and −1.571/1.575/0.111 m on November 18 (n=70). The small November 12 sample and low coverage limit that comparison. The complete C0–C8 table for all-valid, SNR ≥ 3, and SNR ≥ 5 populations is saved in `ground_conditional_test_metrics.csv`.
+
+The central distributions are tight compared with the tail-sensitive RMSE, especially on November 12. The retained November 12 maximum is a +83.690 m difference in the SNR ≥ 3 subset; in the all-valid subset, the maximum absolute difference is 232.336 m. On November 18 the all-valid maximum is 136.375 m. These large cases remain in all summaries. Their local class-2 neighborhoods meet the configured support and roughness gates (the reviewed examples have 32 nearby class-2 points and slope below 5°), but this does not resolve nominal footprint mismatch, surface/return mixture, or the actual origin of `Refh`. The >2 m review list is a display aid, not an exclusion rule.
+
+Crosswalking the preserved historical SNR ≥ 3 empirical-holdout large-difference lists against the reviewed context layer places all 20 November 12 cases in `open_field_12_02` and the one November 18 case in `open_field_02`; all 21 are `uncertain`, and none is in a `non_ground_context` polygon. The old cases therefore are not confirmed canopy returns. The field ROIs remain uncertain because the older NAIP imagery cannot establish crop or grass height at the 2024 acquisition. The pulse-level crosswalk and original case-table hashes are recorded under the new ground-aware output.
+
+A companion descriptive pass applies the existing provisional C7 transform to all 118,220 reviewed context pulses and queries the already-built class-2 training grid; it does not reread the LAZ. C7 XY matches the existing EPSG:6347 coordinates in this sample. The local surface passes its quality gate for 40,931/70,932 November 12 and 40,642/47,288 November 18 context pulses. These context-level differences still do not establish return origin or canopy height. Selected non-road ROIs show the support and spread:
+
+| Acquisition / ROI | Context pulses / C7-supported | C0 median (m) | C7 median / RMSE / NMAD (m) | C8 median (m) |
+|---|---:|---:|---:|---:|
+| 2024-11-12 `open_field_12_01` | 17,974 / 17,974 | −37.663 | −1.769 / 62.044 / 0.208 | −161.736 |
+| 2024-11-12 `open_field_12_02` | 17,171 / 14,885 | −37.564 | −1.661 / 83.843 / 0.296 | −161.637 |
+| 2024-11-12 `tree_canopy_12_01` | 31,314 / 6,944 | −26.972 | +4.240 / 105.751 / 94.048 | −151.045 |
+| 2024-11-12 `water_pond_12_01` | 653 / 0 | −38.168 | no supported C7 surface | −162.242 |
+| 2024-11-18 `open_field_01` | 7,140 / 7,140 | −37.980 | −1.595 / 15.583 / 0.096 | +0.123 |
+| 2024-11-18 `tree_canopy_01` | 3,503 / 3,257 | −25.180 | +11.101 / 32.226 / 2.415 | +12.923 |
+| 2024-11-18 `tree_canopy_02` | 4,329 / 4,329 | −26.075 | +10.324 / 40.512 / 1.960 | +12.028 |
+| 2024-11-18 `tree_canopy_18_03` | 22,352 / 16,523 | −37.896 | −1.549 / 21.928 / 0.241 | +0.208 |
+
+C0 uses the original-XY class-2 plane; C7 uses the transformed-height value and transformed-XY plane, only where its surface is accepted. C8 uses the same original-XY plane with the road-calibration offset, so its medians inherit the +124.073 m November 12 offset (n=94) or −38.103 m November 18 offset (n=1). They are empirical diagnostics, not transferable land-cover corrections. The differences among forest ROIs, including the edge-mixed `tree_canopy_18_03`, do not support a general canopy-return or land-cover effect. Full per-ROI metrics, pulse-level values, and transform/support audit are saved in [`descriptive_reference_return_to_ground_metrics.csv`](../outputs/notebooks/10_3dep_elevation_validation/ground_aware/descriptive_reference_return_to_ground_metrics.csv), [`descriptive_reference_return_to_ground_population.parquet`](../outputs/notebooks/10_3dep_elevation_validation/ground_aware/descriptive_reference_return_to_ground_population.parquet), and [`descriptive_context_c7_query_audit.json`](../outputs/notebooks/10_3dep_elevation_validation/ground_aware/descriptive_context_c7_query_audit.json).
+
+An empirical C8 offset was fitted on calibration pulses only, but calibration support is inadequate and the diagnostic does not transfer reliably: November 12 uses 94 common-support calibration pulses for a +124.073 m offset and gives 160.636 m SNR ≥ 3 test RMSE; November 18 uses only one calibration pulse for a −38.103 m offset, so its 0.180 m test RMSE is not a meaningful generalization estimate. C8 remains an empirical diagnostic and is not a datum candidate.
+
+The separate held-out class-2 interpolation check is very small near the reviewed contexts: November 12 has 3 points (2 plane-fit valid, 1 passing surface quality), with 0.0138 m plane error and 0.0175 m local-median error on the single accepted point; November 18 has 6 points (5 valid and accepted), with 0.0199 m plane RMSE and 0.0330 m local-median RMSE. This checks local interpolation against a few withheld reference points only. It does not validate CASALS heights or the vertical frame.
+
+The new figures show the reviewed context and road cores on NAIP, class-2 neighborhoods, C0–C7 comparison, full residual tails, four fixed waveform examples, and test-track elevation profiles: [scene overview](../outputs/notebooks/10_3dep_elevation_validation/ground_aware/figures/ground_scene_overview.png), [reference support](../outputs/notebooks/10_3dep_elevation_validation/ground_aware/figures/reference_ground_context.png), [candidate comparison](../outputs/notebooks/10_3dep_elevation_validation/ground_aware/figures/ground_candidate_comparison.png), [residual distributions](../outputs/notebooks/10_3dep_elevation_validation/ground_aware/figures/ground_residual_distributions.png), [waveform cases](../outputs/notebooks/10_3dep_elevation_validation/ground_aware/figures/ground_vs_nonground_cases.png), and [elevation profile](../outputs/notebooks/10_3dep_elevation_validation/ground_aware/figures/ground_elevation_profile.png). See the [ground-aware result folder](../outputs/notebooks/10_3dep_elevation_validation/ground_aware/), including the [context manifest](../outputs/notebooks/10_3dep_elevation_validation/ground_aware/ground_context_manifest.csv), [population summary](../outputs/notebooks/10_3dep_elevation_validation/ground_aware/ground_context_population_summary.csv), [frozen spatial split](../outputs/notebooks/10_3dep_elevation_validation/ground_aware/ground_spatial_split_manifest.csv), [test metrics](../outputs/notebooks/10_3dep_elevation_validation/ground_aware/ground_conditional_test_metrics.csv), [ground-target large-difference review list](../outputs/notebooks/10_3dep_elevation_validation/ground_aware/large_ground_target_residuals_for_review.csv), [historical large-difference context crosswalk](../outputs/notebooks/10_3dep_elevation_validation/ground_aware/historical_large_difference_context_crosswalk.csv), and [class-2 interpolation check](../outputs/notebooks/10_3dep_elevation_validation/ground_aware/independent_class2_interpolation_check.csv). The per-file SHA-256 manifest is stored in the same folder.
 
 ## Land-cover waveform response
 
@@ -141,7 +210,7 @@ These are within-granule, site-specific descriptions. The 2024-11-12 east-field 
 
 ## Representative examples and artifacts
 
-Notebook 10's earlier real-pulse boards pair local 3DEP support, raw RX waveforms, stored heights, residuals, and fixed pulse/track/sweep identifiers. The new datum-comparison profile uses the independent-test track with the most SNR ≥ 3 supported pulses and plots those pulses against the re-queried 3DEP local plane; the error maps and SNR figure retain the full test support and gross tails. Notebook 11's gallery pairs actual NAIP patches with reread H5 waveforms, background mean, raw maximum, any qualified candidate peak, SNR, and fixed pulse identifiers. NAIP overlays use nominal H5 centers; image-to-footprint registration is not calibrated.
+Notebook 10's earlier real-pulse boards pair local 3DEP support, raw RX waveforms, stored heights, residuals, and fixed pulse/track/sweep identifiers. The new four-case board shows the minimum and maximum C7 residuals from common-support road test pulses, the largest supported canopy-context difference, and a supported uncertain road-boundary pulse nearest the fixed target edge. Each case includes its NAIP patch, nearby class-2 grid support, raw waveform, pulse/track/sweep identity, SNR, and separately labeled C0, provisional C7, and empirical C8 differences where available. Selection is deterministic and does not use waveform shape or alter evaluation membership. The new road profile uses geometry-derived distance and retains the full test support and long tails. Notebook 11's gallery pairs actual NAIP patches with reread H5 waveforms, background mean, raw maximum, any qualified candidate peak, SNR, and fixed pulse identifiers. NAIP overlays use nominal H5 centers; image-to-footprint registration is not calibrated.
 
 - [Notebook 10](../notebooks/10_3dep_elevation_validation.ipynb) and [Notebook 11](../notebooks/11_landcover_lidar_response.ipynb)
 - [Current datum-comparison summary](../outputs/notebooks/10_3dep_elevation_validation/datum_comparison/datum_comparison_summary.json), [selected configuration](../outputs/notebooks/10_3dep_elevation_validation/datum_comparison/selected_vertical_configuration.json), [candidate metrics](../outputs/notebooks/10_3dep_elevation_validation/datum_comparison/vertical_candidate_metrics.csv), [final elevation metrics](../outputs/notebooks/10_3dep_elevation_validation/datum_comparison/final_elevation_metrics.csv), [H5 height audit](../outputs/notebooks/10_3dep_elevation_validation/datum_comparison/casals_height_metadata_audit.json), [3DEP Z provenance audit](../outputs/notebooks/10_3dep_elevation_validation/datum_comparison/3dep_z_provenance_audit.json), and [artifact SHA-256 manifest](../outputs/notebooks/10_3dep_elevation_validation/datum_comparison/datum_comparison_artifact_manifest.csv)
@@ -158,4 +227,4 @@ Other limits are the two-granule scope, local interpolation and support criteria
 
 ## Execution and preservation record
 
-Notebook 10 was executed from a clean `casals-showcase` kernel after the GEOID18 operation was pinned, and its embedded figures and tables were visually inspected. Notebook 11 and both notebooks' existing `visual_revision/` folders were left untouched by this vertical-datum task. Current comparison outputs, downloaded public metadata, sampled EPT nodes, and figures are confined to `outputs/notebooks/10_3dep_elevation_validation/datum_comparison/`; the artifact manifest records file sizes and SHA-256 hashes. The original H5/LAZ files, production pipeline, and notebooks 00–09 were not edited by this task.
+Notebooks 10 and 11 were each executed from a clean `casals-showcase` kernel. Notebook 10's embedded output and all six ground-aware figures were visually inspected; its new outputs are confined to `outputs/notebooks/10_3dep_elevation_validation/ground_aware/`. The earlier Notebook 10 `revised/`, `visual_revision/`, and `datum_comparison/` artifacts remained unchanged. Notebook 11 was rerun into its standard `visual_revision/` output folder, and its NAIP context, waveform gallery, ROI summary, morphology, and matched-track figures were visually inspected. The preflight hashes and byte sizes of all 95 protected source and Notebook 10 result files match after execution. The full test suite passed (145 tests), `compileall` passed, and `git diff --check` passed. The original H5/LAZ files, production pipeline, and notebooks 00–09 were not edited.

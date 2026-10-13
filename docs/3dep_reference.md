@@ -50,13 +50,16 @@ is not equivalent to choosing a formula by residual fit. Unchanged Z can be
 legitimate between verified frames with the same vertical datum; a 2D CRS
 cannot establish this.
 
-Strict XYZ conversion is currently blocked by CASALS source-frame confirmation,
-historical clip Z audit, and missing necessary PROJ grids. Local AOI queries
-report `best_available=False`; unavailable grid alternatives include
-`us_noaa_g1999u08.tif`, GEOID18 `us_noaa_g2018u0.tif`, and NADCON grids.
-This list is not a prescription to install every alternative: re-audit the
-operation after confirming the source realization and intended datum path.
-No grids were downloaded automatically.
+A complete, non-ballpark GEOID18-constrained XYZ operation is available in the
+current environment and is recorded as C7 in Notebook 10. C7 uses the
+`us_noaa_g2018u0.tif` grid tied to the 3DEP product metadata. It remains
+`PROVISIONAL_NOT_DATUM_VERIFIED` because the CASALS source realization,
+coordinate epoch, and height-processing conventions are unknown. This is a
+conditional comparison path, not verified absolute elevation accuracy. The
+Maryland vendor XML also contains a generic GEOID12B entry that conflicts with
+the product summary's GEOID18 evidence. Higher-ranked alternatives include an
+unavailable GEOID99 grid; unavailable alternatives do not invalidate the
+selected available GEOID18 operation. No grids were downloaded automatically.
 
 ## Transfer and evaluation
 

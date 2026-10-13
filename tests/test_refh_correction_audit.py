@@ -162,7 +162,73 @@ def test_bias_rmse_nmad_and_count_are_correct():
     assert metrics["RMSE_m"] == pytest.approx(np.sqrt(2 / 3))
     assert metrics["NMAD_m"] == pytest.approx(1.4826)
     assert metrics["absolute_P95_m"] == pytest.approx(1.0)
+    assert metrics["cRMSE_m"] == pytest.approx(np.sqrt(2 / 3))
+    assert metrics["median_absolute_residual_m"] == pytest.approx(1.0)
+    assert metrics["MAE_m"] == pytest.approx(2 / 3)
+    assert metrics["residual_P05_m"] == pytest.approx(-0.9)
+    assert metrics["residual_P95_m"] == pytest.approx(0.9)
+    assert metrics["bias_squared_fraction_of_MSE"] + metrics["dispersion_squared_fraction_of_MSE"] == pytest.approx(1.0)
     assert distribution([1, 2, np.nan])["valid_fraction"] == pytest.approx(2 / 3)
+
+
+def test_centered_rmse_uses_population_denominator_and_decomposes_rmse():
+    values = np.array([-1.9, -1.8, -1.6, -1.5])
+    metrics = residual_metrics(values)
+    assert metrics["cRMSE_m"] == pytest.approx(np.std(values, ddof=0))
+    assert metrics["RMSE_m"] ** 2 == pytest.approx(
+        metrics["mean_bias_m"] ** 2 + metrics["cRMSE_m"] ** 2, abs=1e-14
+    )
+
+
+def test_constant_offset_preserves_centered_and_robust_dispersion():
+    values = np.array([-0.21, -0.10, -0.03, 0.02, 0.08, 0.31])
+    baseline = residual_metrics(values)
+    shifted = residual_metrics(values + 4.75)
+    assert shifted["cRMSE_m"] == pytest.approx(baseline["cRMSE_m"])
+    assert shifted["NMAD_m"] == pytest.approx(baseline["NMAD_m"])
+    assert shifted["RMSE_m"] != pytest.approx(baseline["RMSE_m"])
+
+
+def test_nonconstant_sensitivity_can_change_centered_dispersion():
+    baseline_values = np.array([-0.4, -0.2, 0.0, 0.2, 0.4])
+    varied_candidate = add_sensitivity(baseline_values, [-0.2, -0.1, 0.0, 0.1, 0.2])
+    assert residual_metrics(varied_candidate)["cRMSE_m"] > residual_metrics(baseline_values)["cRMSE_m"]
+
+
+def test_single_outlier_increases_classical_dispersion_more_than_nmad():
+    rng = np.random.default_rng(510)
+    baseline = -1.6 + rng.normal(0.0, 0.1, size=1000)
+    outlier = baseline.copy()
+    outlier[-1] = 1.5
+    base_metrics = residual_metrics(baseline)
+    outlier_metrics = residual_metrics(outlier)
+    assert outlier_metrics["cRMSE_m"] - base_metrics["cRMSE_m"] > (
+        outlier_metrics["NMAD_m"] - base_metrics["NMAD_m"]
+    )
+
+
+def test_nonfinite_values_are_counted_and_zero_nmad_ratio_is_not_reported():
+    metrics = residual_metrics([1.0, np.nan, np.inf, -np.inf])
+    assert metrics["n"] == 1
+    assert metrics["n_input"] == 4
+    assert metrics["n_nonfinite"] == 3
+    assert np.isnan(residual_metrics([2.0, 2.0, 2.0])["cRMSE_NMAD_ratio"])
+    empty = residual_metrics([])
+    assert empty["n"] == 0 and empty["n_input"] == 0
+
+
+def test_minus_1p6_bias_with_point_1m_dispersion_does_not_certify_a_physical_correction():
+    rng = np.random.default_rng(20261013)
+    residual = -1.6 + rng.normal(0.0, 0.1, size=20_000)
+    metrics = residual_metrics(residual)
+    centered_as_description = residual - metrics["mean_bias_m"]
+    centered_metrics = residual_metrics(centered_as_description)
+    assert metrics["mean_bias_m"] == pytest.approx(-1.6, abs=0.002)
+    assert metrics["RMSE_m"] == pytest.approx(1.603, abs=0.003)
+    assert metrics["cRMSE_m"] == pytest.approx(0.1, abs=0.002)
+    assert metrics["NMAD_m"] == pytest.approx(0.1, abs=0.003)
+    assert centered_metrics["RMSE_m"] < metrics["RMSE_m"]
+    assert centered_metrics["RMSE_m"] == pytest.approx(metrics["cRMSE_m"])
 
 
 def test_evidence_status_is_closed_and_unknown_cannot_become_verified():

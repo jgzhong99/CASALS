@@ -287,18 +287,48 @@ def add_sensitivity(baseline_residual: Any, delta_height: Any) -> np.ndarray:
 
 
 def residual_metrics(residual: Any) -> dict[str, float | int]:
-    values = np.asarray(residual, dtype=float).ravel()
-    values = values[np.isfinite(values)]
+    raw = np.asarray(residual, dtype=float).ravel()
+    values = raw[np.isfinite(raw)]
+    n_input = int(raw.size)
+    n_nonfinite = n_input - int(values.size)
     if not len(values):
-        return {"n": 0, "mean_bias_m": np.nan, "median_bias_m": np.nan,
-                "RMSE_m": np.nan, "NMAD_m": np.nan, "absolute_P95_m": np.nan}
+        return {
+            "n": 0, "n_input": n_input, "n_nonfinite": n_nonfinite,
+            "mean_bias_m": np.nan, "median_bias_m": np.nan, "RMSE_m": np.nan,
+            "cRMSE_m": np.nan, "NMAD_m": np.nan, "cRMSE_NMAD_ratio": np.nan,
+            "median_absolute_residual_m": np.nan, "MAE_m": np.nan,
+            "median_centered_RMS_m": np.nan,
+            "residual_P05_m": np.nan, "residual_P25_m": np.nan,
+            "residual_P50_m": np.nan, "residual_P75_m": np.nan,
+            "residual_P95_m": np.nan, "absolute_P90_m": np.nan,
+            "absolute_P95_m": np.nan, "bias_squared_fraction_of_MSE": np.nan,
+            "dispersion_squared_fraction_of_MSE": np.nan,
+        }
+    mean = float(values.mean())
     median = float(np.median(values))
+    rmse = float(np.sqrt(np.mean(values ** 2)))
+    centered_rms = float(np.sqrt(np.mean((values - mean) ** 2)))
+    nmad = float(1.4826 * np.median(np.abs(values - median)))
+    bias_fraction = mean ** 2 / rmse ** 2 if rmse > 0 else np.nan
+    dispersion_fraction = centered_rms ** 2 / rmse ** 2 if rmse > 0 else np.nan
     return {
-        "n": int(len(values)), "mean_bias_m": float(values.mean()),
+        "n": int(len(values)), "n_input": n_input, "n_nonfinite": n_nonfinite,
+        "mean_bias_m": mean,
         "median_bias_m": median,
-        "RMSE_m": float(np.sqrt(np.mean(values ** 2))),
-        "NMAD_m": float(1.4826 * np.median(np.abs(values - median))),
+        "RMSE_m": rmse, "cRMSE_m": centered_rms, "NMAD_m": nmad,
+        "cRMSE_NMAD_ratio": centered_rms / nmad if nmad > 0 else np.nan,
+        "median_absolute_residual_m": float(np.median(np.abs(values))),
+        "MAE_m": float(np.mean(np.abs(values))),
+        "median_centered_RMS_m": float(np.sqrt(np.mean((values - median) ** 2))),
+        "residual_P05_m": float(np.percentile(values, 5)),
+        "residual_P25_m": float(np.percentile(values, 25)),
+        "residual_P50_m": median,
+        "residual_P75_m": float(np.percentile(values, 75)),
+        "residual_P95_m": float(np.percentile(values, 95)),
+        "absolute_P90_m": float(np.percentile(np.abs(values), 90)),
         "absolute_P95_m": float(np.percentile(np.abs(values), 95)),
+        "bias_squared_fraction_of_MSE": bias_fraction,
+        "dispersion_squared_fraction_of_MSE": dispersion_fraction,
     }
 
 

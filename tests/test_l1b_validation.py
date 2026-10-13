@@ -5,6 +5,7 @@ import research.l1b_validation as validation
 from research.l1b_validation import (
     candidate_signal_features,
     reference_readiness,
+    sha256_file,
     transform_xyz_with_verified_frames,
     waveform_response_features,
 )
@@ -20,6 +21,17 @@ def _complete_reference_evidence():
         "reference_source_provenance_verified": True,
         "best_required_transform_available": True,
     }
+
+
+def test_sha256_file_streams_file_content(tmp_path):
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"CASALS provenance\x00\xff")
+
+    import hashlib
+
+    assert sha256_file(source, chunk_bytes=4) == hashlib.sha256(source.read_bytes()).hexdigest()
+    with pytest.raises(ValueError, match="chunk_bytes must be positive"):
+        sha256_file(source, chunk_bytes=0)
 
 
 def test_reference_readiness_blocks_missing_or_non_boolean_evidence():

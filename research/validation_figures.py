@@ -585,9 +585,11 @@ def plot_landcover_signal_board(roi_summary: pd.DataFrame, output_path: str | Pa
             ax.scatter(x, center, c=colors, s=42, edgecolors="white", linewidths=0.6, zorder=3)
             if col == 1:
                 for xpos, (_, rec) in zip(x, part.iterrows()):
+                    rate = float(rec[center_col])
+                    text_offset = (0, -9) if rate >= 0.94 else (0, 5)
                     ax.annotate(f"{int(rec.n_candidate_signals):,}/{int(rec.n_roi_pulses):,}",
-                                (xpos, float(rec[center_col])), xytext=(0, 5), textcoords="offset points",
-                                ha="center", fontsize=6)
+                                (xpos, rate), xytext=text_offset, textcoords="offset points",
+                                ha="center", va="top" if rate >= 0.94 else "bottom", fontsize=6)
             labels = [f"{r.roi_id}\n{r.site_id}\nn={int(r.n_roi_pulses):,}" for r in part.itertuples()]
             ax.set_xticks(x, labels, rotation=30, ha="right", fontsize=6.5)
             ax.set(title=title, ylabel=ylabel)

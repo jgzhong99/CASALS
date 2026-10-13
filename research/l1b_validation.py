@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Mapping
 from pathlib import Path
@@ -11,6 +12,18 @@ import numpy as np
 from pyproj import CRS
 from pyproj.transformer import AreaOfInterest, TransformDirection, TransformerGroup
 from scipy.signal import find_peaks, peak_prominences, peak_widths
+
+
+def sha256_file(path: str | Path, *, chunk_bytes: int = 16 * 1024 * 1024) -> str:
+    """Return a streaming SHA-256 digest for a source or result file."""
+
+    if chunk_bytes <= 0:
+        raise ValueError("chunk_bytes must be positive.")
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        for block in iter(lambda: stream.read(chunk_bytes), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 _REFERENCE_EVIDENCE = (
@@ -858,7 +871,6 @@ def build_landcover_response_analysis(
     """Recompute current-H5 ROI responses and write Notebook 11 research tables."""
 
     import gc
-    import hashlib
     import h5py
     import inspect
     import pandas as pd

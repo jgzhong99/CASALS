@@ -777,3 +777,129 @@ def snr_strata(snr: np.ndarray) -> dict[str, np.ndarray]:
         "snr_ge_3": valid & (value >= 3.0),
         "snr_ge_5": valid & (value >= 5.0),
     }
+
+
+def ground_target_c8_support_gate(
+    common_sample: Any,
+    calibration_audit: dict[str, Any],
+    *,
+    minimum_pulses: int = 30,
+    minimum_spatial_blocks: int = 3,
+    minimum_snr: float = 5.0,
+) -> Any:
+    """Audit archived road-target C8 fits using common-support high-SNR pulses."""
+
+    import pandas as pd
+
+    required = {"granule_id", "research_role", "refh_snr", "axis_distance_m"}
+    if not required.issubset(common_sample.columns):
+        raise ValueError(f"C8 support sample is missing columns: {sorted(required - set(common_sample.columns))}")
+    rows = []
+    for granule_id, audit in calibration_audit["granules"].items():
+        calibration = common_sample.loc[
+            (common_sample.granule_id.astype(str) == str(granule_id))
+            & common_sample.research_role.eq("calibration_offset")
+        ].copy()
+        if len(calibration) != int(audit["calibration_common_n"]):
+            raise ValueError(f"C8 calibration support count differs from its audit: {granule_id}")
+        high_quality = calibration.refh_snr.ge(minimum_snr) & calibration.refh_snr.notna()
+        if len(calibration) and calibration.axis_distance_m.nunique() > 1:
+            edges = np.linspace(calibration.axis_distance_m.min(), calibration.axis_distance_m.max(), minimum_spatial_blocks + 1)
+            block_ids = np.digitize(calibration.axis_distance_m.to_numpy(), edges[1:-1])
+            supported_blocks = int(np.unique(block_ids[high_quality.to_numpy()]).size)
+        else:
+            supported_blocks = int(high_quality.any())
+        support_passes = int(high_quality.sum()) >= minimum_pulses and supported_blocks >= minimum_spatial_blocks
+        rows.append({
+            "granule_id": str(granule_id),
+            "archived_calibration_common_n": int(len(calibration)),
+            "high_quality_common_n_snr_ge_5": int(high_quality.sum()),
+            "spatial_blocks_with_high_quality_support": supported_blocks,
+            "minimum_common_pulses": int(minimum_pulses),
+            "minimum_spatial_blocks": int(minimum_spatial_blocks),
+            "archived_offset_m_failure_diagnostic_only": float(audit["calibration_offset_m"]),
+            "status": "SUPPORTED" if support_passes else "INSUFFICIENT_CALIBRATION_SUPPORT",
+        })
+    return pd.DataFrame(rows)
+
+
+def load_verified_ground_aware_outputs(project_root: str | Path) -> dict[str, Any]:
+    """Verify source and artifact identities, then load saved ground-aware tables read-only."""
+
+    import json
+
+    import numpy as np
+    import pandas as pd
+
+    from research.l1b_validation import sha256_file
+
+    root = Path(project_root)
+    visual = root / "outputs/notebooks/10_3dep_elevation_validation/visual_revision"
+    datum = root / "outputs/notebooks/10_3dep_elevation_validation/datum_comparison"
+    output = root / "outputs/notebooks/10_3dep_elevation_validation/ground_aware"
+    source_manifest = json.loads((visual / "input_manifest.json").read_text(encoding="utf-8"))
+    ground_provenance = json.loads((output / "ground_aware_provenance.json").read_text(encoding="utf-8"))
+    landcover_manifest = json.loads((
+        root / "outputs/notebooks/11_landcover_lidar_response/visual_revision/input_manifest.json"
+    ).read_text(encoding="utf-8"))
+
+    for stem, expected in source_manifest["inputs"].items():
+        source_h5 = root / expected["h5_path"]
+        source_laz = root / expected["laz_path"]
+        h5_sha = sha256_file(source_h5)
+        laz_sha = sha256_file(source_laz)
+        ground_input = ground_provenance["inputs"][stem]
+        landcover_input = landcover_manifest["h5_inputs"][stem]
+        if (source_h5.stat().st_size != expected["h5_size_bytes"]
+                or h5_sha != expected["h5_sha256"]
+                or h5_sha != ground_input["h5_sha256"]
+                or h5_sha != landcover_input["sha256"]):
+            raise RuntimeError(f"H5 identity differs from saved analyses: {stem}")
+        if (source_laz.stat().st_size != expected["laz_size_bytes"]
+                or laz_sha != expected["laz_sha256"]
+                or laz_sha != ground_input["laz_sha256"]):
+            raise RuntimeError(f"3DEP LAZ identity differs from saved analysis: {stem}")
+
+    artifact_manifest = pd.read_csv(output / "ground_aware_artifact_manifest.csv")
+    for artifact in artifact_manifest.itertuples(index=False):
+        artifact_path = output / artifact.path
+        if (not artifact_path.is_file()
+                or artifact_path.stat().st_size != artifact.size_bytes
+                or sha256_file(artifact_path) != artifact.sha256):
+            raise RuntimeError(f"Saved ground-aware artifact failed its hash check: {artifact.path}")
+
+    context = pd.read_csv(output / "ground_context_population_summary.csv")
+    interpolation_samples = pd.read_csv(output / "independent_class2_interpolation_check.csv")
+    interpolation_rows = []
+    for granule_id, sample in interpolation_samples.groupby("granule_id", sort=True):
+        accepted = sample.loc[sample.surface_acceptable]
+        interpolation_rows.append({
+            "granule_id": granule_id,
+            "held-out class-2 points": len(sample),
+            "plane-fit valid": int(sample.plane_fit_valid.sum()),
+            "quality accepted": len(accepted),
+            "plane RMSE (m)": float(np.sqrt(np.mean(accepted.plane_prediction_error_m ** 2))) if len(accepted) else np.nan,
+            "local-median RMSE (m)": float(np.sqrt(np.mean(accepted.median_prediction_error_m ** 2))) if len(accepted) else np.nan,
+        })
+
+    calibration_audit = json.loads((output / "ground_empirical_alignment_audit.json").read_text(encoding="utf-8"))
+    c8_gate = ground_target_c8_support_gate(
+        pd.read_parquet(output / "ground_c0_c7_common_sample.parquet"), calibration_audit,
+    )
+    c8_gate_path = visual / "ground_c8_calibration_support_gate.csv"
+    c8_gate.to_csv(c8_gate_path, index=False)
+    return {
+        "summary": json.loads((output / "ground_aware_summary.json").read_text(encoding="utf-8")),
+        "split_manifest": pd.read_csv(output / "ground_spatial_split_manifest.csv"),
+        "candidate_metrics": pd.read_csv(output / "ground_conditional_candidate_metrics.csv"),
+        "test_metrics": pd.read_csv(output / "ground_conditional_test_metrics.csv"),
+        "descriptive_metrics": pd.read_csv(output / "descriptive_reference_return_to_ground_metrics.csv"),
+        "context_population_summary": context,
+        "interpolation_summary": pd.DataFrame(interpolation_rows),
+        "c8_support_gate": c8_gate,
+        "artifact_count": int(len(artifact_manifest)),
+        "output_root": output,
+        "visual_revision_root": visual,
+        "datum_output_root": datum,
+        "selected_configuration": json.loads((datum / "selected_vertical_configuration.json").read_text(encoding="utf-8")),
+    }

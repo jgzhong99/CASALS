@@ -10,6 +10,7 @@ from research.elevation_comparison import (
     class2_ground_points,
     elevation_metrics,
     empirical_alignment_metrics,
+    ground_target_c8_support_gate,
     horizontal_transform_audit,
     interpolate_ground_surface,
     snr_strata,
@@ -184,3 +185,28 @@ def test_snr_sensitivity_masks_are_nested_and_keep_all_valid():
     assert masks["snr_ge_3"].sum() == 3
     assert masks["snr_ge_5"].sum() == 1
     assert np.all(masks["snr_ge_5"] <= masks["snr_ge_3"])
+
+
+def test_ground_target_c8_gate_requires_pulse_count_and_spatial_blocks():
+    supported = pd.DataFrame({
+        "granule_id": ["supported"] * 30,
+        "research_role": ["calibration_offset"] * 30,
+        "refh_snr": [6.0] * 30,
+        "axis_distance_m": np.arange(30, dtype=float),
+    })
+    sparse = pd.DataFrame({
+        "granule_id": ["sparse"],
+        "research_role": ["calibration_offset"],
+        "refh_snr": [4.9],
+        "axis_distance_m": [1.0],
+    })
+    audit = {"granules": {
+        "supported": {"calibration_common_n": 30, "calibration_offset_m": 1.0},
+        "sparse": {"calibration_common_n": 1, "calibration_offset_m": 99.0},
+    }}
+
+    gate = ground_target_c8_support_gate(pd.concat([supported, sparse], ignore_index=True), audit)
+    rows = gate.set_index("granule_id")
+    assert rows.loc["supported", "status"] == "SUPPORTED"
+    assert rows.loc["supported", "spatial_blocks_with_high_quality_support"] == 3
+    assert rows.loc["sparse", "status"] == "INSUFFICIENT_CALIBRATION_SUPPORT"

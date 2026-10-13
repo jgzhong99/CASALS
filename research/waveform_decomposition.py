@@ -100,6 +100,22 @@ def _peak_seeds(
     return unique
 
 
+def _check_model_admissibility(model: dict[str, Any], noise_sigma: float) -> tuple[bool, str]:
+    """Empirical shape screens, not calibrated physical-return resolution."""
+    if not model.get("success", False):
+        return False, "optimizer_failed"
+    if model["chosen_k"] == 0:
+        return True, "baseline_only"
+    if model.get("boundary_hit_components"):
+        return False, "boundary_hit"
+    if any(c["amplitude"] < 2.0 * noise_sigma for c in model["components"]):
+        return False, "sub_noise_amplitude"
+    if any(p["center_distance_bins"] < p["combined_sigma_bins"]
+           for p in model["pairwise_component_overlap"]):
+        return False, "excessive_component_overlap"
+    return True, "admissible"
+
+
 def fit_gaussian_components(
     waveform: Sequence[float],
     baseline: float,
@@ -110,9 +126,11 @@ def fit_gaussian_components(
 ) -> dict[str, Any]:
     """Fit baseline-only and 1..K Gaussian models on identical selected bins.
 
-    BIC uses ``n*log(RSS/n) + p*log(n)`` with ``p=2+3*K`` (the baseline,
-    Gaussian terms, and unknown residual variance). Failed optimizer runs are
-    retained in ``models`` but cannot be selected. The components describe
+    The supplied global baseline is fixed. BIC uses ``n*log(RSS/n) + p*log(n)``
+    with ``p=1+3*K`` (Gaussian terms and unknown residual variance), conditional
+    on that baseline. A six-unit BIC improvement per added component is required
+    among admissible models. Raw BIC selection and rejected models are retained.
+    The components describe
     waveform shape; they are not validated physical returns.
     """
 
@@ -133,22 +151,24 @@ def fit_gaussian_components(
                 or np.unique(indices).size != indices.size):
             raise ValueError("fit_indices must contain at least five unique in-range bins")
     x_fit, y_fit = x[indices], y[indices]
-    seeds = _peak_seeds(y - base, sigma_noise, detector_peaks)
+    seed_signal = y - base
+    seed_signal[np.setdiff1d(np.arange(y.size), indices)] = 0.0
+    seeds = _peak_seeds(seed_signal, sigma_noise, detector_peaks)
     n = int(indices.size)
-    lower_baseline, upper_baseline = base - 3.0 * sigma_noise, base + 3.0 * sigma_noise
 
     def fit_metrics(params: np.ndarray, count: int) -> dict[str, Any]:
         fitted = _gaussian_sum(x, params, count)
         fit_residual = y_fit - _gaussian_sum(x_fit, params, count)
         residual = y - fitted
         rss = max(float(np.dot(fit_residual, fit_residual)), np.finfo(float).tiny)
-        parameter_count = 2 + 3 * count
+        parameter_count = 1 + 3 * count
         return {
             "success": True,
             "fit_status": "ok" if count else "baseline_only",
             "chosen_k": count,
             "k": count,
             "baseline": float(params[0]),
+            "baseline_fixed": True,
             "noise_sigma": sigma_noise,
             "rss": rss,
             "rmse": float(np.sqrt(rss / n)),
@@ -170,12 +190,12 @@ def fit_gaussian_components(
             "distance_to_upper": float(high - value),
         }
 
-    baseline0 = float(np.clip(np.mean(y_fit), lower_baseline, upper_baseline))
+    baseline0 = base
     k0 = fit_metrics(np.asarray([baseline0]), 0)
     k0.update({
-        "optimizer_status": "closed_form_least_squares",
+        "optimizer_status": "fixed_baseline",
         "optimizer_success": True,
-        "boundary_diagnostics": {"baseline": bound_state(baseline0, lower_baseline, upper_baseline)},
+        "boundary_diagnostics": {"baseline": {"fixed": True}},
         "boundary_hit_components": [],
         "components": [],
         "attempts": [],
@@ -187,8 +207,8 @@ def fit_gaussian_components(
 
     for count in range(1, search_cap + 1):
         chosen_seeds = seeds[:count]
-        lower = [lower_baseline]
-        upper = [upper_baseline]
+        lower = [base]
+        upper = [base]
         for center, _, width in chosen_seeds:
             radius = max(5.0, 2.0 * width)
             lower.extend([0.0, max(0.0, center - radius), 0.6])
@@ -199,7 +219,7 @@ def fit_gaussian_components(
 
         # A nominal start and one small deterministic center/width perturbation.
         for start_index, offset in enumerate((0.0, 0.2)):
-            initial = [float(np.clip(base, lower_baseline, upper_baseline))]
+            initial = [base]
             for center, amplitude, width in chosen_seeds:
                 radius = max(5.0, 2.0 * width)
                 center0 = float(np.clip(center + offset * width, max(0.0, center - radius) + 1e-8,
@@ -208,15 +228,15 @@ def fit_gaussian_components(
             initial_array = np.asarray(initial, dtype=np.float64)
 
             def residuals(params: np.ndarray) -> np.ndarray:
-                return _gaussian_sum(x_fit, params, count) - y_fit
+                return _gaussian_sum(x_fit, np.r_[base, params], count) - y_fit
 
             try:
                 result = least_squares(
-                    residuals, initial_array, bounds=(lower_array, upper_array), max_nfev=2000,
+                    residuals, initial_array[1:], bounds=(lower_array[1:], upper_array[1:]), max_nfev=2000,
                 )
-                params = np.asarray(result.x, dtype=np.float64)
+                params = np.r_[base, np.asarray(result.x, dtype=np.float64)]
                 finite_params = params.shape == initial_array.shape and np.isfinite(params).all()
-                rss = float(np.sum(residuals(params) ** 2)) if finite_params else None
+                rss = float(np.sum(residuals(params[1:]) ** 2)) if finite_params else None
                 attempt = {
                     "start_index": start_index, "optimizer_success": bool(result.success),
                     "optimizer_status": int(result.status), "message": str(result.message),
@@ -224,7 +244,7 @@ def fit_gaussian_components(
                 }
                 if bool(result.success) and finite_params and rss is not None and np.isfinite(rss):
                     metrics = fit_metrics(params, count)
-                    boundary = {"baseline": bound_state(params[0], lower_baseline, upper_baseline)}
+                    boundary = {"baseline": {"fixed": True}}
                     component_boundaries = []
                     components = []
                     for component_index in range(count):
@@ -265,7 +285,7 @@ def fit_gaussian_components(
                 "chosen_k": count, "success": False, "optimizer_success": False,
                 "k": count,
                 "fit_status": "optimizer_failed", "optimizer_status": None,
-                "rss": None, "rmse": None, "bic": None, "parameter_count": 2 + 3 * count,
+                "rss": None, "rmse": None, "bic": None, "parameter_count": 1 + 3 * count,
                 "fit_sample_count": n, "fit_sample_fraction": float(n / y.size),
                 "attempts": attempts, "components": [], "boundary_diagnostics": {},
                 "boundary_hit_components": [],
@@ -283,23 +303,40 @@ def fit_gaussian_components(
                     "component_pair": [left_index + 1, right_index + 1],
                     "center_distance_bins": center_distance,
                     "sum_sigma_bins": width_sum,
+                    "combined_sigma_bins": float(np.hypot(left["sigma_bins"], right["sigma_bins"])),
                     "distance_over_sum_sigma": center_distance / width_sum if width_sum > 0 else None,
                     "strong_overlap_screen": bool(width_sum > 0 and center_distance < 0.5 * width_sum),
                 })
         model["pairwise_component_overlap"] = component_overlap
+        model["is_admissible"], model["admissibility_reason"] = _check_model_admissibility(model, sigma_noise)
 
     selectable.sort(key=lambda item: item["bic"])
-    best = selectable[0].copy()
-    competitor = selectable[1] if len(selectable) > 1 else None
+    raw_best = selectable[0]
+    valid_models = sorted((m for m in selectable if m["is_admissible"]), key=lambda m: m["chosen_k"])
+    selected = valid_models[0]
+    for candidate in valid_models[1:]:
+        added = candidate["chosen_k"] - selected["chosen_k"]
+        if selected["bic"] - candidate["bic"] >= 6.0 * added:
+            selected = candidate
+    best = selected.copy()
+    competitors = [m for m in valid_models if m["chosen_k"] != best["chosen_k"]]
+    competitor = min(competitors, key=lambda m: m["bic"]) if competitors else None
     best["delta_bic"] = float(competitor["bic"] - best["bic"]) if competitor else None
-    best["stable_order"] = bool(best["delta_bic"] is not None and best["delta_bic"] >= 6.0)
+    best["raw_bic_chosen_k"] = int(raw_best["chosen_k"])
+    best["unconstrained_bic_k"] = int(raw_best["chosen_k"])
+    best["bic_improvement_per_component"] = 6.0
+    best["stable_order"] = bool(search_cap == 0 or (
+        best["delta_bic"] is not None and best["delta_bic"] >= 6.0
+        and best["chosen_k"] < configured_cap))
+    best["order_stability_scope"] = "conditional_on_seed_gate_and_tested_admissible_models"
+    best["selected_parameter_boundary_hit"] = bool(best["boundary_hit_components"])
     best["configured_cap"] = configured_cap
     best["available_seed_cap"] = len(seeds)
     best["searched_k_cap"] = search_cap
     best["seed_limited"] = len(seeds) < configured_cap
-    best["selected_at_boundary"] = bool(best["chosen_k"] > 0 and best["chosen_k"] == search_cap)
+    best["selected_at_boundary"] = best["selected_parameter_boundary_hit"]
     best["selected_at_configured_cap"] = bool(best["chosen_k"] == configured_cap and len(seeds) >= configured_cap)
-    best["at_search_limit"] = best["selected_at_boundary"]
+    best["at_search_limit"] = bool(best["chosen_k"] > 0 and best["chosen_k"] == search_cap)
     best["pairwise_component_overlap"] = next(
         model["pairwise_component_overlap"] for model in model_rows
         if model.get("chosen_k") == best["chosen_k"]
@@ -308,6 +345,39 @@ def fit_gaussian_components(
         best["fit_status"] = "no_detectable_peak" if not seeds else "no_components_selected"
     best["models"] = model_rows
     return best
+
+
+def morphology_stats(values: Sequence[float]) -> dict[str, Any]:
+    """Report integer rails and suspected flat tops without asserting saturation."""
+    values = np.asarray(values, dtype=float).reshape(-1)
+    finite_values = values[np.isfinite(values)]
+    if finite_values.size == 0:
+        raise ValueError("waveform contains no finite samples")
+    base = float(np.median(finite_values))
+    peak = int(np.argmax(np.where(np.isfinite(values), values, -np.inf)))
+    peak_value = float(values[peak])
+    excess = peak_value - base
+    above = np.isfinite(values) & (values >= base + 0.5 * excess)
+    lo = hi = peak
+    while lo > 0 and above[lo - 1]:
+        lo -= 1
+    while hi + 1 < values.size and above[hi + 1]:
+        hi += 1
+    flat_lo = flat_hi = peak
+    while flat_lo > 0 and values[flat_lo - 1] == peak_value:
+        flat_lo -= 1
+    while flat_hi + 1 < values.size and values[flat_hi + 1] == peak_value:
+        flat_hi += 1
+    run = int(flat_hi - flat_lo + 1)
+    return {
+        "median_baseline_counts": base, "peak_sample_index": peak,
+        "peak_excess_counts": excess, "half_height_width_samples": int(hi - lo + 1),
+        "digital_low_rail_hits": int(np.sum(values == np.iinfo(np.int16).min)),
+        "digital_high_rail_hits": int(np.sum(values == np.iinfo(np.int16).max)),
+        "peak_flat_top_samples": run,
+        "suspected_flat_top_clipping": bool(
+            run >= 3 and peak_value.is_integer() and excess > 5.0 * np.std(finite_values)),
+    }
 
 
 def residual_diagnostics(

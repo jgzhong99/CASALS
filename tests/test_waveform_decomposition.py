@@ -35,8 +35,8 @@ def test_gaussian_fit_recovers_two_components_and_residual():
     np.testing.assert_allclose(centers, [34.0, 81.0], atol=0.5)
     np.testing.assert_allclose(result["residual"], y - result["fit"], rtol=0, atol=1e-12)
     assert np.isclose(result["rmse"], np.sqrt(np.mean(result["residual"] ** 2)))
-    assert result["parameter_count"] == 2 + 3 * result["chosen_k"]
-    assert all(model["parameter_count"] == 2 + 3 * model["k"] for model in result["models"])
+    assert result["parameter_count"] == 1 + 3 * result["chosen_k"]
+    assert all(model["parameter_count"] == 1 + 3 * model["k"] for model in result["models"])
 
 
 def test_fit_window_uses_original_bin_coordinates_and_reports_its_denominator():
@@ -67,7 +67,7 @@ def test_fit_window_rejects_invalid_bin_indices():
         fit_gaussian_components(y, 1.0, 1.0, fit_indices=[1, 1, 2, 3, 4])
 
 
-def test_baseline_only_is_compared_on_the_same_samples_and_estimated():
+def test_baseline_only_is_compared_on_the_same_samples_and_fixed():
     x = np.arange(96, dtype=float)
     y = 3.0 + 9.0 * np.exp(-0.5 * ((x - 44.0) / 2.0) ** 2)
     result = fit_gaussian_components(y, 3.0, 0.5,
@@ -76,10 +76,10 @@ def test_baseline_only_is_compared_on_the_same_samples_and_estimated():
 
     models = {model["chosen_k"]: model for model in result["models"]}
     assert set(models) == {0, 1}
-    assert models[0]["parameter_count"] == 2
-    assert models[1]["parameter_count"] == 5
+    assert models[0]["parameter_count"] == 1
+    assert models[1]["parameter_count"] == 4
     assert models[0]["fit_sample_count"] == models[1]["fit_sample_count"] == y.size
-    assert models[0]["baseline"] != 3.0
+    assert models[0]["baseline"] == 3.0
     assert result["chosen_k"] == 1
 
 
@@ -101,6 +101,7 @@ def test_failed_optimizer_run_is_retained_but_not_selectable(monkeypatch):
     assert all(not attempt["optimizer_success"] for attempt in model1["attempts"])
     assert result["chosen_k"] == 0
     assert result["success"]
+    assert not result["stable_order"]
 
 
 def test_boundary_hits_are_reported_per_parameter(monkeypatch):
@@ -121,6 +122,9 @@ def test_boundary_hits_are_reported_per_parameter(monkeypatch):
     assert component["amplitude"]["at_lower"]
     assert component["sigma_bins"]["at_lower"]
     assert model1["boundary_hit_components"] == [1]
+    assert not model1["is_admissible"]
+    assert model1["admissibility_reason"] == "boundary_hit"
+    assert result["chosen_k"] == 0
 
 
 def test_seed_cap_and_residual_diagnostics_are_explicit():
@@ -166,3 +170,48 @@ def test_low_snr_noise_does_not_create_components():
     result = fit_gaussian_components(y, baseline=20.0, noise_sigma=1.0)
     assert result["chosen_k"] == 0
     assert result["fit_status"] == "no_detectable_peak"
+
+
+def test_noise_order_is_conditionally_stable_without_seeds():
+    y = 90.0 + np.random.default_rng(20261011).normal(0, 1, 192)
+    result = fit_gaussian_components(y, 90.0, 1.0)
+    assert result["chosen_k"] == result["searched_k_cap"] == 0
+    assert result["stable_order"]
+    assert result["delta_bic"] is None
+
+
+def test_bounds_and_overlap_are_rejected_with_raw_order_retained():
+    x = np.arange(192, dtype=float)
+    y = (90 + 12*np.exp(-0.5*((x-78)/6)**2)
+         + 10*np.exp(-0.5*((x-83.5)/6)**2))
+    result = fit_gaussian_components(y, 90, 0.12,
+        detector_peaks=[{"peak_bin": 78, "width_bins": 14.13},
+                        {"peak_bin": 83.5, "width_bins": 14.13}], max_components=3)
+    model = next(m for m in result["models"] if m["k"] == 2)
+    assert not model["is_admissible"]
+    assert model["admissibility_reason"] == "excessive_component_overlap"
+    assert result["raw_bic_chosen_k"] == 2
+    assert result["chosen_k"] == 1
+    assert not result["selected_at_boundary"]
+
+
+def test_fixed_baseline_prevents_local_outside_window_offset():
+    x = np.arange(256, dtype=float)
+    y = 5 + 10*np.exp(-0.5*((x-100)/3)**2)
+    result = fit_gaussian_components(y, 5, 0.25, fit_indices=np.arange(95, 106))
+    assert all(m["baseline"] == 5 for m in result["models"] if m["success"])
+    assert result["parameter_count"] == 1 + 3*result["chosen_k"]
+    assert abs(result["fit"][0] - 5) < 1e-10
+
+
+def test_flat_top_is_a_suspicion_and_not_an_int16_rail():
+    y = np.zeros(128); y[60:63] = 4095
+    stats = decomposition.morphology_stats(y)
+    assert stats["peak_flat_top_samples"] == 3
+    assert stats["suspected_flat_top_clipping"]
+    assert stats["digital_high_rail_hits"] == 0
+    assert not decomposition.morphology_stats(np.zeros(128))["suspected_flat_top_clipping"]
+    y[61] = 4096
+    assert decomposition.morphology_stats(y)["peak_flat_top_samples"] == 1
+    with np.testing.assert_raises(ValueError):
+        decomposition.morphology_stats([np.nan])

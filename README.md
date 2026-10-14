@@ -67,7 +67,7 @@ The principal APIs can also be called directly: `export_refh`, `filter_refh`, `m
 
 ## Current notebooks
 
-The 13 active notebooks are organized by research topic. [notebooks/README.md](notebooks/README.md) is the navigation guide and [docs/experiments.md](docs/experiments.md) is the formal research catalog. Start Jupyter from the repository root. The L0 TDMS audit reads one explicitly selected file, distinguishes wavelength evidence from channel indices, and samples waveform rows without loading the full channels. Install `nptdms` with the `notebooks` optional dependency; the Qt viewer is not required.
+The 13 active notebooks are organized by research topic. [notebooks/README.md](notebooks/README.md) is the navigation guide and [docs/experiments.md](docs/experiments.md) is the formal research catalog. Start Jupyter from the repository root. The L0 TDMS audit reads one explicitly selected file, distinguishes wavelength evidence from channel indices, samples waveform rows without loading full channels, and checks local L1B metadata references without reading H5 payloads. Only complete, unit-bearing wavelength mappings are plotted; lookup tables and formulas also need explicit channel-order and applicability evidence. Install `nptdms` with the `notebooks` optional dependency; the Qt viewer is not required.
 
 Existing notebook output directories remain intact as historical results and inputs. New notebook runs write to `outputs/notebooks/<topic>/<notebook>/<dataset>/`. The 21 earlier research notebooks and four superseded synthetic root demos remain under `research/archived_notebooks/` with their saved outputs.
 

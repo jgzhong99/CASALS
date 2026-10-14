@@ -13,9 +13,9 @@ New generated results use `outputs/notebooks/<topic>/<notebook>/<dataset>/`. Exi
 | Notebook | Purpose | Main inputs | Generated output |
 | --- | --- | --- | --- |
 | [S3 inventory](data/s3_inventory.ipynb) | Inventory public CASALS S3 object metadata with paginated listing and optional explicit-key checks. | Public S3 listing; optional object keys. | Inline tables; no local artifact by default. |
-| [TDMS audit](data/tdms_audit.ipynb) | Audit file/group/channel metadata, Step/Sweep layout, wavelength evidence, timing fields, and selected raw waveform rows. | One explicitly selected `.tdms` file under `data/raw/tdms/`. | `outputs/notebooks/data/tdms_audit/<tdms-stem>/`. |
+| [TDMS audit](data/tdms_audit.ipynb) | Audit file/group/channel metadata, Step/Sweep layout, wavelength evidence, timing fields, bounded raw waveform rows, and local L1B metadata references. | One explicitly selected `.tdms` file under `data/raw/tdms/`; local L1B H5 metadata is scanned without loading payloads. | `outputs/notebooks/data/tdms_audit/<tdms-stem>/runs/<run-id>/`. |
 
-The TDMS notebook lists candidate files and requires `TDMS_PATH` when more than one file exists. It excludes `.tdms_index` sidecars and never substitutes synthetic data. Configure `TDMS_PATH`, optional `OUTPUT_ROOT`, optional `ROW_INDICES`, and `N_EXAMPLE_CHANNELS` in its settings cell. `nptdms` is included in the `notebooks` extra; no GUI packages are required. Wavelength evidence is reported as A/B/C/D, and only complete A/B mappings may be plotted in physical units.
+The TDMS notebook lists candidate files and requires `TDMS_PATH` when more than one file exists. It excludes `.tdms_index` sidecars and never substitutes synthetic data. Configure `TDMS_PATH`, optional `OUTPUT_ROOT`, optional `ROW_INDICES`, and `N_EXAMPLE_CHANNELS` in its settings cell. `nptdms` is included in the `notebooks` extra; no GUI packages are required. Wavelength evidence is reported as A/B/C/D; only complete A/B/C mappings with explicit units may be plotted in physical units. Lookup tables and formulas also require explicit channel order or ShiftCycle applicability. Grade D scan indices do not produce wavelength values.
 
 ## Refh
 

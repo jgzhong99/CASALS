@@ -1,5 +1,11 @@
 # CASALS Third-Round Refactor Report
 
+Historical snapshot dated 2026-10-09. The notebook count and `backup.bat`
+statements below describe that report's recorded state. The current inventory
+as of 2026-10-14 has 13 active notebooks and a tracked, present `backup.bat`;
+see [the refreshed inventory](refactor_inventory.md). Historical execution
+outputs remain preserved at their recorded paths.
+
 Date: 2026-10-09  
 Starting revision: `master` at `08a5afe2585ccf934749585a40575c473a735ff9`  
 Scope: simplify the research CLI and shared code, separate prediction from

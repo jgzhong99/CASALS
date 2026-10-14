@@ -1,6 +1,6 @@
 # Refactor Inventory
 
-Updated 2026-10-09 after the third-round implementation. The path inventory below records the earlier two-research-line layout pass; this round kept the established directories and simplified the interfaces and duplicated refh code within them. The old paths below are from the layout-pass base commit `e1acecdefa393952526ad810908387c2adb041f4`.
+Updated 2026-10-14. The path inventory below records the earlier two-research-line layout pass; the third round kept the established directories and simplified the interfaces and duplicated refh code within them. The old paths below are from the layout-pass base commit `e1acecdefa393952526ad810908387c2adb041f4`. The 2026-10-09 report is a historical snapshot; the current active notebook count is 13, and `backup.bat` is currently tracked and present.
 
 ## Python code
 
@@ -36,7 +36,7 @@ The top-level `scripts/` and `experiments/` packages were removed after migratio
 - `casals_l1b/evaluation.py` owns alignment and metrics independently of `classification_cli.py`. H5-only prediction writes `evaluation.status = not_run` when no reference is supplied.
 - `casals_l1b/peaks_cli.py` exposes `extract_components()` using the existing detector and bounded H5 reads. `casals_l1b/geolocation.py` maps those records to experimental segment and refh-anchored beam candidates and writes a Parquet candidate table, closure diagnostics, validation summary, and run metadata.
 - `tools/view_lpc_open3d.py` was removed as a duplicate generic LAS/LAZ viewer. `tools/view_lpc_qt_classes.py` remains the bounded, class-filterable LAS/LAZ viewer; `tools/view_refh_points.py` remains the H5-specific refh quality viewer.
-- The obsolete tracked `backup.bat` was deleted. Local `config/local/` and `.compile_tmp/` remain ignored.
+- The 2026-10-09 report recorded `backup.bat` as deleted; a current checkout check finds it tracked and present. Local `config/local/` and `.compile_tmp/` remain ignored.
 
 ## Notebooks
 
@@ -54,11 +54,12 @@ The four superseded synthetic root demos were moved to
 outputs and original filenames: `01_refh_data_contract.ipynb`,
 `02_waveform_components.ipynb`, `03_beam_geolocation_candidates.ipynb`, and
 `04_refh_classification_and_reference.ipynb`. There are 25 archived notebooks
-in total and exactly four active notebooks under `notebooks/`.
+in total. Four notebooks were active at the time of the 2026-10-09 report; the
+current active set has 13 notebooks, including `notebooks/data/tdms_audit.ipynb`.
 
 ## Local-only and preserved material
 
-- Removed obsolete `backup.bat`, empty `.agents/` and `casals_l1b/docs/`, and the empty former `scripts/` and `experiments/` shells. The third round also removed the redundant Open3D LAS/LAZ viewer. Original and large data were preserved.
+- The 2026-10-09 report recorded `backup.bat` as removed; the current checkout has it tracked and present. That report also records removal of empty `.agents/`, `casals_l1b/docs/`, and former script/experiment shells, plus the redundant Open3D LAS/LAZ viewer. Original and large data were preserved.
 - `.compile_tmp/` and `backup/` are ignored and untracked. Historical output trees are collected under `backup/outputs/`; `.compile_tmp/` remains local scratch, including `casals_gui_3d_surface.html`.
 - `config/local/casals_gui_settings.json` remains on disk but is untracked so workstation-specific settings are not published.
 - Original H5, TDMS, 3DEP reference inputs, `Archive/`, archived notebooks, and baseline outputs remain preserved; prior output trees are under `backup/outputs/`.

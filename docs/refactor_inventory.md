@@ -40,7 +40,7 @@ The top-level `scripts/` and `experiments/` packages were removed after migratio
 
 ## Notebooks
 
-The four active notebooks are `notebooks/01_refh_quality.ipynb`, `notebooks/02_refh_classification.ipynb`, `notebooks/03_waveform_analysis.ipynb`, and `notebooks/04_peak_geolocation.ipynb`. Their saved outputs were regenerated from local real data and checked after execution; evidence and limits are in [refactor_improvement_report.md](refactor_improvement_report.md).
+The earlier layout-pass review covered [Refh quality and surfaces](../notebooks/refh/quality_and_surfaces.ipynb), [Refh classification](../notebooks/refh/classification.ipynb), [waveform analysis](../notebooks/waveforms/waveform_analysis.ipynb), and [peak geolocation](../notebooks/geolocation/peak_geolocation.ipynb). At the time, these used the numbered paths `notebooks/01_refh_quality.ipynb`, `notebooks/02_refh_classification.ipynb`, `notebooks/03_waveform_analysis.ipynb`, and `notebooks/04_peak_geolocation.ipynb`. Their saved outputs were regenerated from local real data and checked after execution; evidence and limits are in [refactor_improvement_report.md](refactor_improvement_report.md).
 
 All 21 former research notebooks and the geolocation archive notes are preserved under `research/archived_notebooks/` with their original filenames and saved cell outputs:
 

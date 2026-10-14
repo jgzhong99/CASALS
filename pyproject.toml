@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "casals-research"
 version = "0.1.0"
-description = "CASALS L1B waveform, reference-height, geolocation, and 3DEP research workflows"
+description = "CASALS L0 TDMS and L1B waveform, reference-height, geolocation, and 3DEP research workflows"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -27,7 +27,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
-notebooks = ["ipykernel>=6.29", "ipywidgets>=8.1", "jupyterlab>=4.1", "plotly>=5.20", "seaborn>=0.13"]
+notebooks = ["ipykernel>=6.29", "ipywidgets>=8.1", "jupyterlab>=4.1", "nptdms>=1.10", "plotly>=5.20", "seaborn>=0.13"]
   gui = ["nptdms>=1.10", "PyOpenGL>=3.1.7", "PyQt5>=5.15", "pyqtgraph>=0.13", "pyvista>=0.46", "pyvistaqt>=0.11", "vispy>=0.17"]
 visualization = ["opencv-python>=4.9", "open3d>=0.18"]
 

@@ -49,21 +49,15 @@ Run commands from the repository root. Outputs default beneath `outputs/<workflo
 
 The measured real-data residuals, model comparison, and unresolved assumptions are in [the improvement report](refactor_improvement_report.md).
 
-## Current notebooks and historical records
+## Notebook research workflow and historical records
 
-The current runnable notebooks are:
+The 13 active notebooks follow the topic order **data → refh → waveforms → geolocation → applications**. See [the notebook navigation guide](../notebooks/README.md) for purpose, inputs, and outputs, and [the experiment catalog](experiments.md) for each research question and validation status. Start Jupyter from the repository root; the notebooks use project-root-relative data paths and do not select local files by modification time.
 
-1. `notebooks/01_refh_quality.ipynb`
-2. `notebooks/02_refh_classification.ipynb`
-3. `notebooks/03_waveform_analysis.ipynb`
-4. `notebooks/04_peak_geolocation.ipynb`
-5. `notebooks/05_forest_transect_showcase.ipynb`
-6. `notebooks/06_waveform_gallery.ipynb`
-7. `notebooks/07_georeferencing_geometry.ipynb`
+The L0 TDMS audit uses `nptdms` from the `notebooks` optional dependency and runs without the GUI environment. When more than one TDMS file is present, it lists candidates and requires `TDMS_PATH` to be set. It reads metadata first and slices only selected waveform rows.
 
-They use explicit local data paths and package APIs. Missing inputs produce an actionable error rather than a synthetic fallback. The 21 earlier notebooks and four superseded synthetic root demos, with their saved outputs, remain under `research/archived_notebooks/`.
+New notebook results use `outputs/notebooks/<topic>/<notebook>/<dataset>/`. Earlier numbered output folders remain intact as historical results and, where noted by a notebook, read-only inputs. The 21 archived research notebooks and four superseded synthetic root demos, with their saved outputs, remain under `research/archived_notebooks/`.
 
-Showcases 05–07 do not require one another to execute. They read product filenames from metadata `outputs`, use each raster's own CRS/affine transform and support mask, and save new results beneath `outputs/notebooks/<notebook>/<granule-stem>/`. Geometry reuses the research audit's H1/H2 function without changing production mapping. See [the showcase execution report](showcase_execution_report.md).
+The forest transect, waveform gallery, and geometry notebooks remain separate research showcases. They read product filenames from existing workflow metadata, use each raster's own CRS/affine transform and support mask, and keep the existing H1/H2 research mapping separate from production behavior. Their saved execution report documents the original output paths.
 
 ## 3DEP comparisons
 

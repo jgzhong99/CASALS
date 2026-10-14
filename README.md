@@ -1,6 +1,6 @@
 # CASALS Research Workflows
 
-This repository contains two CASALS L1B research lines: refh quality, surfaces, classification, and 3DEP comparison; and waveform multi-peak detection with experimental 3D candidate geolocation.
+This repository contains CASALS L0 TDMS acquisition audits and L1B research on refh quality, surfaces, classification, 3DEP comparison, waveforms, and experimental 3D candidate geolocation.
 
 Each pulse has one official geolocated `refh` point associated with the maximum-amplitude RX bin. Other detected waveform components are diagnostic features. Candidate positions for those components are experimental and are not official multi-return coordinates. CASALS `refh` height is treated as WGS84 ellipsoidal height unless source metadata says otherwise. An empirical 3DEP height offset is not a vertical datum transformation.
 
@@ -10,7 +10,7 @@ Each pulse has one official geolocated `refh` point associated with the maximum-
 casals_l1b/       Shared H5, refh, waveform, classification, and geolocation code
 research/         Reference comparison and parameter/geolocation research
 tools/            Standalone viewers, animations, and data utilities
-notebooks/        Twelve current real-data research notebooks
+notebooks/        Thirteen active research notebooks, organized by topic
 casals_tdms_viewer/ Qt TDMS viewer implementation; casals_gui.py is its launcher
 data/             Local raw and reference data (ignored by Git)
 outputs/          Local workflow results (ignored by Git)
@@ -67,13 +67,13 @@ The principal APIs can also be called directly: `export_refh`, `filter_refh`, `m
 
 ## Current notebooks
 
-Notebook 00 uses paginated public S3 listing with no per-object `HeadObject` calls by default. Notebook 02 uses one explicit transfer-eligibility mask for both its evaluated sample and metrics, reports per-class precision/recall/F1, and separates strict status 1 from status 1+2 coverage. Notebook 04 compares production H1 with audited H2 on the same pulse/component population while retaining the legacy Refh-anchored beam diagnostic. The full review and measured execution status are in [notebook scientific review](docs/notebook_scientific_review.md).
+The 13 active notebooks are organized by research topic. [notebooks/README.md](notebooks/README.md) is the navigation guide and [docs/experiments.md](docs/experiments.md) is the formal research catalog. Start Jupyter from the repository root. The L0 TDMS audit reads one explicitly selected file, distinguishes wavelength evidence from channel indices, and samples waveform rows without loading the full channels. Install `nptdms` with the `notebooks` optional dependency; the Qt viewer is not required.
 
-The active collection contains twelve notebooks numbered 00 through 11, including strict 3DEP reference gating and image-backed land-cover response analysis. The first five are [S3 inventory](notebooks/00_s3_data_inventory.ipynb), [refh quality and products](notebooks/01_refh_quality.ipynb), [classification and 3DEP pseudo-reference](notebooks/02_refh_classification.ipynb), [waveform analysis](notebooks/03_waveform_analysis.ipynb), and [peak geolocation](notebooks/04_peak_geolocation.ipynb). They use explicit inputs and package functions. Start Jupyter from the repository root. The 21 earlier research notebooks and four superseded synthetic root demos remain under `research/archived_notebooks/` with their saved outputs.
+Existing notebook output directories remain intact as historical results and inputs. New notebook runs write to `outputs/notebooks/<topic>/<notebook>/<dataset>/`. The 21 earlier research notebooks and four superseded synthetic root demos remain under `research/archived_notebooks/` with their saved outputs.
 
-Three independently runnable research showcases are [forest transect](notebooks/05_forest_transect_showcase.ipynb), [waveform gallery](notebooks/06_waveform_gallery.ipynb), and [georeferencing geometry](notebooks/07_georeferencing_geometry.ipynb). They use real L1B H5, existing products located through workflow metadata, dated NAIP crops, and the audited research H1/H2 mapping. New review artifacts are isolated under each notebook's `outputs/notebooks/<notebook>/method_improvement/` directory; earlier `scientific_review/` outputs remain preserved. Historical imagery supports probable canopy labels, not exact 2024 footprint truth. These are exploratory demonstrations, not official L2 products. See [the executed showcase report](docs/showcase_execution_report.md).
+The active classification notebook keeps strict status 1 separate from status 1+2 pseudo-reference coverage. Peak geolocation retains production H1 and audited H2 comparisons without changing production mapping. The full historical review evidence is in [notebook scientific review](docs/notebook_scientific_review.md) and the [L1B validation report](docs/casals_l1b_validation_report.md).
 
-The [waveform decomposition notebook](notebooks/08_waveform_decomposition.ipynb) compares K=0 baseline and exploratory Gaussian models on six real pulses, including fit-window and K-cap sensitivity. All six default selections reach a configured parameter or order boundary, so their Gaussian counts remain unresolved. The [nadir-window reflection notebook](notebooks/09_nadir_window_reflection.ipynb) retains the 90-sweep fixed-bin null, adds a symmetric 180-sweep sensitivity context in one composite figure, and scans six prespecified 16-sweep blocks across two dates. It reports anomalies for review, not reflection detections, and makes no real RX change. Helpers are research-only in `research/waveform_decomposition.py` and `research/nadir_window_reflection.py`; new outputs are under each notebook's `method_improvement/<granule-stem>/` folder. Neither analysis changes production detection or confirms physical returns or a window reflection. See [the waveform and reflection execution report](docs/waveform_reflection_execution_report.md).
+The forest transect and waveform gallery remain exploratory displays based on existing products, selected real waveforms, dated NAIP crops, and audited H1/H2 mapping. Historical imagery supports probable canopy labels, not exact footprint truth. Waveform decomposition and nadir-window reflection report bounded diagnostics and unresolved cases; they do not change production detection or establish physical returns. See the [showcase report](docs/showcase_execution_report.md) and [waveform/reflection report](docs/waveform_reflection_execution_report.md).
 
 ## Viewers
 

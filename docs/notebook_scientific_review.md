@@ -1,5 +1,7 @@
 # CASALS Notebook Scientific Review
 
+This is a historical execution report. Its numbered notebook labels and original output paths identify the files and results as they existed during review; current active notebook entry points are listed in [notebooks/README.md](../notebooks/README.md). These historical references are retained for provenance.
+
 ## Scope and baseline
 
 Reviewed and revised active notebooks `00`–`09` on `master`, starting from commit `697379b2136c5b70e380b36bcdc23a0643b42230`. Changes are limited to the ten active notebooks, two research-only helpers, focused tests, and user/developer documentation. No production classifier, waveform detector, or geolocation implementation was changed. New research outputs are isolated under each notebook's `method_improvement/` directory; prior output folders remain preserved.

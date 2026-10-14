@@ -1,174 +1,129 @@
-"""Two-dimensional cross-section visualization panel for CASALS 3D Sweep Animator.
-
-Scientific boundaries & requirements:
-- Displays physical (cross-track, height) or (track, height) waveform heatmaps.
-- Shows official Refh overlay on top of reconstructed waveform response.
-- Shows reconstructed argmax positions with distinct symbol for closure comparison.
-- Provides scientific colormaps (Viridis, Inferno, Turbo, Grayscale) and units.
-- Supports stable color range across playback to prevent visual flickering.
-"""
+"""PyQtGraph renderer for the synchronized RX waveform cross-section."""
 
 from __future__ import annotations
 
-from typing import Optional, Tuple
+from typing import Optional
 import numpy as np
-from PyQt5 import QtCore, QtGui, QtWidgets
+from PyQt5 import QtCore, QtWidgets
 import pyqtgraph as pg
 
 from .cross_section import CrossSectionGrid
 
 
 class Panel2DWidget(QtWidgets.QWidget):
-    """2D panel rendering the synchronized waveform vertical cross-section and overlays."""
-
     def __init__(self, parent=None) -> None:
-        super().__init__(parent=parent)
-
-        # Settings
+        super().__init__(parent)
         self.show_refh_overlay = True
-        self.show_argmax_overlay = True
-        self.colormap_name = "turbo"
-        self.color_range_mode = "fixed"  # 'fixed' or 'auto'
-        self.fixed_vmin = 0.0
-        self.fixed_vmax = 500.0
+        self.show_argmax_overlay = False
+        self.colormap_name = "viridis"
+        self.color_range_mode = "stable"
         self.auto_percentiles = (1.0, 99.5)
-
+        self.color_ranges = {
+            "raw": (0.0, 2000.0),
+            "minus_bg": (0.0, 500.0),
+            "asinh": (0.0, 5.0),
+            "standardized": (0.0, 10.0),
+        }
         self._build_ui()
 
     def _build_ui(self) -> None:
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
+        self.message_label = QtWidgets.QLabel("")
+        self.message_label.setStyleSheet("background: #151c24; color: #e9b86e; padding: 3px 8px;")
+        self.message_label.setVisible(False)
+        layout.addWidget(self.message_label)
 
-        # pyqtgraph GraphicsLayoutWidget
         self.glw = pg.GraphicsLayoutWidget(parent=self)
-        self.glw.setBackground((20, 24, 30))
-        layout.addWidget(self.glw)
-
-        # Plot item
+        self.glw.setBackground((18, 23, 30))
+        layout.addWidget(self.glw, 1)
         self.plot: pg.PlotItem = self.glw.addPlot(row=0, col=0)
-        self.plot.showGrid(x=True, y=True, alpha=0.25)
-        self.plot.setLabel("left", "WGS84 Ellipsoidal Height", units="m")
-        self.plot.setLabel("bottom", "Cross-track Distance", units="m")
-
-        # Heatmap image item (axisOrder='col-major' means data[x, y])
+        self.plot.showGrid(x=True, y=True, alpha=0.20)
+        self.plot.setLabel("left", "WGS84 ellipsoidal height", units="m")
         self.image_item = pg.ImageItem(axisOrder="col-major")
         self.plot.addItem(self.image_item)
 
-        # ColorBarItem
-        self.colorbar = pg.ColorBarItem(
-            values=(self.fixed_vmin, self.fixed_vmax),
-            colorMap=self.colormap_name,
-            width=16,
-            interactive=True,
-        )
+        self.colorbar = pg.ColorBarItem(values=self.color_ranges["minus_bg"], colorMap=self.colormap_name, width=18)
         self.colorbar.setImageItem(self.image_item)
         self.glw.addItem(self.colorbar, row=0, col=1)
 
-        # Overlays
-        # 1. Official Refh overlay (white circles with black contour)
         self.refh_overlay = pg.PlotDataItem(
-            pen=pg.mkPen(color=(255, 255, 255, 200), width=1.5),
+            pen=None,
             symbol="o",
-            symbolSize=4,
-            symbolPen=pg.mkPen(color=(0, 0, 0, 220), width=1.0),
-            symbolBrush=pg.mkBrush(255, 255, 255, 240),
-            name="Official Refh",
+            symbolSize=3.5,
+            symbolPen=pg.mkPen(color=(245, 247, 250, 220), width=0.8),
+            symbolBrush=pg.mkBrush(245, 247, 250, 220),
         )
-        self.plot.addItem(self.refh_overlay)
-
-        # 2. Reconstructed argmax overlay (bright orange triangles)
         self.argmax_overlay = pg.PlotDataItem(
             pen=None,
             symbol="t",
             symbolSize=5,
-            symbolPen=pg.mkPen(color=(0, 0, 0, 200), width=1.0),
-            symbolBrush=pg.mkBrush(255, 140, 20, 240),
-            name="Reconstructed Argmax",
+            symbolPen=pg.mkPen(color=(16, 20, 25, 230), width=0.8),
+            symbolBrush=pg.mkBrush(240, 145, 55, 230),
         )
+        self.plot.addItem(self.refh_overlay)
         self.plot.addItem(self.argmax_overlay)
 
-        # Legend
-        self.legend = self.plot.addLegend(offset=(10, 10))
-        self.legend.addItem(self.refh_overlay, "Official Refh")
-        self.legend.addItem(self.argmax_overlay, "Reconstructed Argmax (H1/H2)")
-
     def set_colormap(self, name: str) -> None:
-        """Update colormap."""
         self.colormap_name = str(name).lower()
-        try:
-            self.colorbar.setColorMap(self.colormap_name)
-        except Exception:
-            self.colorbar.setColorMap("turbo")
+        self.colorbar.setColorMap(self.colormap_name)
 
-    def set_fixed_range(self, vmin: float, vmax: float) -> None:
-        """Set the stable fixed color range."""
-        self.fixed_vmin = float(vmin)
-        self.fixed_vmax = float(vmax)
-        if self.fixed_vmax <= self.fixed_vmin:
-            self.fixed_vmax = self.fixed_vmin + 1.0
+    def set_color_ranges(self, ranges: dict[str, tuple[float, float]]) -> None:
+        self.color_ranges.update(ranges)
+
+    def set_color_range_mode(self, mode: str) -> None:
+        if mode not in {"stable", "local"}:
+            raise ValueError("color range mode must be stable or local")
+        self.color_range_mode = mode
+
+    def _levels(self, grid: CrossSectionGrid, finite: np.ndarray) -> tuple[float, float]:
+        stable = self.color_ranges.get(grid.mode.lower(), self.color_ranges["minus_bg"])
+        if self.color_range_mode == "local" and finite.size:
+            lo, hi = np.percentile(finite, self.auto_percentiles)
+            lo, hi = float(lo), float(hi)
+        else:
+            lo, hi = map(float, stable)
+        if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+            lo, hi = 0.0, 1.0
+        return lo, hi
 
     def update_cross_section(self, grid: CrossSectionGrid) -> None:
-        """Render the 2D cross-section grid and overlays."""
-        # Update Axis Labels
-        if grid.x_axis_mode == "meters":
-            self.plot.setLabel("bottom", "Cross-track Distance", units="m")
+        if grid.view == "curtain":
+            self.plot.setLabel("bottom", "Track index")
+            view_name = "Waveform Curtain"
         else:
-            self.plot.setLabel("bottom", "Track Index", units="")
+            self.plot.setLabel("bottom", "Cross-track distance", units="m")
+            view_name = "Georeferenced Cross-Section"
 
-        # Title
-        title_text = (
-            f"<b>2D Waveform Cross-Section</b> | {grid.color_title} ({grid.color_unit}) "
-            f"| Mapping: <b>{grid.mapping_convention}</b>"
-        )
-        self.plot.setTitle(title_text, color="#e0e4eb", size="10pt")
+        self.plot.setLabel("left", "WGS84 ellipsoidal height", units="m")
+        title = f"<b>{view_name}</b>  ·  {grid.color_title} ({grid.color_unit})  ·  Mapping {grid.mapping_convention}"
+        if not grid.available:
+            title = f"<b>{view_name}</b>  ·  <span style='color:#e9b86e'>Unavailable: {grid.message}</span>"
+        self.plot.setTitle(title, color="#e4eaf0", size="10pt")
+        self.message_label.setText(grid.message)
+        self.message_label.setVisible(bool(grid.message) and not grid.available)
 
-        # Determine Levels
-        finite_vals = grid.grid_data[np.isfinite(grid.grid_data)]
-        if self.color_range_mode == "auto" and len(finite_vals) > 0:
-            lo_p, hi_p = self.auto_percentiles
-            vmin = float(np.percentile(finite_vals, lo_p))
-            vmax = float(np.percentile(finite_vals, hi_p))
-            if vmax <= vmin:
-                vmax = vmin + 1.0
-        else:
-            vmin = self.fixed_vmin
-            vmax = self.fixed_vmax
-
-        # Update Image Data & Geometry
-        self.image_item.setImage(grid.grid_data, autoLevels=False, levels=(vmin, vmax))
-        rect = QtCore.QRectF(
+        finite = grid.grid_data[np.isfinite(grid.grid_data)]
+        levels = self._levels(grid, finite)
+        self.image_item.setImage(grid.grid_data, autoLevels=False, levels=levels)
+        self.image_item.setRect(QtCore.QRectF(
             grid.x_min,
             grid.h_min,
             grid.x_max - grid.x_min,
             grid.h_max - grid.h_min,
-        )
-        self.image_item.setRect(rect)
-        self.colorbar.setLevels((vmin, vmax))
+        ))
+        self.colorbar.setLevels(levels)
+        self.colorbar.setLabel("right", f"{grid.color_title} ({grid.color_unit})")
 
-        # Update Official Refh Overlay
-        if self.show_refh_overlay and len(grid.refh_x) > 0:
-            valid = grid.refh_valid & np.isfinite(grid.refh_x) & np.isfinite(grid.refh_h)
-            if np.any(valid):
-                # Sort by X for clean polyline connection
-                order = np.argsort(grid.refh_x[valid])
-                x_sorted = grid.refh_x[valid][order]
-                h_sorted = grid.refh_h[valid][order]
-                self.refh_overlay.setData(x=x_sorted, y=h_sorted)
-                self.refh_overlay.setVisible(True)
-            else:
-                self.refh_overlay.setVisible(False)
-        else:
-            self.refh_overlay.setVisible(False)
+        valid_refh = grid.refh_valid & np.isfinite(grid.refh_x) & np.isfinite(grid.refh_h)
+        self.refh_overlay.setData(x=grid.refh_x[valid_refh], y=grid.refh_h[valid_refh])
+        self.refh_overlay.setVisible(bool(self.show_refh_overlay and np.any(valid_refh)))
 
-        # Update Reconstructed Argmax Overlay
         if self.show_argmax_overlay and grid.argmax_x is not None and grid.argmax_h is not None:
-            valid_arg = np.isfinite(grid.argmax_x) & np.isfinite(grid.argmax_h)
-            if np.any(valid_arg):
-                self.argmax_overlay.setData(x=grid.argmax_x[valid_arg], y=grid.argmax_h[valid_arg])
-                self.argmax_overlay.setVisible(True)
-            else:
-                self.argmax_overlay.setVisible(False)
+            valid = np.isfinite(grid.argmax_x) & np.isfinite(grid.argmax_h)
+            self.argmax_overlay.setData(x=grid.argmax_x[valid], y=grid.argmax_h[valid])
+            self.argmax_overlay.setVisible(bool(np.any(valid)))
         else:
             self.argmax_overlay.setVisible(False)
 

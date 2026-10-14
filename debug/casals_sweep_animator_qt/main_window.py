@@ -1,888 +1,751 @@
-"""Main Qt application window and playback controller for CASALS 3D Sweep Animator.
-
-Scientific boundaries & requirements:
-- Synchronized 3D OpenGL visualization and 2D vertical waveform cross-section.
-- Responsive, non-blocking asynchronous playback with pending-latest request management.
-- Dynamic camera controls (Overview vs Follow Aircraft).
-- Clear scientific disclosures for schematic aircraft orientation and research bin mapping.
-- PNG screenshot and MP4 video export.
-"""
+"""CASALS 3D sweep and waveform cross-section viewer."""
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
+import json
 import time
+from typing import Optional
+
 import numpy as np
 from PyQt5 import QtCore, QtGui, QtWidgets
 
-from .cross_section import CrossSectionGrid
-from .h5_model import H5Model, SweepData
+from .frame_controller import FrameController
+from .h5_model import H5Model
 from .panel2d import Panel2DWidget
 from .scene3d import Scene3DWidget
 from .video_export import (
+    VideoEncoder,
     VideoExportDialog,
-    VideoExportWorker,
-    capture_widget_pixmap,
-    composite_screenshot,
+    composite_frame_image,
+    qimage_to_rgb,
 )
-from .worker import FrameParams, H5Worker, SweepFrame
+from .worker import FrameParams, SweepFrame
 
 
 class MainWindow(QtWidgets.QMainWindow):
-    """Main application window for CASALS 3D Sweep Animator."""
+    """Interactive GUI. HDF5 preparation is delegated to FrameController."""
 
     def __init__(self, initial_h5: Optional[str | Path] = None, parent=None) -> None:
-        super().__init__(parent=parent)
-        self.setWindowTitle("CASALS 3D Sweep Animator & Waveform Cross-Section Viewer")
+        super().__init__(parent)
+        self.setWindowTitle("CASALS Sweep Viewer")
         self.resize(1600, 960)
+        self.setMinimumSize(1120, 720)
 
         self.model: Optional[H5Model] = None
-        self.current_sweep_idx = 0
         self.current_frame: Optional[SweepFrame] = None
-        self._request_id = 0
-        self._is_playing = False
-        self._step_size = 1
-        self._requested_fps = 5.0
+        self.current_sweep_idx = 0
+        self._closing = False
+        self._loading = False
+        self._export_encoder: Optional[VideoEncoder] = None
+        self._export_indices: list[int] = []
+        self._export_cursor = 0
+        self._export_pending_frame: Optional[np.ndarray] = None
+        self._export_old_sweep = 0
+        self._export_was_playing = False
+        self._export_params = FrameParams()
+        self._export_settings: dict = {}
+        self._export_camera_state: Optional[tuple] = None
+        self._restore_export_state = False
+        self._export_active = False
+        self._last_frame_monotonic = 0.0
+        self._recent_frame_ms: list[float] = []
 
-        # Frame timing diagnostics
-        self._last_frame_time = time.monotonic()
-        self._fps_history = []
+        self.controller = FrameController(self)
+        self.controller.model_loaded.connect(self._on_model_loaded)
+        self.controller.frame_ready.connect(self._on_frame_ready)
+        self.controller.load_progress.connect(self._on_load_progress)
+        self.controller.error_occurred.connect(self._on_error)
+        self.controller.position_changed.connect(self._on_position_changed)
+        self.controller.playback_changed.connect(self._on_playback_changed)
 
-        # Setup Thread and Worker
-        self._init_worker()
-
-        # Build UI layout
         self._build_ui()
-
-        # Setup Playback Timer
-        self._play_timer = QtCore.QTimer(self)
-        self._play_timer.timeout.connect(self._on_play_tick)
-
-        # Apply dark scientific stylesheet
         self._apply_theme()
-
-        # Load initial file if provided
+        self._set_model_enabled(False)
         if initial_h5 is not None:
             QtCore.QTimer.singleShot(100, lambda: self.load_h5(str(initial_h5)))
 
-    def _init_worker(self) -> None:
-        self.worker_thread = QtCore.QThread()
-        self.worker = H5Worker()
-        self.worker.moveToThread(self.worker_thread)
-
-        # Worker signals
-        self.worker.file_loaded.connect(self._on_file_loaded)
-        self.worker.frame_ready.connect(self._on_frame_ready)
-        self.worker.load_progress.connect(self._on_load_progress)
-        self.worker.error_occurred.connect(self._on_worker_error)
-
-        self.worker_thread.start()
-
-    def _apply_theme(self) -> None:
-        style = """
-        QMainWindow {
-            background-color: #12161c;
-            color: #d1d7e0;
-        }
-        QWidget {
-            font-family: 'Segoe UI', Arial, sans-serif;
-            font-size: 9pt;
-            color: #d1d7e0;
-        }
-        QGroupBox {
-            font-weight: bold;
-            border: 1px solid #283241;
-            border-radius: 4px;
-            margin-top: 8px;
-            padding-top: 10px;
-            background-color: #181e27;
-        }
-        QGroupBox::title {
-            subcontrol-origin: margin;
-            left: 8px;
-            padding: 0 4px;
-            color: #60a5fa;
-        }
-        QPushButton {
-            background-color: #243042;
-            border: 1px solid #3b4d66;
-            border-radius: 3px;
-            padding: 4px 8px;
-            font-weight: 500;
-        }
-        QPushButton:hover {
-            background-color: #2d3d54;
-            border-color: #60a5fa;
-        }
-        QPushButton:pressed {
-            background-color: #1a2330;
-        }
-        QPushButton:disabled {
-            background-color: #161c24;
-            color: #556274;
-            border-color: #232b36;
-        }
-        QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit {
-            background-color: #1a222c;
-            border: 1px solid #2f3e50;
-            border-radius: 3px;
-            padding: 2px 4px;
-        }
-        QComboBox:hover, QSpinBox:hover {
-            border-color: #4b6b94;
-        }
-        QSlider::groove:horizontal {
-            height: 6px;
-            background: #243040;
-            border-radius: 3px;
-        }
-        QSlider::sub-page:horizontal {
-            background: #2563eb;
-            border-radius: 3px;
-        }
-        QSlider::handle:horizontal {
-            background: #60a5fa;
-            width: 14px;
-            margin-top: -4px;
-            margin-bottom: -4px;
-            border-radius: 7px;
-        }
-        QStatusBar {
-            background-color: #0f1318;
-            border-top: 1px solid #222a36;
-            color: #94a3b8;
-        }
-        QScrollBar:vertical {
-            background: #141a22;
-            width: 10px;
-        }
-        QScrollBar::handle:vertical {
-            background: #283547;
-            border-radius: 5px;
-        }
-        """
-        self.setStyleSheet(style)
-
     def _build_ui(self) -> None:
-        # Central widget
+        self._build_toolbar()
         central = QtWidgets.QWidget()
         self.setCentralWidget(central)
-        main_layout = QtWidgets.QHBoxLayout(central)
-        main_layout.setContentsMargins(6, 6, 6, 6)
-        main_layout.setSpacing(6)
+        root = QtWidgets.QHBoxLayout(central)
+        root.setContentsMargins(8, 8, 8, 8)
+        root.setSpacing(8)
 
-        # 1. Left Control Panel
-        scroll_area = QtWidgets.QScrollArea()
-        scroll_area.setWidgetResizable(True)
-        scroll_area.setFixedWidth(310)
-        scroll_area.setFrameShape(QtWidgets.QFrame.NoFrame)
+        self.control_scroll = QtWidgets.QScrollArea()
+        self.control_scroll.setWidgetResizable(True)
+        self.control_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        self.control_scroll.setFixedWidth(540)
+        self.control_panel = QtWidgets.QWidget()
+        control_layout = QtWidgets.QVBoxLayout(self.control_panel)
+        control_layout.setContentsMargins(3, 3, 3, 3)
+        control_layout.setSpacing(8)
+        self._build_playback_controls(control_layout)
+        self._build_scene_controls(control_layout)
+        self._build_cross_section_controls(control_layout)
+        self.control_scroll.setWidget(self.control_panel)
+        root.addWidget(self.control_scroll)
 
-        control_widget = QtWidgets.QWidget()
-        self.control_layout = QtWidgets.QVBoxLayout(control_widget)
-        self.control_layout.setContentsMargins(4, 4, 8, 4)
-        self.control_layout.setSpacing(8)
-
-        self._build_file_group()
-        self._build_playback_group()
-        self._build_3d_group()
-        self._build_2d_group()
-        self._build_export_group()
-
-        self.control_layout.addStretch()
-        scroll_area.setWidget(control_widget)
-        main_layout.addWidget(scroll_area)
-
-        # 2. Right Visualization Splitter (3D + 2D)
+        views = QtWidgets.QWidget()
+        views_layout = QtWidgets.QVBoxLayout(views)
+        views_layout.setContentsMargins(0, 0, 0, 0)
+        views_layout.setSpacing(6)
         self.view_splitter = QtWidgets.QSplitter(QtCore.Qt.Vertical)
-        self.view_splitter.setChildrenCollapsible(False)
-
-        # 3D View
-        self.scene3d = Scene3DWidget(parent=self)
+        self.scene3d = Scene3DWidget()
+        self.panel2d = Panel2DWidget()
         self.view_splitter.addWidget(self.scene3d)
-
-        # 2D Panel
-        self.panel2d = Panel2DWidget(parent=self)
         self.view_splitter.addWidget(self.panel2d)
+        self.view_splitter.setStretchFactor(0, 6)
+        self.view_splitter.setStretchFactor(1, 4)
+        self.view_splitter.setSizes([560, 360])
+        views_layout.addWidget(self.view_splitter, 1)
+        self._build_timeline(views_layout)
+        root.addWidget(views, 1)
 
-        # Initial splitter ratios: ~65% for 3D, ~35% for 2D
-        self.view_splitter.setSizes([600, 320])
-        main_layout.addWidget(self.view_splitter, 1)
+        self.statusBar().showMessage("Open a CASALS L1B HDF5 file to begin.")
+        self._seek_timer = QtCore.QTimer(self)
+        self._seek_timer.setSingleShot(True)
+        self._seek_timer.timeout.connect(lambda: self._request_sweep(self.slider_timeline.value()))
+        self._export_retry_timer = QtCore.QTimer(self)
+        self._export_retry_timer.setSingleShot(True)
+        self._export_retry_timer.timeout.connect(self._retry_export_enqueue)
 
-        # 3. Status Bar
-        self.status_bar = self.statusBar()
-        self.status_label_main = QtWidgets.QLabel("Ready. Open a CASALS L1B HDF5 file to begin.")
-        self.status_label_closure = QtWidgets.QLabel("")
-        self.status_label_fps = QtWidgets.QLabel("FPS: --")
-        self.status_label_closure.setStyleSheet("color: #38bdf8; margin-right: 15px;")
-        self.status_label_fps.setStyleSheet("color: #a3e635; margin-right: 15px;")
+    def _build_toolbar(self) -> None:
+        toolbar = self.addToolBar("File")
+        toolbar.setMovable(False)
+        self.action_open = toolbar.addAction("Open H5")
+        self.action_open.triggered.connect(self._open_file_dialog)
+        self.action_screenshot = toolbar.addAction("Save PNG")
+        self.action_screenshot.triggered.connect(self._save_screenshot)
+        self.action_video = toolbar.addAction("Export MP4")
+        self.action_video.triggered.connect(self._export_video)
+        toolbar.addSeparator()
+        self.file_label = QtWidgets.QLabel("No file loaded")
+        self.file_label.setStyleSheet("color: #9fb0c2; padding: 0 8px;")
+        toolbar.addWidget(self.file_label)
+        self.progress_label = QtWidgets.QLabel("")
+        self.progress_label.setStyleSheet("color: #7dd3c7; padding: 0 8px;")
+        toolbar.addWidget(self.progress_label)
+        self.action_cancel_export = toolbar.addAction("Cancel export")
+        self.action_cancel_export.triggered.connect(self._cancel_video_export)
+        self.action_cancel_export.setVisible(False)
 
-        self.status_bar.addWidget(self.status_label_main, 1)
-        self.status_bar.addPermanentWidget(self.status_label_closure)
-        self.status_bar.addPermanentWidget(self.status_label_fps)
-
-    def _build_file_group(self) -> None:
-        group = QtWidgets.QGroupBox("H5 File")
+    def _group(self, title: str, parent_layout: QtWidgets.QVBoxLayout) -> QtWidgets.QVBoxLayout:
+        group = QtWidgets.QGroupBox(title)
         layout = QtWidgets.QVBoxLayout(group)
+        layout.setContentsMargins(9, 9, 9, 9)
+        layout.setSpacing(5)
+        parent_layout.addWidget(group)
+        return layout
 
-        self.btn_open_file = QtWidgets.QPushButton("Open CASALS H5...")
-        self.btn_open_file.clicked.connect(self._browse_h5)
-        layout.addWidget(self.btn_open_file)
+    def _add_combo(self, layout: QtWidgets.QFormLayout, label: str, items: list[tuple[str, object]]) -> QtWidgets.QComboBox:
+        combo = QtWidgets.QComboBox()
+        for text, value in items:
+            combo.addItem(text, value)
+        layout.addRow(label, combo)
+        return combo
 
-        self.lbl_filename = QtWidgets.QLabel("No file loaded")
-        self.lbl_filename.setWordWrap(True)
-        self.lbl_filename.setStyleSheet("color: #94a3b8; font-size: 8pt;")
-        layout.addWidget(self.lbl_filename)
+    def _build_playback_controls(self, parent_layout: QtWidgets.QVBoxLayout) -> None:
+        layout = self._group("Playback", parent_layout)
+        row = QtWidgets.QHBoxLayout()
+        self.btn_first = QtWidgets.QPushButton("|<")
+        self.btn_prev = QtWidgets.QPushButton("<")
+        self.btn_play = QtWidgets.QPushButton("Play")
+        self.btn_next = QtWidgets.QPushButton(">")
+        self.btn_last = QtWidgets.QPushButton(">|")
+        for button in (self.btn_first, self.btn_prev, self.btn_play, self.btn_next, self.btn_last):
+            button.setFixedWidth(40)
+            row.addWidget(button)
+        self.btn_play.setFixedWidth(56)
+        layout.addLayout(row)
+        form = QtWidgets.QFormLayout()
+        self.spin_fps = QtWidgets.QDoubleSpinBox()
+        self.spin_fps.setRange(1.0, 30.0)
+        self.spin_fps.setDecimals(0)
+        self.spin_fps.setSingleStep(1.0)
+        self.spin_fps.setValue(10.0)
+        self.spin_step = QtWidgets.QSpinBox()
+        self.spin_step.setRange(1, 1000)
+        self.spin_step.setValue(1)
+        form.addRow("Playback FPS", self.spin_fps)
+        form.addRow("Sweep step", self.spin_step)
+        layout.addLayout(form)
+        self.sweep_label = QtWidgets.QLabel("Sweep - / -")
+        self.sweep_label.setStyleSheet("font-weight: 600; color: #d9e4ef;")
+        layout.addWidget(self.sweep_label)
 
-        self.lbl_summary = QtWidgets.QLabel("Pulses: -- | Sweeps: -- | Tracks: --")
-        self.lbl_summary.setStyleSheet("color: #cbd5e1; font-size: 8pt;")
-        layout.addWidget(self.lbl_summary)
-
-        self.control_layout.addWidget(group)
-
-    def _build_playback_group(self) -> None:
-        group = QtWidgets.QGroupBox("Playback & Timeline")
-        layout = QtWidgets.QVBoxLayout(group)
-
-        # Play / Pause / Step buttons
-        btn_layout = QtWidgets.QHBoxLayout()
-        self.btn_restart = QtWidgets.QPushButton("⏮")
-        self.btn_prev = QtWidgets.QPushButton("◀")
-        self.btn_play = QtWidgets.QPushButton("▶ Play")
-        self.btn_next = QtWidgets.QPushButton("▶")
-        self.btn_restart.clicked.connect(self._on_restart)
+        self.btn_first.clicked.connect(lambda: self._request_sweep(0))
         self.btn_prev.clicked.connect(self._on_prev)
-        self.btn_play.clicked.connect(self._toggle_play)
         self.btn_next.clicked.connect(self._on_next)
+        self.btn_last.clicked.connect(lambda: self._request_sweep(self.model.n_valid_sweeps - 1) if self.model else None)
+        self.btn_play.clicked.connect(self._toggle_play)
+        self.spin_fps.valueChanged.connect(self._update_playback_settings)
+        self.spin_step.valueChanged.connect(self._update_playback_settings)
 
-        btn_layout.addWidget(self.btn_restart)
-        btn_layout.addWidget(self.btn_prev)
-        btn_layout.addWidget(self.btn_play, 2)
-        btn_layout.addWidget(self.btn_next)
-        layout.addLayout(btn_layout)
+    def _build_scene_controls(self, parent_layout: QtWidgets.QVBoxLayout) -> None:
+        layout = self._group("3D Scene", parent_layout)
+        self.layer_aircraft = QtWidgets.QCheckBox("Aircraft (schematic)")
+        self.layer_trajectory = QtWidgets.QCheckBox("Trajectory")
+        self.layer_history = QtWidgets.QCheckBox("History Refh")
+        self.layer_current = QtWidgets.QCheckBox("Current Refh")
+        for checkbox, checked in ((self.layer_aircraft, True), (self.layer_trajectory, True),
+                                  (self.layer_history, True), (self.layer_current, True)):
+            checkbox.setChecked(checked)
+            layout.addWidget(checkbox)
+            checkbox.toggled.connect(self._update_layers)
 
-        # Timeline Slider
-        slider_layout = QtWidgets.QHBoxLayout()
-        self.slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
-        self.slider.setRange(0, 0)
-        self.slider.setEnabled(False)
-        self.slider.valueChanged.connect(self._on_slider_changed)
-        slider_layout.addWidget(self.slider)
-        layout.addLayout(slider_layout)
+        form = QtWidgets.QFormLayout()
+        self.combo_beams = self._add_combo(form, "Refh beams", [
+            ("Off", "none"), ("Every 16 tracks", "16"), ("Every 8 tracks", "8"), ("All tracks", "all")
+        ])
+        self.combo_beams.setCurrentIndex(1)
+        self.combo_camera = self._add_combo(form, "Camera", [
+            ("Follow sweep", "follow"), ("Overview", "overview"), ("Free camera", "free")
+        ])
+        self.combo_z_scale = self._add_combo(form, "Z scale (Vertical)", [
+            ("0.1x (Max compressed)", "0.1"),
+            ("0.2x", "0.2"),
+            ("0.25x (Default balanced)", "0.25"),
+            ("0.5x", "0.5"),
+            ("1.0x (True metric)", "1.0"),
+            ("2.0x (Exaggerated)", "2.0"),
+        ])
+        self.combo_z_scale.setCurrentIndex(2)
+        self.combo_point_color = self._add_combo(form, "History color", [
+            ("Height", "height"), ("SNR", "snr"), ("Amplitude", "amp"), ("Uniform", "uniform")
+        ])
+        self.combo_point_cmap = self._add_combo(form, "Height colors", [(n.title(), n) for n in ("viridis", "plasma", "inferno", "turbo")])
+        layout.addLayout(form)
+        self.btn_reset_camera = QtWidgets.QPushButton("Reset camera (Center on point cloud)")
+        layout.addWidget(self.btn_reset_camera)
+        self.combo_beams.currentIndexChanged.connect(self._update_layers)
+        self.combo_camera.currentIndexChanged.connect(self._on_camera_changed)
+        self.combo_z_scale.currentIndexChanged.connect(self._on_z_scale_changed)
+        self.combo_point_color.currentIndexChanged.connect(self._on_point_color_changed)
+        self.combo_point_cmap.currentIndexChanged.connect(lambda: self.scene3d.set_point_colormap(self.combo_point_cmap.currentData()))
+        self.btn_reset_camera.clicked.connect(self._reset_camera)
 
-        # Current Sweep ID & Jump
-        jump_layout = QtWidgets.QHBoxLayout()
-        jump_layout.addWidget(QtWidgets.QLabel("Sweep:"))
-        self.spin_sweep = QtWidgets.QSpinBox()
-        self.spin_sweep.setEnabled(False)
-        self.spin_sweep.valueChanged.connect(self._on_spin_sweep_changed)
-        jump_layout.addWidget(self.spin_sweep)
+    def _build_cross_section_controls(self, parent_layout: QtWidgets.QVBoxLayout) -> None:
+        layout = self._group("2D Cross-Section", parent_layout)
+        form = QtWidgets.QFormLayout()
+        self.combo_2d_view = self._add_combo(form, "View", [
+            ("Waveform Curtain", "curtain"), ("Georeferenced Cross-Section", "georeferenced")
+        ])
+        self.combo_2d_mode = self._add_combo(form, "Response", [
+            ("Net RX (minus bg)", "minus_bg"),
+            ("Raw RX amplitude", "raw"),
+            ("Asinh net RX", "asinh"),
+            ("Standardized RX", "standardized"),
+            ("Official Refh points", "refh_only"),
+        ])
+        self.combo_mapping = self._add_combo(form, "Range mapping", [("H2 (bin centers)", "H2"), ("H1 (endpoint centers)", "H1")])
+        self.combo_2d_cmap = self._add_combo(form, "Color map", [(n.title(), n) for n in ("viridis", "plasma", "inferno", "turbo", "gray")])
+        self.combo_range_mode = self._add_combo(form, "Color range", [("Stable file range", "stable"), ("Auto per frame", "local")])
+        layout.addLayout(form)
+        self.layer_refh_overlay = QtWidgets.QCheckBox("Show official Refh points")
+        self.layer_refh_overlay.setChecked(True)
+        self.layer_argmax_overlay = QtWidgets.QCheckBox("Show reconstructed RX argmax")
+        self.layer_argmax_overlay.setChecked(False)
+        layout.addWidget(self.layer_refh_overlay)
+        layout.addWidget(self.layer_argmax_overlay)
 
-        self.lbl_sweep_total = QtWidgets.QLabel("/ --")
-        jump_layout.addWidget(self.lbl_sweep_total)
-        layout.addLayout(jump_layout)
+        self.combo_2d_view.currentIndexChanged.connect(self._request_current_frame)
+        self.combo_2d_mode.currentIndexChanged.connect(self._request_current_frame)
+        self.combo_mapping.currentIndexChanged.connect(self._request_current_frame)
+        self.combo_2d_cmap.currentIndexChanged.connect(lambda: self.panel2d.set_colormap(self.combo_2d_cmap.currentData()))
+        self.combo_range_mode.currentIndexChanged.connect(self._on_color_range_mode)
+        self.layer_refh_overlay.toggled.connect(self._update_overlay_visibility)
+        self.layer_argmax_overlay.toggled.connect(self._update_overlay_visibility)
 
-        # FPS & Step
-        params_layout = QtWidgets.QHBoxLayout()
-        params_layout.addWidget(QtWidgets.QLabel("FPS:"))
-        self.combo_fps = QtWidgets.QComboBox()
-        self.combo_fps.addItems(["1", "2", "5", "10", "20", "30"])
-        self.combo_fps.setCurrentText("5")
-        self.combo_fps.currentTextChanged.connect(self._on_fps_changed)
-        params_layout.addWidget(self.combo_fps)
+    def _build_timeline(self, parent_layout: QtWidgets.QVBoxLayout) -> None:
+        bar = QtWidgets.QWidget()
+        layout = QtWidgets.QHBoxLayout(bar)
+        layout.setContentsMargins(5, 3, 5, 2)
+        layout.setSpacing(8)
+        self.slider_timeline = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.slider_timeline.setRange(0, 0)
+        self.slider_timeline.setTracking(True)
+        self.index_spin = QtWidgets.QSpinBox()
+        self.index_spin.setRange(0, 0)
+        self.index_spin.setPrefix("Index ")
+        layout.addWidget(QtWidgets.QLabel("Timeline"))
+        layout.addWidget(self.slider_timeline, 1)
+        layout.addWidget(self.index_spin)
+        parent_layout.addWidget(bar)
+        self.slider_timeline.valueChanged.connect(self._on_slider_changed)
+        self.slider_timeline.sliderReleased.connect(lambda: self._request_sweep(self.slider_timeline.value()))
+        self.index_spin.valueChanged.connect(self._request_sweep)
 
-        params_layout.addWidget(QtWidgets.QLabel("Step:"))
-        self.combo_step = QtWidgets.QComboBox()
-        self.combo_step.addItems(["1", "2", "5", "10", "20"])
-        self.combo_step.setCurrentText("1")
-        self.combo_step.currentTextChanged.connect(self._on_step_changed)
-        params_layout.addWidget(self.combo_step)
-        layout.addLayout(params_layout)
+    def _apply_theme(self) -> None:
+        self.setStyleSheet("""
+            QMainWindow, QWidget { background: #12171e; color: #d6dee8; font-family: 'Segoe UI', Arial; font-size: 9pt; }
+            QToolBar { background: #19212b; border: 0; spacing: 8px; padding: 5px; }
+            QGroupBox { font-weight: 600; border: 1px solid #303d4c; border-radius: 6px; margin-top: 8px; padding-top: 8px; background: #171e27; }
+            QGroupBox::title { subcontrol-origin: margin; left: 9px; padding: 0 4px; color: #89c2ff; }
+            QPushButton { background: #26364a; border: 1px solid #3d526c; border-radius: 4px; padding: 5px 8px; }
+            QPushButton:hover { background: #304761; }
+            QPushButton:disabled { color: #657383; background: #1b222b; }
+            QComboBox, QSpinBox, QDoubleSpinBox { background: #202a36; border: 1px solid #374657; border-radius: 3px; padding: 3px 5px; min-height: 22px; }
+            QScrollArea { border: 0; }
+            QStatusBar { background: #19212b; color: #9fb0c2; }
+            QSplitter::handle { background: #222c38; }
+        """)
 
-        self.control_layout.addWidget(group)
+    def _set_model_enabled(self, enabled: bool) -> None:
+        self.control_panel.setEnabled(enabled)
+        self.slider_timeline.setEnabled(enabled)
+        self.index_spin.setEnabled(enabled)
+        self.action_screenshot.setEnabled(enabled)
+        self.action_video.setEnabled(enabled)
+        self.btn_play.setEnabled(enabled)
+        for button in (self.btn_first, self.btn_prev, self.btn_next, self.btn_last):
+            button.setEnabled(enabled)
 
-    def _build_3d_group(self) -> None:
-        group = QtWidgets.QGroupBox("3D Scene Options")
-        layout = QtWidgets.QVBoxLayout(group)
-
-        # Display Toggles
-        toggles_grid = QtWidgets.QGridLayout()
-        self.chk_aircraft = QtWidgets.QCheckBox("Aircraft")
-        self.chk_aircraft.setChecked(True)
-        self.chk_aircraft.toggled.connect(self._on_3d_param_changed)
-
-        self.chk_trajectory = QtWidgets.QCheckBox("Trajectory")
-        self.chk_trajectory.setChecked(True)
-        self.chk_trajectory.toggled.connect(self._on_3d_param_changed)
-
-        self.chk_history = QtWidgets.QCheckBox("History Refh")
-        self.chk_history.setChecked(True)
-        self.chk_history.toggled.connect(self._on_3d_param_changed)
-
-        self.chk_current = QtWidgets.QCheckBox("Current Refh")
-        self.chk_current.setChecked(True)
-        self.chk_current.toggled.connect(self._on_3d_param_changed)
-
-        toggles_grid.addWidget(self.chk_aircraft, 0, 0)
-        toggles_grid.addWidget(self.chk_trajectory, 0, 1)
-        toggles_grid.addWidget(self.chk_history, 1, 0)
-        toggles_grid.addWidget(self.chk_current, 1, 1)
-        layout.addLayout(toggles_grid)
-
-        # Beams
-        beam_layout = QtWidgets.QHBoxLayout()
-        beam_layout.addWidget(QtWidgets.QLabel("Beams:"))
-        self.combo_beams = QtWidgets.QComboBox()
-        self.combo_beams.addItems(["None", "16 tracks", "8 tracks", "All tracks"])
-        self.combo_beams.setCurrentText("16 tracks")
-        self.combo_beams.currentTextChanged.connect(self._on_3d_param_changed)
-        beam_layout.addWidget(self.combo_beams)
-        layout.addLayout(beam_layout)
-
-        # Vertical Scale
-        vscale_layout = QtWidgets.QHBoxLayout()
-        vscale_layout.addWidget(QtWidgets.QLabel("Z-Scale:"))
-        self.combo_vscale = QtWidgets.QComboBox()
-        self.combo_vscale.addItems(["1.0 (True)", "0.1", "0.05", "0.025"])
-        self.combo_vscale.setCurrentText("0.05")
-        self.combo_vscale.currentTextChanged.connect(self._on_vscale_changed)
-        vscale_layout.addWidget(self.combo_vscale)
-        layout.addLayout(vscale_layout)
-
-        # Camera Mode & Reset View
-        cam_layout = QtWidgets.QHBoxLayout()
-        self.combo_cam = QtWidgets.QComboBox()
-        self.combo_cam.addItems(["Overview", "Follow Aircraft"])
-        self.combo_cam.currentTextChanged.connect(self._on_cam_changed)
-        cam_layout.addWidget(self.combo_cam)
-
-        self.btn_reset_cam = QtWidgets.QPushButton("Reset View")
-        self.btn_reset_cam.clicked.connect(self._on_reset_cam)
-        cam_layout.addWidget(self.btn_reset_cam)
-        layout.addLayout(cam_layout)
-
-        self.control_layout.addWidget(group)
-
-    def _build_2d_group(self) -> None:
-        group = QtWidgets.QGroupBox("2D Cross-Section Options")
-        layout = QtWidgets.QVBoxLayout(group)
-
-        # Mode
-        mode_layout = QtWidgets.QHBoxLayout()
-        mode_layout.addWidget(QtWidgets.QLabel("Mode:"))
-        self.combo_2d_mode = QtWidgets.QComboBox()
-        self.combo_2d_mode.addItems(
-            [
-                "Minus bg_mean (Net RX)",
-                "Raw RX amplitude",
-                "Asinh-scaled Net RX",
-                "Standardized RX (σ)",
-                "Refh Spatial Section",
-            ]
-        )
-        self.combo_2d_mode.currentTextChanged.connect(self._on_2d_param_changed)
-        mode_layout.addWidget(self.combo_2d_mode)
-        layout.addLayout(mode_layout)
-
-        # X-Axis & Mapping Convention
-        geom_layout = QtWidgets.QHBoxLayout()
-        geom_layout.addWidget(QtWidgets.QLabel("X-Axis:"))
-        self.combo_xaxis = QtWidgets.QComboBox()
-        self.combo_xaxis.addItems(["Meters", "Track Index"])
-        self.combo_xaxis.currentTextChanged.connect(self._on_2d_param_changed)
-        geom_layout.addWidget(self.combo_xaxis)
-
-        geom_layout.addWidget(QtWidgets.QLabel("Map:"))
-        self.combo_mapping = QtWidgets.QComboBox()
-        self.combo_mapping.addItems(["H2", "H1"])
-        self.combo_mapping.currentTextChanged.connect(self._on_2d_param_changed)
-        geom_layout.addWidget(self.combo_mapping)
-        layout.addLayout(geom_layout)
-
-        # Colormap & Range
-        cmap_layout = QtWidgets.QHBoxLayout()
-        cmap_layout.addWidget(QtWidgets.QLabel("Color:"))
-        self.combo_cmap = QtWidgets.QComboBox()
-        self.combo_cmap.addItems(["turbo", "viridis", "inferno", "gray"])
-        self.combo_cmap.currentTextChanged.connect(self._on_cmap_changed)
-        cmap_layout.addWidget(self.combo_cmap)
-
-        self.combo_crange = QtWidgets.QComboBox()
-        self.combo_crange.addItems(["Fixed Range", "Auto Frame"])
-        self.combo_crange.currentTextChanged.connect(self._on_2d_param_changed)
-        cmap_layout.addWidget(self.combo_crange)
-        layout.addLayout(cmap_layout)
-
-        # Overlays
-        chk_layout = QtWidgets.QHBoxLayout()
-        self.chk_overlay_refh = QtWidgets.QCheckBox("Refh Overlay")
-        self.chk_overlay_refh.setChecked(True)
-        self.chk_overlay_refh.toggled.connect(self._on_2d_param_changed)
-
-        self.chk_overlay_argmax = QtWidgets.QCheckBox("Argmax Overlay")
-        self.chk_overlay_argmax.setChecked(True)
-        self.chk_overlay_argmax.toggled.connect(self._on_2d_param_changed)
-
-        chk_layout.addWidget(self.chk_overlay_refh)
-        chk_layout.addWidget(self.chk_overlay_argmax)
-        layout.addLayout(chk_layout)
-
-        self.control_layout.addWidget(group)
-
-    def _build_export_group(self) -> None:
-        group = QtWidgets.QGroupBox("Export")
-        layout = QtWidgets.QVBoxLayout(group)
-
-        self.btn_screenshot = QtWidgets.QPushButton("Save Screenshot (PNG)...")
-        self.btn_screenshot.clicked.connect(self._on_save_screenshot)
-        layout.addWidget(self.btn_screenshot)
-
-        self.btn_export_mp4 = QtWidgets.QPushButton("Export MP4 Video...")
-        self.btn_export_mp4.clicked.connect(self._on_export_mp4)
-        layout.addWidget(self.btn_export_mp4)
-
-        self.control_layout.addWidget(group)
-
-    # -------------------------------------------------------------------------
-    # Actions & Slots
-    # -------------------------------------------------------------------------
-
-    def _browse_h5(self) -> None:
-        default_dir = Path("data/raw/casals_l1b")
-        if not default_dir.exists():
-            default_dir = Path(".")
-        path, _ = QtWidgets.QFileDialog.getOpenFileName(
-            self, "Open CASALS L1B HDF5", str(default_dir.resolve()), "HDF5 Files (*.h5 *.hdf5)"
-        )
+    def _open_file_dialog(self) -> None:
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Open CASALS L1B HDF5", "", "HDF5 files (*.h5 *.hdf5);;All files (*)")
         if path:
             self.load_h5(path)
 
     def load_h5(self, path: str) -> None:
-        self._pause()
-        self.lbl_filename.setText(Path(path).name)
-        self.status_label_main.setText(f"Loading {Path(path).name} in background...")
-        self.btn_open_file.setEnabled(False)
-        self.slider.setEnabled(False)
-        self.spin_sweep.setEnabled(False)
+        if self._export_active:
+            self._cancel_video_export()
+        self._loading = True
+        self._set_model_enabled(False)
+        self.file_label.setText(Path(path).name)
+        self.statusBar().showMessage(f"Opening {path} ...")
+        self.controller.load_file(path)
 
-        # Worker does all loading in background thread
-        QtCore.QMetaObject.invokeMethod(self.worker, "load_file", QtCore.Qt.QueuedConnection, QtCore.Q_ARG(str, path))
-
-    @QtCore.pyqtSlot(int, str)
-    def _on_load_progress(self, percent: int, msg: str) -> None:
-        self.status_label_main.setText(f"Loading ({percent}%): {msg}")
-
-    @QtCore.pyqtSlot(object)
-    def _on_file_loaded(self, model: H5Model) -> None:
+    @QtCore.pyqtSlot(object, int)
+    def _on_model_loaded(self, model: H5Model, _generation: int) -> None:
         self.model = model
-        self.btn_open_file.setEnabled(True)
-        self.lbl_filename.setText(model.path.name)
-        self.lbl_summary.setText(
-            f"Pulses: {model.n_records:,} | Sweeps: {model.n_valid_sweeps:,} | Tracks: {model.n_tracks}"
-        )
-
-        # Setup slider and controls
-        self.slider.setRange(0, model.n_valid_sweeps - 1)
-        self.slider.setValue(0)
-        self.slider.setEnabled(True)
-
-        self.spin_sweep.setRange(int(model.valid_sweep_ids[0]), int(model.valid_sweep_ids[-1]))
-        self.spin_sweep.setValue(int(model.valid_sweep_ids[0]))
-        self.spin_sweep.setEnabled(True)
-
-        self.lbl_sweep_total.setText(f"/ {int(model.valid_sweep_ids[-1])}")
-
-        # Set stable color range for 3D and 2D
-        self.scene3d.set_color_ranges(model.height_vmin, model.height_vmax)
-        self.panel2d.set_fixed_range(0.0, 500.0)
-
-        # Reset camera to view initial scene
-        inst0 = model.sweep_instrument_enu[0]
-        self.scene3d.reset_view(center=inst0, distance=1800.0)
-
-        # Request initial sweep
         self.current_sweep_idx = 0
+        self._loading = False
+        self.slider_timeline.blockSignals(True)
+        self.index_spin.blockSignals(True)
+        self.slider_timeline.setRange(0, model.n_valid_sweeps - 1)
+        self.index_spin.setRange(0, model.n_valid_sweeps - 1)
+        self.slider_timeline.setValue(0)
+        self.index_spin.setValue(0)
+        self.slider_timeline.blockSignals(False)
+        self.index_spin.blockSignals(False)
+
+        history_start = time.perf_counter()
+        model_history = model.decimated_enu
+        self.scene3d.set_history_data(
+            positions=model_history,
+            sweep_indices=model.decimated_sweep_index,
+            prefix_count=model.decimated_offsets,
+            heights=model.decimated_height,
+            snr=model.decimated_snr,
+            amplitude=model.decimated_amp,
+            ranges={"height": (model.height_vmin, model.height_vmax),
+                    "snr": (model.snr_vmin, model.snr_vmax),
+                    "amp": (model.amp_vmin, model.amp_vmax)},
+            trajectory=model.sweep_instrument_enu.astype(np.float32),
+        )
+        history_upload_ms = (time.perf_counter() - history_start) * 1000.0
+        self.panel2d.set_color_ranges({
+            "raw": (0.0, max(1.0, model.amp_vmax * 2.0)),
+            "minus_bg": (0.0, max(1.0, model.amp_vmax)),
+            "asinh": (0.0, 5.0),
+            "standardized": (0.0, 10.0),
+        })
+        self._set_model_enabled(True)
+        self.progress_label.clear()
+        self.statusBar().showMessage(
+            f"Loaded {model.n_valid_sweeps:,} sweeps, {model.n_tracks:,} tracks, "
+            f"{model.n_rx_bins:,} RX bins. History: {model.total_decimated_points:,} points "
+            f"({history_upload_ms:.0f} ms CPU preparation / buffer upload call)."
+        )
         self._request_current_frame()
 
+    @QtCore.pyqtSlot(int, str)
+    def _on_load_progress(self, percent: int, message: str) -> None:
+        self.progress_label.setText(f"{percent}% - {message}")
+
     @QtCore.pyqtSlot(str)
-    def _on_worker_error(self, err_msg: str) -> None:
-        self.btn_open_file.setEnabled(True)
-        self.status_label_main.setText(f"Error: {err_msg}")
-        QtWidgets.QMessageBox.critical(self, "Error", err_msg)
+    def _on_error(self, message: str) -> None:
+        self.progress_label.clear()
+        if self._export_active:
+            self._on_export_failed(f"Video export stopped: {message}")
+            return
+        self.statusBar().showMessage(message, 15000)
+        QtWidgets.QMessageBox.critical(self, "CASALS Sweep Viewer", message)
 
-    def _get_frame_params(self) -> FrameParams:
-        mode_text = self.combo_2d_mode.currentText()
-        if "Minus" in mode_text:
-            m2d = "minus_bg"
-        elif "Raw" in mode_text:
-            m2d = "raw"
-        elif "Asinh" in mode_text:
-            m2d = "asinh"
-        elif "Standardized" in mode_text:
-            m2d = "standardized"
-        else:
-            m2d = "refh_only"
-
-        x_mode = "meters" if self.combo_xaxis.currentText() == "Meters" else "track"
-        mapping = self.combo_mapping.currentText()
-
+    def _frame_params(self) -> FrameParams:
+        height_range = self.model.height_range if self.model is not None else None
         return FrameParams(
-            mode_2d=m2d,
-            x_axis_mode=x_mode,
-            mapping_convention=mapping,
-            point_color_mode=self.scene3d.point_color_mode,
+            mode_2d=self.combo_2d_mode.currentData(),
+            view_2d=self.combo_2d_view.currentData(),
+            mapping_convention=self.combo_mapping.currentData(),
             n_cols=384,
             n_rows=512,
             asinh_scale=100.0,
+            fixed_height_range=height_range,
         )
 
-    def _request_current_frame(self) -> None:
-        if self.model is None:
+    def _request_current_frame(self, *_args) -> None:
+        if self.model is None or self._loading or self._export_active:
             return
-        self._request_id += 1
-        params = self._get_frame_params()
-        QtCore.QMetaObject.invokeMethod(
-            self.worker,
-            "request_sweep",
-            QtCore.Qt.QueuedConnection,
-            QtCore.Q_ARG(int, self.current_sweep_idx),
-            QtCore.Q_ARG(object, params),
-            QtCore.Q_ARG(int, self._request_id),
-        )
+        self._request_sweep(self.current_sweep_idx, self._frame_params())
+
+    def _request_sweep(self, index: int, params: Optional[FrameParams] = None) -> None:
+        if self.model is None or self._export_active:
+            return
+        index = max(0, min(int(index), self.model.n_valid_sweeps - 1))
+        self._seek_timer.stop()
+        self.controller.request_frame(index, params or self._frame_params())
+
+    @QtCore.pyqtSlot(int)
+    def _on_position_changed(self, index: int) -> None:
+        self.current_sweep_idx = index
+        self.slider_timeline.blockSignals(True)
+        self.index_spin.blockSignals(True)
+        self.slider_timeline.setValue(index)
+        self.index_spin.setValue(index)
+        self.slider_timeline.blockSignals(False)
+        self.index_spin.blockSignals(False)
+        if self.model is not None:
+            sweep_id = int(self.model.valid_sweep_ids[index])
+            self.sweep_label.setText(f"Sweep ID {sweep_id:,}   |   {index + 1:,} / {self.model.n_valid_sweeps:,}")
+
+    def _on_slider_changed(self, index: int) -> None:
+        if self.model is None or self._export_active:
+            return
+        self.current_sweep_idx = int(index)
+        self.index_spin.blockSignals(True)
+        self.index_spin.setValue(index)
+        self.index_spin.blockSignals(False)
+        self._seek_timer.start(30)
 
     @QtCore.pyqtSlot(object)
     def _on_frame_ready(self, frame: SweepFrame) -> None:
-        # Check if frame matches current sweep index
-        if frame.sweep_data.sweep_index != self.current_sweep_idx:
+        if self._closing:
             return
-
         self.current_frame = frame
-        sw = frame.sweep_data
-
-        # Measure FPS
-        now = time.monotonic()
-        dt = now - self._last_frame_time
-        self._last_frame_time = now
-        if dt > 0:
-            actual_fps = 1.0 / dt
-            self._fps_history.append(actual_fps)
-            if len(self._fps_history) > 10:
-                self._fps_history.pop(0)
-            avg_fps = sum(self._fps_history) / len(self._fps_history)
-            self.status_label_fps.setText(f"Actual: {avg_fps:.1f} FPS | Req: {self._requested_fps:g} FPS")
-
-        # 1. Update 3D Scene
-        density_text = self.combo_beams.currentText()
-        if "16" in density_text:
-            self.scene3d.beam_density = "16"
-        elif "8" in density_text:
-            self.scene3d.beam_density = "8"
-        elif "All" in density_text:
-            self.scene3d.beam_density = "all"
-        else:
-            self.scene3d.beam_density = "none"
-
-        self.scene3d.show_aircraft = self.chk_aircraft.isChecked()
-        self.scene3d.show_trajectory = self.chk_trajectory.isChecked()
-        self.scene3d.show_history_refh = self.chk_history.isChecked()
-        self.scene3d.show_current_refh = self.chk_current.isChecked()
-        self.scene3d.show_beams = self.scene3d.beam_density != "none"
-
-        self.scene3d.update_frame(
-            sweep=sw,
-            history_enu=frame.history_enu,
-            history_values=frame.history_values,
-            all_trajectory_enu=frame.all_trajectory_enu,
-        )
-
-        # 2. Update 2D Panel
-        self.panel2d.show_refh_overlay = self.chk_overlay_refh.isChecked()
-        self.panel2d.show_argmax_overlay = self.chk_overlay_argmax.isChecked()
-        self.panel2d.color_range_mode = "fixed" if self.combo_crange.currentText() == "Fixed Range" else "auto"
+        self.current_sweep_idx = frame.sweep_index
+        self.scene3d.update_frame(frame.sweep_data, frame.history_visible_count)
         self.panel2d.update_cross_section(frame.grid)
-
-        # 3. Update Status Bar
-        valid_count = int(np.sum(sw.valid_pulse_mask))
-        snr_median = float(np.nanmedian(sw.refh_snr)) if sw.refh_snr is not None and valid_count > 0 else np.nan
-        h_min = float(np.nanmin(sw.refh_height[sw.valid_pulse_mask])) if valid_count > 0 else np.nan
-        h_max = float(np.nanmax(sw.refh_height[sw.valid_pulse_mask])) if valid_count > 0 else np.nan
-
-        alt = float(sw.pulse_instrument_enu[0, 2]) if len(sw.pulse_instrument_enu) else np.nan
-        status_text = (
-            f"Sweep: {sw.sweep_id} ({sw.sweep_index + 1}/{sw.total_sweeps}) | "
-            f"Valid Refh: {valid_count}/{sw.n_tracks} | "
-            f"Median SNR: {snr_median:.1f} | "
-            f"Refh Height: [{h_min:.1f}, {h_max:.1f}] m | "
-            f"Aircraft Orientation: schematic, heading {sw.heading_deg:.1f}°"
-        )
-        self.status_label_main.setText(status_text)
-
+        self._on_position_changed(frame.sweep_index)
+        now = time.monotonic()
+        if self._last_frame_monotonic:
+            self._recent_frame_ms.append((now - self._last_frame_monotonic) * 1000.0)
+            self._recent_frame_ms = self._recent_frame_ms[-30:]
+        self._last_frame_monotonic = now
+        fps = 1000.0 / float(np.mean(self._recent_frame_ms)) if self._recent_frame_ms else 0.0
+        status = (f"Sweep {frame.sweep_data.sweep_id:,} | valid Refh "
+                  f"{int(frame.sweep_data.valid_pulse_mask.sum())}/{frame.sweep_data.n_tracks} | "
+                  f"waveform block {frame.block_read_ms:.1f} ms | 2D {frame.cross_section_ms:.1f} ms | "
+                  f"GUI {fps:.1f} FPS")
         if frame.grid.closure_median_3d_m is not None:
-            c3d = frame.grid.closure_median_3d_m
-            cv = frame.grid.closure_median_vertical_m
-            self.status_label_closure.setText(f"Closure: 3D {c3d*1000:.1f} mm, V {cv*1000:.1f} mm")
-        else:
-            self.status_label_closure.setText("")
-
-    # -------------------------------------------------------------------------
-    # Playback Controls
-    # -------------------------------------------------------------------------
-
-    def _toggle_play(self) -> None:
-        if self._is_playing:
-            self._pause()
-        else:
-            self._play()
-
-    def _play(self) -> None:
-        if self.model is None:
-            return
-        self._is_playing = True
-        self.btn_play.setText("⏸ Pause")
-        interval = max(20, int(round(1000.0 / self._requested_fps)))
-        self._play_timer.start(interval)
-
-    def _pause(self) -> None:
-        self._is_playing = False
-        self.btn_play.setText("▶ Play")
-        self._play_timer.stop()
-
-    def _on_play_tick(self) -> None:
-        if self.model is None:
-            return
-        next_idx = self.current_sweep_idx + self._step_size
-        if next_idx >= self.model.n_valid_sweeps:
-            next_idx = 0  # Loop back
-        self.current_sweep_idx = next_idx
-        self.slider.blockSignals(True)
-        self.spin_sweep.blockSignals(True)
-        self.slider.setValue(next_idx)
-        self.spin_sweep.setValue(int(self.model.valid_sweep_ids[next_idx]))
-        self.slider.blockSignals(False)
-        self.spin_sweep.blockSignals(False)
-        self._request_current_frame()
-
-    def _on_slider_changed(self, value: int) -> None:
-        if self.model is None:
-            return
-        self.current_sweep_idx = value
-        self.spin_sweep.blockSignals(True)
-        self.spin_sweep.setValue(int(self.model.valid_sweep_ids[value]))
-        self.spin_sweep.blockSignals(False)
-        self._request_current_frame()
-
-    def _on_spin_sweep_changed(self, value: int) -> None:
-        if self.model is None:
-            return
-        if value in self.model.sweep_id_to_idx:
-            idx = self.model.sweep_id_to_idx[value]
-            self.current_sweep_idx = idx
-            self.slider.blockSignals(True)
-            self.slider.setValue(idx)
-            self.slider.blockSignals(False)
-            self._request_current_frame()
-
-    def _on_restart(self) -> None:
-        if self.model is None:
-            return
-        self._pause()
-        self.current_sweep_idx = 0
-        self.slider.setValue(0)
+            status += f" | H{frame.grid.mapping_convention} argmax-Refh median {frame.grid.closure_median_3d_m:.3f} m"
+        self.statusBar().showMessage(status)
+        if self._restore_export_state and frame.sweep_index == self._export_old_sweep:
+            self._restore_export_state = False
+            if self._export_camera_state is not None:
+                mode, center, azimuth, elevation, scale_factor = self._export_camera_state
+                self.scene3d.camera_mode = mode
+                self.scene3d.camera.center = center
+                self.scene3d.camera.azimuth = azimuth
+                self.scene3d.camera.elevation = elevation
+                self.scene3d.camera.scale_factor = scale_factor
+                self.scene3d.canvas.update()
+            if self._export_was_playing:
+                self.controller.play(self.spin_fps.value(), self.spin_step.value())
+        if self._export_active:
+            QtCore.QTimer.singleShot(80, self._capture_export_frame)
 
     def _on_prev(self) -> None:
-        if self.model is None:
-            return
-        self._pause()
-        self.current_sweep_idx = max(0, self.current_sweep_idx - self._step_size)
-        self.slider.setValue(self.current_sweep_idx)
+        self._request_sweep(self.current_sweep_idx - 1)
 
     def _on_next(self) -> None:
-        if self.model is None:
-            return
-        self._pause()
-        self.current_sweep_idx = min(self.model.n_valid_sweeps - 1, self.current_sweep_idx + self._step_size)
-        self.slider.setValue(self.current_sweep_idx)
+        self._request_sweep(self.current_sweep_idx + 1)
 
-    def _on_fps_changed(self, text: str) -> None:
-        try:
-            self._requested_fps = float(text)
-            if self._is_playing:
-                interval = max(20, int(round(1000.0 / self._requested_fps)))
-                self._play_timer.setInterval(interval)
-        except Exception:
-            pass
+    def _toggle_play(self) -> None:
+        if self.controller.is_playing:
+            self.controller.pause()
+        else:
+            self.controller.play(self.spin_fps.value(), self.spin_step.value())
 
-    def _on_step_changed(self, text: str) -> None:
-        try:
-            self._step_size = max(1, int(text))
-        except Exception:
-            pass
+    def _update_playback_settings(self, *_args) -> None:
+        self.controller.set_playback(self.spin_fps.value(), self.spin_step.value())
 
-    # -------------------------------------------------------------------------
-    # Visualization Param Changes
-    # -------------------------------------------------------------------------
+    @QtCore.pyqtSlot(bool)
+    def _on_playback_changed(self, playing: bool) -> None:
+        self.btn_play.setText("Pause" if playing else "Play")
 
-    def _on_vscale_changed(self, text: str) -> None:
-        scale_val = 0.05
-        if "1.0" in text:
-            scale_val = 1.0
-        elif "0.1" in text:
-            scale_val = 0.1
-        elif "0.05" in text:
-            scale_val = 0.05
-        elif "0.025" in text:
-            scale_val = 0.025
-        self.scene3d.set_vertical_scale(scale_val)
-        if self.current_frame is not None:
-            self._on_frame_ready(self.current_frame)
-
-    def _on_cam_changed(self, text: str) -> None:
-        self.scene3d.camera_mode = "follow" if "Follow" in text else "overview"
-        if self.current_frame is not None:
-            self._on_frame_ready(self.current_frame)
-
-    def _on_reset_cam(self) -> None:
-        if self.model is not None:
-            inst = self.model.sweep_instrument_enu[self.current_sweep_idx]
-            self.scene3d.reset_view(center=inst, distance=1800.0)
-
-    def _on_cmap_changed(self, text: str) -> None:
-        self.scene3d.point_colormap = text
-        self.panel2d.set_colormap(text)
-        if self.current_frame is not None:
-            self._on_frame_ready(self.current_frame)
-
-    def _on_3d_param_changed(self) -> None:
-        if self.current_frame is not None:
-            self._on_frame_ready(self.current_frame)
-
-    def _on_2d_param_changed(self) -> None:
-        self._request_current_frame()
-
-    # -------------------------------------------------------------------------
-    # Screenshot and Video Export
-    # -------------------------------------------------------------------------
-
-    def _on_save_screenshot(self) -> None:
-        if self.model is None or self.current_frame is None:
-            QtWidgets.QMessageBox.warning(self, "No Data", "Please load a file first.")
-            return
-
-        default_out = Path("outputs") / "screenshots" / f"{self.model.path.stem}_sweep_{self.current_frame.sweep_data.sweep_id}.png"
-        path, _ = QtWidgets.QFileDialog.getSaveFileName(
-            self, "Save Screenshot", str(default_out.resolve()), "PNG Images (*.png)"
+    def _update_layers(self, *_args) -> None:
+        self.scene3d.set_layers(
+            aircraft=self.layer_aircraft.isChecked(),
+            trajectory=self.layer_trajectory.isChecked(),
+            history=self.layer_history.isChecked(),
+            current=self.layer_current.isChecked(),
+            beams=self.combo_beams.currentData(),
         )
+
+    def _on_camera_changed(self, *_args) -> None:
+        self.scene3d.set_camera_mode(self.combo_camera.currentData())
+
+    def _on_z_scale_changed(self, *_args) -> None:
+        try:
+            val = float(self.combo_z_scale.currentData())
+        except (ValueError, TypeError):
+            val = 0.25
+        self.scene3d.set_z_scale(val)
+
+    def _on_point_color_changed(self, *_args) -> None:
+        self.scene3d.set_point_color_mode(self.combo_point_color.currentData())
+
+    def _reset_camera(self) -> None:
+        self.scene3d.set_camera_mode(self.combo_camera.currentData())
+        self.scene3d.reset_view()
+
+    def _on_color_range_mode(self, *_args) -> None:
+        self.panel2d.set_color_range_mode(self.combo_range_mode.currentData())
+        if self.current_frame is not None:
+            self.panel2d.update_cross_section(self.current_frame.grid)
+
+    def _update_overlay_visibility(self, *_args) -> None:
+        self.panel2d.show_refh_overlay = self.layer_refh_overlay.isChecked()
+        self.panel2d.show_argmax_overlay = self.layer_argmax_overlay.isChecked()
+        if self.current_frame is not None:
+            self.panel2d.update_cross_section(self.current_frame.grid)
+
+    def _file_identity(self) -> dict:
+        assert self.model is not None
+        stat = self.model.path.stat()
+        return {
+            "path": str(self.model.path),
+            "file_name": self.model.path.name,
+            "size_bytes": stat.st_size,
+            "modified_time_ns": stat.st_mtime_ns,
+        }
+
+    def _display_settings(self) -> dict:
+        return {
+            "response_2d": self.combo_2d_mode.currentData(),
+            "view_2d": self.combo_2d_view.currentData(),
+            "mapping_convention": self.combo_mapping.currentData(),
+            "color_range_mode": self.combo_range_mode.currentData(),
+            "color_map_2d": self.combo_2d_cmap.currentData(),
+            "history_color_mode": self.combo_point_color.currentData(),
+            "history_height_color_map": self.combo_point_cmap.currentData(),
+            "beam_density": self.combo_beams.currentData(),
+            "aircraft_visible": self.layer_aircraft.isChecked(),
+            "trajectory_visible": self.layer_trajectory.isChecked(),
+            "history_visible": self.layer_history.isChecked(),
+            "current_refh_visible": self.layer_current.isChecked(),
+            "argmax_overlay": self.layer_argmax_overlay.isChecked(),
+            "refh_overlay": self.layer_refh_overlay.isChecked(),
+            "coordinate_system": "local ENU",
+            "coordinate_unit": "m",
+            "axis_scale_xyz": [1.0, 1.0, 1.0],
+            "axis_origin_enu_m": self.scene3d._axis_origin_enu.tolist(),
+            "axis_reference_length_m": float(self.scene3d._axis_reference_m),
+            "camera_mode": self.scene3d.camera_mode,
+            "aircraft_orientation": "schematic; heading derived from horizontal trajectory",
+            "refh_height_datum": "WGS84 ellipsoidal height (EPSG:4979)",
+            "beam_bin_geometry": "research visualization using H1/H2 range-window mapping",
+        }
+
+    def _display_metadata(self, sweep: SweepFrame) -> dict:
+        camera = self.scene3d.camera
+        return {
+            "input_file": self._file_identity(),
+            "sweep_id": sweep.sweep_data.sweep_id,
+            "sweep_index": sweep.sweep_index,
+            "total_sweeps": sweep.sweep_data.total_sweeps,
+            "track_count": sweep.sweep_data.n_tracks,
+            "valid_refh_count": int(sweep.sweep_data.valid_pulse_mask.sum()),
+            **self._display_settings(),
+            "camera_center": list(camera.center),
+            "camera_azimuth_deg": float(camera.azimuth),
+            "camera_elevation_deg": float(camera.elevation),
+            "camera_scale_factor": float(camera.scale_factor),
+        }
+
+    def _save_screenshot(self) -> None:
+        if self.model is None or self.current_frame is None:
+            return
+        default = Path("outputs") / "casals_sweep_animator_qt" / "screenshots" / f"{self.model.path.stem}_sweep_{self.current_frame.sweep_data.sweep_id}.png"
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(self, "Save composed screenshot", str(default.resolve()), "PNG image (*.png)")
         if not path:
             return
+        try:
+            image = self._composed_image(self.current_frame)
+            output = Path(path).resolve()
+            output.parent.mkdir(parents=True, exist_ok=True)
+            if not image.save(str(output), "PNG"):
+                raise OSError(f"Could not write screenshot to {output}")
+            output.with_suffix(".json").write_text(json.dumps({
+                **self._display_metadata(self.current_frame),
+                "image_file": output.name,
+                "output_dimensions": [image.width(), image.height()],
+            }, indent=2), encoding="utf-8")
+            self.statusBar().showMessage(f"Saved {output}", 8000)
+        except Exception as exc:
+            self._show_error(f"Screenshot failed: {exc}")
 
-        p3d = capture_widget_pixmap(self.scene3d)
-        p2d = capture_widget_pixmap(self.panel2d)
-        mapping = self.combo_mapping.currentText()
-
-        saved = composite_screenshot(
-            scene3d_pixmap=p3d,
-            panel2d_pixmap=p2d,
-            sweep_data=self.current_frame.sweep_data,
-            model=self.model,
-            mapping_convention=mapping,
-            output_path=path,
-        )
-        QtWidgets.QMessageBox.information(self, "Screenshot Saved", f"Saved composite screenshot to:\n{saved}")
-
-    def _on_export_mp4(self) -> None:
-        if self.model is None or self.current_frame is None:
-            QtWidgets.QMessageBox.warning(self, "No Data", "Please load a file first.")
-            return
-
-        self._pause()
-        curr_sid = self.current_frame.sweep_data.sweep_id
-        dlg = VideoExportDialog(self.model, curr_sid, parent=self)
-        if dlg.exec_() != QtWidgets.QDialog.Accepted:
-            return
-
-        settings = dlg.get_settings()
-
-        # Render capture callback: sets sweep, waits for ready, grabs pixmap
-        # For video export, we create an offscreen composite function
-        def render_sweep_image(sweep_id: int) -> QtGui.QImage:
-            s_idx = self.model.sweep_id_to_idx[sweep_id]
-            # Synchronously read single sweep data
-            with h5py.File(self.model.path, "r") as h5:
-                sweep_data = self.model.read_sweep_data(h5, s_idx)
-            hist_enu, hist_h, hist_snr, hist_amp = self.model.get_history_slice(s_idx)
-            params = self._get_frame_params()
-            grid = compute_waveform_cross_section(
-                sweep=sweep_data,
-                mode=params.mode_2d,
-                x_axis_mode=params.x_axis_mode,
-                mapping_convention=params.mapping_convention,
-                n_cols=params.n_cols,
-                n_rows=params.n_rows,
-                asinh_scale=params.asinh_scale,
-            )
-            # Update GUI widgets directly
-            self.scene3d.update_frame(
-                sweep=sweep_data,
-                history_enu=hist_enu,
-                history_values=hist_h,
-                all_trajectory_enu=self.model.sweep_instrument_enu,
-            )
-            self.panel2d.update_cross_section(grid)
-            QtWidgets.QApplication.processEvents()
-
-            p3d = capture_widget_pixmap(self.scene3d)
-            p2d = capture_widget_pixmap(self.panel2d)
-            temp_path = Path(".compile_tmp") / "export_frame.png"
-            composite_path = composite_screenshot(
-                scene3d_pixmap=p3d,
-                panel2d_pixmap=p2d,
-                sweep_data=sweep_data,
-                model=self.model,
-                mapping_convention=params.mapping_convention,
-                output_path=temp_path,
-            )
-            return QtGui.QImage(str(composite_path))
-
-        progress_dialog = QtWidgets.QProgressDialog("Exporting MP4 video...", "Cancel", 0, 100, self)
-        progress_dialog.setWindowModality(QtCore.Qt.WindowModal)
-
-        exporter = VideoExportWorker(
-            model=self.model,
-            start_sweep=settings["start_sweep"],
-            end_sweep=settings["end_sweep"],
-            step=settings["step"],
-            fps=settings["fps"],
-            output_path=settings["output_path"],
-            render_callback=render_sweep_image,
-            parent=self,
+    def _composed_image(self, frame: SweepFrame) -> QtGui.QImage:
+        scene_image = self.scene3d.capture_framebuffer()
+        panel_image = self.panel2d.grab().toImage()
+        return composite_frame_image(
+            scene_image,
+            panel_image,
+            frame.sweep_data,
+            self.model,
+            frame.grid.mapping_convention,
         )
 
-        def on_prog(curr, tot, msg):
-            progress_dialog.setMaximum(tot)
-            progress_dialog.setValue(curr)
-            progress_dialog.setLabelText(msg)
+    def _export_video(self) -> None:
+        if self.model is None or self.current_frame is None or self._export_active:
+            return
+        dialog = VideoExportDialog(self.model, self.current_frame.sweep_data.sweep_id, self)
+        if dialog.exec_() != QtWidgets.QDialog.Accepted:
+            return
+        settings = dialog.get_settings()
+        ids = self.model.valid_sweep_ids
+        self._export_indices = [
+            i for i, sid in enumerate(ids)
+            if settings["start_sweep"] <= int(sid) <= settings["end_sweep"]
+            and (int(sid) - settings["start_sweep"]) % settings["step"] == 0
+        ]
+        if not self._export_indices:
+            self._show_error("The selected range contains no valid sweeps.")
+            return
+        self._export_old_sweep = self.current_sweep_idx
+        self._export_was_playing = self.controller.is_playing
+        camera = self.scene3d.camera
+        self._export_camera_state = (
+            self.scene3d.camera_mode,
+            tuple(camera.center),
+            float(camera.azimuth),
+            float(camera.elevation),
+            float(camera.scale_factor),
+        )
+        self.controller.pause()
+        self._export_params = self._frame_params()
+        self._export_settings = settings
+        metadata = {
+            "input_file": self._file_identity(),
+            "start_sweep_id": int(ids[self._export_indices[0]]),
+            "end_sweep_id": int(ids[self._export_indices[-1]]),
+            "step_sweep_id": settings["step"],
+            "sweep_ids": [int(ids[i]) for i in self._export_indices],
+            "fps": settings["fps"],
+            "output_dimensions": [1920, 1080],
+            "display_settings": self._display_settings(),
+            "camera_behavior": "Follow mode recenters on instrument and current swath; camera movement is included in each rendered frame." if self.scene3d.camera_mode == "follow" else "Camera mode remains fixed during export.",
+        }
+        self._export_encoder = VideoEncoder(
+            settings["output_path"], settings["fps"], len(self._export_indices), metadata, self
+        )
+        self._export_encoder.progress.connect(self._on_export_progress)
+        self._export_encoder.export_done.connect(self._on_export_done)
+        self._export_encoder.failed.connect(self._on_export_failed)
+        self._export_encoder.cancelled.connect(self._on_export_cancelled)
+        self._export_active = True
+        self._export_cursor = 0
+        self._export_pending_frame = None
+        self.control_panel.setEnabled(False)
+        self.slider_timeline.setEnabled(False)
+        self.index_spin.setEnabled(False)
+        self.action_open.setEnabled(False)
+        self.action_screenshot.setEnabled(False)
+        self.action_video.setEnabled(False)
+        self.action_cancel_export.setVisible(True)
+        self.progress_label.setText(f"Starting export: {len(self._export_indices)} frames")
+        self._export_encoder.start()
+        self.controller.request_frame(self._export_indices[0], self._export_params)
 
-        def on_fin(vid_p, meta_p):
-            progress_dialog.close()
-            QtWidgets.QMessageBox.information(
-                self, "Export Complete", f"Successfully exported video to:\n{vid_p}\n\nMetadata sidecar:\n{meta_p}"
-            )
+    def _capture_export_frame(self) -> None:
+        if not self._export_active or self._export_pending_frame is not None or self.current_frame is None:
+            return
+        try:
+            if self._export_cursor == 0 and self._export_encoder is not None:
+                camera = self.scene3d.camera
+                self._export_encoder.metadata["camera_start_sweep_id"] = self.current_frame.sweep_data.sweep_id
+                self._export_encoder.metadata["camera_start_state"] = {
+                    "center": list(camera.center),
+                    "azimuth_deg": float(camera.azimuth),
+                    "elevation_deg": float(camera.elevation),
+                    "scale_factor": float(camera.scale_factor),
+                }
+            image = self._composed_image(self.current_frame)
+            self._export_pending_frame = qimage_to_rgb(image, output_size=(1920, 1080))
+            self._retry_export_enqueue()
+        except Exception as exc:
+            self._on_export_failed(f"Could not capture export frame: {exc}")
 
-        def on_err(err):
-            progress_dialog.close()
-            QtWidgets.QMessageBox.critical(self, "Export Failed", err)
+    def _retry_export_enqueue(self) -> None:
+        if not self._export_active or self._export_pending_frame is None or self._export_encoder is None:
+            return
+        if not self._export_encoder.offer_frame(self._export_pending_frame):
+            self._export_retry_timer.start(20)
+            return
+        self._export_pending_frame = None
+        self._export_cursor += 1
+        if self._export_cursor >= len(self._export_indices):
+            self._export_encoder.finish_input()
+            self.progress_label.setText("Encoding and validating MP4...")
+            return
+        self.controller.request_frame(self._export_indices[self._export_cursor], self._export_params)
 
-        exporter.progress.connect(on_prog)
-        exporter.finished.connect(on_fin)
-        exporter.error.connect(on_err)
-        progress_dialog.canceled.connect(exporter.cancel)
+    @QtCore.pyqtSlot(int, int, str)
+    def _on_export_progress(self, current: int, total: int, message: str) -> None:
+        self.progress_label.setText(f"{message} ({100 * current // max(1, total)}%)")
 
-        exporter.start()
+    @QtCore.pyqtSlot(str, str, int)
+    def _on_export_done(self, video_path: str, metadata_path: str, decoded: int) -> None:
+        self._finish_export_ui()
+        self.statusBar().showMessage(f"Export verified: {decoded} frames - {video_path} (metadata: {metadata_path})", 15000)
+
+    @QtCore.pyqtSlot(str)
+    def _on_export_failed(self, message: str) -> None:
+        self._finish_export_ui()
+        self._show_error(message)
+
+    @QtCore.pyqtSlot(int)
+    def _on_export_cancelled(self, count: int) -> None:
+        self._finish_export_ui(restore=True)
+        self.statusBar().showMessage(f"Video export cancelled after {count} encoded frames.", 10000)
+
+    def _cancel_video_export(self) -> None:
+        if self._export_encoder is not None:
+            self._export_encoder.cancel()
+        self._export_pending_frame = None
+        self._finish_export_ui(restore=False)
+        self.statusBar().showMessage("Cancelling video export...", 8000)
+
+    def _finish_export_ui(self, *, restore: bool = True) -> None:
+        self._export_retry_timer.stop()
+        self._export_active = False
+        self.control_panel.setEnabled(self.model is not None)
+        self.slider_timeline.setEnabled(self.model is not None)
+        self.index_spin.setEnabled(self.model is not None)
+        self.action_open.setEnabled(True)
+        self.action_screenshot.setEnabled(self.model is not None)
+        self.action_video.setEnabled(self.model is not None)
+        self.action_cancel_export.setVisible(False)
+        self.progress_label.clear()
+        encoder, self._export_encoder = self._export_encoder, None
+        if encoder is not None and encoder.isRunning():
+            encoder.cancel()
+            encoder.wait(3000)
+        if restore and self.model is not None:
+            self._restore_export_state = True
+            self._request_sweep(self._export_old_sweep)
+
+    def _show_error(self, message: str) -> None:
+        self.statusBar().showMessage(message, 15000)
+        QtWidgets.QMessageBox.critical(self, "CASALS Sweep Viewer", message)
 
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:
-        self._pause()
-        self.worker.stop()
-        self.worker_thread.quit()
-        self.worker_thread.wait(2000)
-        super().closeEvent(event)
+        self._closing = True
+        if self._export_encoder is not None:
+            self._export_encoder.cancel()
+            self._export_encoder.wait(5000)
+        self.controller.shutdown()
+        event.accept()
 

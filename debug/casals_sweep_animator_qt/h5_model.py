@@ -21,7 +21,6 @@ from casals_l1b.waveform import (
     SweepTrackIndex,
     build_record_index_grid,
     infer_waveform_record_axis,
-    read_sweep_matrix,
 )
 from .geometry import (
     LocalENU,
@@ -70,6 +69,7 @@ class SweepData:
     # Pulse metadata in this sweep
     pulse_indices: np.ndarray
     track_nums: np.ndarray
+    track_present: np.ndarray
     valid_pulse_mask: np.ndarray
 
     # Aircraft telemetry for this sweep
@@ -117,14 +117,23 @@ class SweepData:
 class H5Model:
     """Manages an open CASALS L1B HDF5 dataset, indexing, and on-demand reading."""
 
-    def __init__(self, file_path: str | Path, history_budget: int = 220_000) -> None:
+    def __init__(
+        self,
+        file_path: str | Path,
+        history_budget: int = 220_000,
+        waveform_block_sweeps: Optional[int] = None,
+        waveform_cache_bytes: int = 128 * 1024 * 1024,
+    ) -> None:
         self.path = Path(file_path).resolve()
         if not self.path.is_file():
             raise FileNotFoundError(f"CASALS H5 file not found: {self.path}")
 
         self.history_budget = int(history_budget)
-        self._waveform_cache: collections.OrderedDict[int, np.ndarray] = collections.OrderedDict()
-        self._cache_capacity = 16
+        self.waveform_cache_limit_bytes = max(0, int(waveform_cache_bytes))
+        self._waveform_blocks: collections.OrderedDict[int, tuple[np.ndarray, np.ndarray]] = collections.OrderedDict()
+        self.waveform_cache_size_bytes = 0
+        self.waveform_cache_hits = 0
+        self.waveform_cache_misses = 0
 
         with h5py.File(self.path, "r") as h5:
             self._validate_datasets(h5)
@@ -141,6 +150,12 @@ class H5Model:
             self.n_rx_bins = int(rx_ds.shape[1] if self.record_axis == 0 else rx_ds.shape[0])
             self.n_records = self.index_info.n_records
             self.n_tracks = self.index_info.n_tracks
+            chunk_records = rx_ds.chunks[self.record_axis] if rx_ds.chunks else 0
+            chunk_sweeps = chunk_records // self.n_tracks if chunk_records and chunk_records % self.n_tracks == 0 else 0
+            self.waveform_block_sweeps = max(
+                1,
+                int(waveform_block_sweeps or chunk_sweeps or 16),
+            )
 
             # Read base 1D fields into compact memory
             self._load_base_fields(h5)
@@ -264,35 +279,52 @@ class H5Model:
         self.sweep_headings = compute_trajectory_headings(self.sweep_instrument_enu)
 
     def _build_historical_decimation(self) -> None:
-        """Create compact, deterministic downsampled historical cloud and prefix offsets."""
+        """Create a globally bounded, stratified Refh sample with sweep prefixes."""
         valid_refh = np.isfinite(self.refh_enu[:, 0])
         total_valid = int(np.sum(valid_refh))
+        budget = min(total_valid, max(0, self.history_budget))
+        counts = np.zeros(self.n_valid_sweeps, dtype=np.int64)
+        sweep_records: list[np.ndarray] = []
+        for k, sid in enumerate(self.valid_sweep_ids):
+            pulse_ids = self.index_info.record_index_grid[sid]
+            pulse_ids = pulse_ids[pulse_ids >= 0]
+            pulse_ids = pulse_ids[valid_refh[pulse_ids]]
+            sweep_records.append(pulse_ids)
+            counts[k] = pulse_ids.size
 
-        # Determine decimation step S
-        stride = max(1, int(np.ceil(total_valid / float(self.history_budget))))
+        if total_valid and budget:
+            exact = counts.astype(np.float64) * (float(budget) / total_valid)
+            quotas = np.floor(exact).astype(np.int64)
+            remainder = budget - int(quotas.sum())
+            if remainder:
+                order = np.argsort(-(exact - quotas), kind="stable")
+                quotas[order[:remainder]] += 1
+        else:
+            quotas = np.zeros(self.n_valid_sweeps, dtype=np.int64)
 
         decimated_enu_list: List[np.ndarray] = []
         decimated_snr_list: List[np.ndarray] = []
         decimated_height_list: List[np.ndarray] = []
         decimated_amp_list: List[np.ndarray] = []
+        decimated_sweep_list: List[np.ndarray] = []
 
         offsets = [0]
         accum = 0
-
-        for sid in self.valid_sweep_ids:
-            pulses = self.index_info.record_index_grid[sid]
-            valid_p = pulses[pulses >= 0]
-            valid_p = valid_p[valid_refh[valid_p]]
-
-            # Downsample this sweep's valid points deterministically
-            if len(valid_p):
-                sampled_p = valid_p[::stride]
+        for k, valid_p in enumerate(sweep_records):
+            n_sample = int(quotas[k])
+            if n_sample:
+                # Golden-ratio staggered phase across sweeps to distribute across-track pulses
+                # uniformly over all tracks, eliminating artificial grooving/streak lines.
+                phase = (k * 0.618033988749895) % 1.0
+                sample_idx = (np.floor((np.arange(n_sample) + phase) * len(valid_p) / n_sample).astype(np.int64)) % len(valid_p)
+                sampled_p = valid_p[sample_idx]
                 decimated_enu_list.append(self.refh_enu[sampled_p])
                 if self.refh_snr is not None:
                     decimated_snr_list.append(self.refh_snr[sampled_p])
                 decimated_height_list.append(self.refh_height[sampled_p])
                 if self.refh_amp is not None:
                     decimated_amp_list.append(self.refh_amp[sampled_p])
+                decimated_sweep_list.append(np.full(n_sample, k, dtype=np.int32))
                 accum += len(sampled_p)
             offsets.append(accum)
 
@@ -310,13 +342,14 @@ class H5Model:
                 if decimated_amp_list
                 else None
             )
+            self.decimated_sweep_index = np.concatenate(decimated_sweep_list)
         else:
             self.decimated_enu = np.empty((0, 3), dtype=np.float32)
             self.decimated_height = np.empty(0, dtype=np.float32)
             self.decimated_snr = None
             self.decimated_amp = None
+            self.decimated_sweep_index = np.empty(0, dtype=np.int32)
 
-        self.decimation_stride = stride
         self.total_decimated_points = int(self.decimated_enu.shape[0])
 
     def _compute_global_statistics(self) -> None:
@@ -354,6 +387,18 @@ class H5Model:
         else:
             self.amp_vmin, self.amp_vmax = 0.0, 1000.0
 
+        range_heights = np.concatenate([self.rwstart_h, self.rwstop_h])
+        finite_range = range_heights[np.isfinite(range_heights)]
+        if finite_range.size:
+            self.height_range = (
+                float(np.percentile(finite_range, 1.0)),
+                float(np.percentile(finite_range, 99.0)),
+            )
+            if self.height_range[1] <= self.height_range[0]:
+                self.height_range = (self.height_range[0] - 1.0, self.height_range[0] + 1.0)
+        else:
+            self.height_range = (float(self.height_vmin), float(self.height_vmax))
+
     def get_history_slice(
         self, sweep_idx: int
     ) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray], Optional[np.ndarray]]:
@@ -370,74 +415,122 @@ class H5Model:
             self.decimated_amp[:end_offset] if self.decimated_amp is not None else None,
         )
 
+    def _read_waveform_block(self, h5: h5py.File, block_index: int) -> tuple[np.ndarray, np.ndarray]:
+        """Read one sweep block, using a contiguous slab only when record IDs prove it safe."""
+        block_start = block_index * self.waveform_block_sweeps
+        block_stop = min(self.n_valid_sweeps, block_start + self.waveform_block_sweeps)
+        sweep_ids = self.valid_sweep_ids[block_start:block_stop]
+        record_grid = self.index_info.record_index_grid[sweep_ids]
+        record_ids = np.sort(record_grid[record_grid >= 0])
+        if record_ids.size == 0:
+            return record_ids, np.empty((0, self.n_rx_bins), dtype=np.float32)
+
+        first = int(record_ids[0])
+        last = int(record_ids[-1]) + 1
+        rx_ds = require_dataset(h5, "rx_waveform")
+        if record_ids.size == last - first:
+            if self.record_axis == 0:
+                waveforms = np.asarray(rx_ds[first:last, :])
+            else:
+                waveforms = np.asarray(rx_ds[:, first:last]).T
+            if not np.array_equal(record_ids, np.arange(first, last, dtype=np.int64)):
+                raise AssertionError("contiguous waveform block record check failed")
+        else:
+            if self.record_axis == 0:
+                waveforms = np.asarray(rx_ds[record_ids, :])
+            else:
+                waveforms = np.asarray(rx_ds[:, record_ids]).T
+
+        nbytes = int(record_ids.nbytes + waveforms.nbytes)
+        if self.waveform_cache_limit_bytes and nbytes <= self.waveform_cache_limit_bytes:
+            while self._waveform_blocks and self.waveform_cache_size_bytes + nbytes > self.waveform_cache_limit_bytes:
+                _, (old_ids, old_values) = self._waveform_blocks.popitem(last=False)
+                self.waveform_cache_size_bytes -= int(old_ids.nbytes + old_values.nbytes)
+            self._waveform_blocks[block_index] = (record_ids, waveforms)
+            self.waveform_cache_size_bytes += nbytes
+        return record_ids, waveforms
+
+    def clear_waveform_cache(self) -> None:
+        self._waveform_blocks.clear()
+        self.waveform_cache_size_bytes = 0
+
+    def waveform_cache_stats(self) -> dict[str, int]:
+        return {
+            "hits": int(self.waveform_cache_hits),
+            "misses": int(self.waveform_cache_misses),
+            "bytes": int(self.waveform_cache_size_bytes),
+            "limit_bytes": int(self.waveform_cache_limit_bytes),
+        }
+
     def read_sweep_data(self, h5: h5py.File, sweep_idx: int) -> SweepData:
-        """Read all geometry, telemetry, and waveforms for one sweep."""
+        """Read a full-track aligned sweep using the bounded waveform block cache."""
         k = max(0, min(self.n_valid_sweeps - 1, int(sweep_idx)))
         sid = int(self.valid_sweep_ids[k])
 
-        # Pulse indices for each track (length n_tracks, with -1 for missing)
-        record_indices = self.index_info.record_index_grid[sid]
-        valid_tracks = np.flatnonzero(record_indices >= 0)
-        pulse_ids = record_indices[valid_tracks]
+        pulse_indices = self.index_info.record_index_grid[sid].copy()
+        track_present = pulse_indices >= 0
+        track_nums = np.arange(self.n_tracks, dtype=np.int64)
 
-        # Waveform read with caching
-        if sid in self._waveform_cache:
-            waveform_matrix = self._waveform_cache[sid]
-            self._waveform_cache.move_to_end(sid)
-        else:
-            waveform_matrix, _, _ = read_sweep_matrix(h5, "rx_waveform", sid, self.index_info)
-            self._waveform_cache[sid] = waveform_matrix
-            if len(self._waveform_cache) > self._cache_capacity:
-                self._waveform_cache.popitem(last=False)
+        def gather(values: Optional[np.ndarray], *, dtype: Any = np.float64, fill: Any = np.nan) -> Optional[np.ndarray]:
+            if values is None:
+                return None
+            out = np.full(self.n_tracks, fill, dtype=dtype)
+            out[track_present] = values[pulse_indices[track_present]]
+            return out
 
-        # Pulse telemetry and Refh
-        refh_lon = self.refh_lon[pulse_ids]
-        refh_lat = self.refh_lat[pulse_ids]
-        refh_height = self.refh_height[pulse_ids]
-        refh_enu = self.refh_enu[pulse_ids]
+        refh_lon = gather(self.refh_lon)
+        refh_lat = gather(self.refh_lat)
+        refh_height = gather(self.refh_height)
+        refh_snr = gather(self.refh_snr, dtype=np.float32)
+        refh_amp = gather(self.refh_amp, dtype=np.float32)
+        bg_mean = gather(self.bg_mean, dtype=np.float32)
+        bg_std = gather(self.bg_std, dtype=np.float32)
+        delta_time = gather(self.delta_time)
+        good_snr = gather(self.good_snr, dtype=np.bool_, fill=False)
 
-        refh_snr = self.refh_snr[pulse_ids] if self.refh_snr is not None else None
-        refh_amp = self.refh_amp[pulse_ids] if self.refh_amp is not None else None
-        bg_mean = self.bg_mean[pulse_ids] if self.bg_mean is not None else None
-        bg_std = self.bg_std[pulse_ids] if self.bg_std is not None else None
-        delta_time = self.delta_time[pulse_ids] if self.delta_time is not None else None
-        good_snr = self.good_snr[pulse_ids] if self.good_snr is not None else None
+        instrument_lon = gather(self.inst_lon)
+        instrument_lat = gather(self.inst_lat)
+        instrument_alt = gather(self.inst_alt)
+        pulse_inst_enu = self.enu.geodetic_to_enu(instrument_lon, instrument_lat, instrument_alt)
+        refh_enu = self.enu.geodetic_to_enu(refh_lon, refh_lat, refh_height)
 
-        # Individual pulse instrument positions in ENU
-        pulse_inst_enu = self.enu.geodetic_to_enu(
-            self.inst_lon[pulse_ids],
-            self.inst_lat[pulse_ids],
-            self.inst_alt[pulse_ids],
-        )
-
-        # Range window endpoints in ECEF and ENU
-        rwstart_ecef = geodetic_to_ecef(
-            self.rwstart_lon[pulse_ids],
-            self.rwstart_lat[pulse_ids],
-            self.rwstart_h[pulse_ids],
-        )
-        rwstop_ecef = geodetic_to_ecef(
-            self.rwstop_lon[pulse_ids],
-            self.rwstop_lat[pulse_ids],
-            self.rwstop_h[pulse_ids],
-        )
-
+        rwstart_lon = gather(self.rwstart_lon)
+        rwstart_lat = gather(self.rwstart_lat)
+        rwstart_height = gather(self.rwstart_h)
+        rwstop_lon = gather(self.rwstop_lon)
+        rwstop_lat = gather(self.rwstop_lat)
+        rwstop_height = gather(self.rwstop_h)
+        rwstart_ecef = geodetic_to_ecef(rwstart_lon, rwstart_lat, rwstart_height)
+        rwstop_ecef = geodetic_to_ecef(rwstop_lon, rwstop_lat, rwstop_height)
         rwstart_enu = self.enu.ecef_to_enu(rwstart_ecef)
         rwstop_enu = self.enu.ecef_to_enu(rwstop_ecef)
 
-        rwstart_height = self.rwstart_h[pulse_ids]
-        rwstop_height = self.rwstop_h[pulse_ids]
+        block_index = k // self.waveform_block_sweeps
+        cached = self._waveform_blocks.pop(block_index, None)
+        if cached is None:
+            self.waveform_cache_misses += 1
+            block_ids, block_waveforms = self._read_waveform_block(h5, block_index)
+        else:
+            self.waveform_cache_hits += 1
+            block_ids, block_waveforms = cached
+            self._waveform_blocks[block_index] = cached
+        valid_tracks = np.flatnonzero(track_present)
+        waveform_matrix = np.full((self.n_tracks, self.n_rx_bins), np.nan, dtype=np.float32)
+        if valid_tracks.size:
+            rows = np.searchsorted(block_ids, pulse_indices[valid_tracks])
+            if np.any(rows >= block_ids.size) or not np.array_equal(block_ids[rows], pulse_indices[valid_tracks]):
+                raise ValueError(f"Waveform block does not contain every pulse in sweep {sid}.")
+            waveform_matrix[valid_tracks] = block_waveforms[rows].astype(np.float32, copy=False)
 
         # Sweep instrument position and heading
         instrument_enu = self.sweep_instrument_enu[k]
         heading_deg = float(self.sweep_headings[k])
 
         # Cross-track geometry estimation
-        valid_refh_mask = np.isfinite(refh_enu[:, 0])
+        valid_refh_mask = track_present & np.isfinite(refh_enu).all(axis=1)
         if np.any(valid_refh_mask):
             v, center, can_meters, reason = estimate_cross_track_direction(
-                refh_enu[valid_refh_mask, :2],
-                valid_tracks[valid_refh_mask],
+                refh_enu[valid_refh_mask, :2], track_nums[valid_refh_mask],
             )
             if can_meters and v is not None and center is not None:
                 cross_track_refh_m = project_cross_track(refh_enu[:, :2], v, center)
@@ -451,8 +544,9 @@ class H5Model:
             sweep_id=sid,
             sweep_index=k,
             total_sweeps=self.n_valid_sweeps,
-            pulse_indices=pulse_ids,
-            track_nums=valid_tracks,
+            pulse_indices=pulse_indices,
+            track_nums=track_nums,
+            track_present=track_present,
             valid_pulse_mask=valid_refh_mask,
             instrument_enu=instrument_enu,
             heading_deg=heading_deg,

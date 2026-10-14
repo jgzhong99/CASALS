@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from pathlib import Path
 import os
+import threading
+import time
 import h5py
 import numpy as np
 import pytest
@@ -29,9 +31,13 @@ from debug.casals_sweep_animator_qt.geometry import (
 from debug.casals_sweep_animator_qt.h5_model import H5Model, SweepData
 from debug.casals_sweep_animator_qt.cross_section import (
     CrossSectionGrid,
+    _ecef_to_wgs84_height,
+    _fill_curtain_row,
+    _height_samples,
     compute_waveform_cross_section,
 )
 from debug.casals_sweep_animator_qt.worker import FrameParams
+from debug.casals_sweep_animator_qt.scene3d import aircraft_transform_matrix, enu_axis_segments
 
 
 def make_synthetic_casals_h5(
@@ -175,6 +181,15 @@ class TestSweepIndexing:
         assert model.n_valid_sweeps == 4
         assert model.index_info.missing_sweep_track_cells == 1
         assert model.index_info.complete_rectangular_grid is False
+        with h5py.File(h5_path, "r") as h5:
+            sw = model.read_sweep_data(h5, 0)
+        np.testing.assert_array_equal(sw.track_nums, np.arange(8))
+        assert sw.track_present.shape == (8,)
+        assert not sw.track_present[2]
+        assert sw.pulse_indices[2] == -1
+        assert np.isnan(sw.waveform_matrix[2]).all()
+        assert np.isnan(sw.refh_enu[2]).all()
+        assert sw.waveform_matrix.shape == (8, 64)
 
     def test_non_zero_start_and_non_contiguous_sweeps(self, tmp_path: Path):
         h5_path = make_synthetic_casals_h5(
@@ -219,6 +234,44 @@ class TestSweepIndexing:
 # =============================================================================
 
 class TestGeometry:
+    def test_enu_axis_segments_have_equal_metric_length(self):
+        origin = np.asarray([120.0, -45.0, 8.0])
+        length_m = 25.0
+        segments = enu_axis_segments(origin, length_m)
+        np.testing.assert_allclose(segments[::2], np.broadcast_to(origin, (3, 3)), atol=1e-6)
+        vectors = segments[1::2] - segments[::2]
+        np.testing.assert_allclose(vectors, np.eye(3) * length_m, atol=1e-6)
+        np.testing.assert_allclose(np.linalg.norm(vectors, axis=1), [length_m] * 3, atol=1e-6)
+
+    def test_height_only_ecef_conversion_matches_full_wgs84_conversion(self):
+        lon = np.linspace(-150.0, 150.0, 1000)
+        lat = np.linspace(-80.0, 80.0, 1000)
+        height = np.linspace(-500.0, 9000.0, 1000)
+        xyz = geodetic_to_ecef(lon, lat, height)
+        np.testing.assert_allclose(_ecef_to_wgs84_height(xyz), ecef_to_geodetic(xyz)[:, 2], rtol=0.0, atol=1e-6)
+
+    def test_aircraft_transform_uses_enu_translation_and_heading(self):
+        from vispy.visuals.transforms import MatrixTransform
+
+        matrix = aircraft_transform_matrix(np.asarray([100.0, 200.0, 3000.0]), 90.0)
+        mapped = MatrixTransform(matrix).map(np.asarray([
+            [0.0, 0.0, 0.0, 1.0],
+            [0.0, 10.0, 0.0, 1.0],
+        ], dtype=np.float32))
+        np.testing.assert_allclose(mapped[0], [100.0, 200.0, 3000.0, 1.0], atol=1e-5)
+        np.testing.assert_allclose(mapped[1], [110.0, 200.0, 3000.0, 1.0], atol=1e-5)
+        np.testing.assert_allclose(np.linalg.norm(matrix[:3, :3], axis=0), [1.0, 1.0, 1.0], atol=1e-6)
+
+    def test_curtain_interpolation_fast_path_preserves_increasing_and_decreasing_height(self):
+        response = np.square(np.linspace(-1.0, 1.0, 256))
+        grid = np.linspace(-0.9, 0.9, 128)
+        for heights in (np.linspace(-1.0, 1.0, 256), np.linspace(1.0, -1.0, 256)):
+            actual = np.full(grid.shape, np.nan, dtype=np.float32)
+            _fill_curtain_row(actual, grid, heights, response)
+            expected = np.interp(grid, heights if heights[0] < heights[-1] else heights[::-1],
+                                 response if heights[0] < heights[-1] else response[::-1])
+            np.testing.assert_allclose(actual, expected, rtol=0.0, atol=1e-7)
+
     def test_geodetic_ecef_roundtrip(self):
         lon = np.array([-86.93, 0.0, 120.5])
         lat = np.array([40.41, 0.0, -33.8])
@@ -314,6 +367,19 @@ class TestGeometry:
 # =============================================================================
 
 class TestCrossSectionHeatmap:
+    def test_h1_h2_height_grid_matches_ecef_bin_geometry(self, tmp_path: Path):
+        h5_path = make_synthetic_casals_h5(tmp_path / "height_grid.h5", n_sweeps=3, n_tracks=8, n_bins=64)
+        model = H5Model(h5_path)
+        with h5py.File(h5_path, "r") as h5:
+            sweep = model.read_sweep_data(h5, 0)
+        bins = np.broadcast_to(np.arange(sweep.n_rx_bins), (sweep.n_tracks, sweep.n_rx_bins))
+        for mapping in ("H1", "H2"):
+            xyz = bin_to_xyz(sweep.rwstart_ecef[:, None, :], sweep.rwstop_ecef[:, None, :],
+                             bins, sweep.n_rx_bins, convention=mapping)
+            expected = ecef_to_geodetic(xyz.reshape(-1, 3))[:, 2].reshape(sweep.n_tracks, sweep.n_rx_bins)
+            actual = _height_samples(sweep, mapping)
+            np.testing.assert_allclose(actual, expected, rtol=0.0, atol=2e-5, equal_nan=True)
+
     def test_cross_section_modes(self, tmp_path: Path):
         h5_path = make_synthetic_casals_h5(tmp_path / "cs.h5", n_sweeps=3, n_tracks=8, n_bins=64)
         model = H5Model(h5_path)
@@ -321,43 +387,73 @@ class TestCrossSectionHeatmap:
             sw = model.read_sweep_data(h5, 0)
 
         # Mode A: Raw
-        grid_raw = compute_waveform_cross_section(sw, mode="raw", x_axis_mode="meters", mapping_convention="H2")
-        assert grid_raw.grid_data.shape == (384, 512)
-        assert grid_raw.color_title == "Raw RX Amplitude"
+        grid_raw = compute_waveform_cross_section(sw, mode="raw", view="curtain", mapping_convention="H2")
+        assert grid_raw.grid_data.shape == (8, 512)
+        assert grid_raw.color_title == "Raw RX"
 
         # Mode A: Minus BG
-        grid_mbg = compute_waveform_cross_section(sw, mode="minus_bg", x_axis_mode="meters", mapping_convention="H2")
-        assert grid_mbg.color_title == "Background-subtracted RX Response"
+        grid_mbg = compute_waveform_cross_section(sw, mode="minus_bg", view="curtain", mapping_convention="H2")
+        assert grid_mbg.color_title == "Net RX"
+        assert np.isfinite(grid_mbg.grid_data).any()
 
         # Mode B: Standardized
-        grid_std = compute_waveform_cross_section(sw, mode="standardized", x_axis_mode="meters", mapping_convention="H2")
+        grid_std = compute_waveform_cross_section(sw, mode="standardized", view="curtain", mapping_convention="H2")
         assert "Standardized" in grid_std.color_title
         fin = grid_std.grid_data[np.isfinite(grid_std.grid_data)]
         assert len(fin) > 0
 
         # Mode C: Refh only
-        grid_refh = compute_waveform_cross_section(sw, mode="refh_only", x_axis_mode="meters", mapping_convention="H2")
+        grid_refh = compute_waveform_cross_section(sw, mode="refh_only", view="curtain", mapping_convention="H2")
         assert np.all(np.isnan(grid_refh.grid_data))
         assert len(grid_refh.refh_x) == 8
+
+        grid_geo = compute_waveform_cross_section(sw, mode="raw", view="georeferenced", mapping_convention="H2", n_cols=64, n_rows=48)
+        assert grid_geo.grid_data.shape == (64, 48)
+        assert not grid_geo.available
+        assert "track span" in grid_geo.message
+
+        geo_path = make_synthetic_casals_h5(tmp_path / "cs_geo.h5", n_sweeps=3, n_tracks=16, n_bins=64)
+        geo_model = H5Model(geo_path)
+        with h5py.File(geo_path, "r") as h5:
+            geo_sweep = geo_model.read_sweep_data(h5, 0)
+        grid_geo = compute_waveform_cross_section(geo_sweep, mode="raw", view="georeferenced", n_cols=64, n_rows=48)
+        assert grid_geo.available
+        assert grid_geo.grid_data.shape == (64, 48)
+        assert np.isfinite(grid_geo.grid_data).any()
 
     def test_missing_background_fields_fallback(self, tmp_path: Path):
         h5_path = make_synthetic_casals_h5(tmp_path / "no_bg.h5", n_sweeps=3, n_tracks=8, missing_bg_fields=True)
         model = H5Model(h5_path)
         with h5py.File(h5_path, "r") as h5:
             sw = model.read_sweep_data(h5, 0)
-        # Should cleanly fallback to raw
         grid = compute_waveform_cross_section(sw, mode="standardized")
-        assert "unavailable" in grid.color_title
+        assert not grid.available
+        assert "missing" in grid.message
+        assert np.isnan(grid.grid_data).all()
 
     def test_refh_overlay_matches_official_values(self, tmp_path: Path):
         h5_path = make_synthetic_casals_h5(tmp_path / "overlay.h5", n_sweeps=3, n_tracks=8)
         model = H5Model(h5_path)
         with h5py.File(h5_path, "r") as h5:
             sw = model.read_sweep_data(h5, 0)
-        grid = compute_waveform_cross_section(sw, mode="raw", x_axis_mode="track")
-        # In track mode, refh_x should match track_nums exactly
+        grid = compute_waveform_cross_section(sw, mode="raw", view="curtain")
+        # Curtain columns preserve their full track indices.
         np.testing.assert_array_equal(grid.refh_x, sw.track_nums)
         np.testing.assert_array_equal(grid.refh_h, sw.refh_height)
+
+    def test_argmax_height_comes_from_ecef_bin_geometry(self, tmp_path: Path):
+        h5_path = make_synthetic_casals_h5(tmp_path / "ecef_height.h5", n_sweeps=2, n_tracks=16, n_bins=64)
+        model = H5Model(h5_path)
+        with h5py.File(h5_path, "r") as h5:
+            sw = model.read_sweep_data(h5, 0)
+        grid = compute_waveform_cross_section(
+            sw, mode="raw", view="georeferenced", mapping_convention="H2", n_cols=64, n_rows=48
+        )
+        assert grid.available
+        bins = np.argmax(sw.waveform_matrix, axis=1)
+        xyz = bin_to_xyz(sw.rwstart_ecef, sw.rwstop_ecef, bins, sw.n_rx_bins, convention="H2")
+        expected_height = ecef_to_geodetic(xyz)[:, 2]
+        np.testing.assert_allclose(grid.argmax_h, expected_height, rtol=0.0, atol=1e-7)
 
 
 # =============================================================================
@@ -399,11 +495,89 @@ class TestPlaybackConsistency:
 
     def test_waveform_cache_consistency(self, tmp_path: Path):
         h5_path = make_synthetic_casals_h5(tmp_path / "cache.h5", n_sweeps=4, n_tracks=8)
-        model = H5Model(h5_path)
+        model = H5Model(h5_path, waveform_block_sweeps=2, waveform_cache_bytes=100_000)
         with h5py.File(h5_path, "r") as h5:
-            sw_uncached = model.read_sweep_data(h5, 1)
-            sw_cached = model.read_sweep_data(h5, 1)
-            np.testing.assert_array_equal(sw_cached.waveform_matrix, sw_uncached.waveform_matrix)
+            first = model.read_sweep_data(h5, 0)
+            second = model.read_sweep_data(h5, 1)
+            third = model.read_sweep_data(h5, 2)
+        np.testing.assert_array_equal(first.waveform_matrix, second.waveform_matrix)
+        stats = model.waveform_cache_stats()
+        assert stats["hits"] == 1
+        assert stats["misses"] == 2
+        assert 0 < stats["bytes"] <= stats["limit_bytes"]
+        assert np.all(np.argmax(third.waveform_matrix, axis=1) == 32)
+
+
+class TestFrameWorker:
+    @staticmethod
+    def _wait(app, predicate, timeout=8.0):
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            app.processEvents()
+            if predicate():
+                return True
+            time.sleep(0.005)
+        return predicate()
+
+    def test_latest_request_and_file_generation_are_enforced(self, tmp_path: Path, qapp, monkeypatch):
+        from debug.casals_sweep_animator_qt import worker as worker_module
+        from debug.casals_sweep_animator_qt.frame_controller import FrameController
+
+        first_path = make_synthetic_casals_h5(tmp_path / "worker_first.h5", n_sweeps=5, n_tracks=12, n_bins=32)
+        second_path = make_synthetic_casals_h5(tmp_path / "worker_second.h5", n_sweeps=5, n_tracks=12, n_bins=32)
+        controller = FrameController()
+        assert controller._timer.timerType() == QtCore.Qt.PreciseTimer
+        loaded = []
+        frames = []
+        controller.model_loaded.connect(lambda model, generation: loaded.append((model, generation)))
+        controller.frame_ready.connect(frames.append)
+        release = threading.Event()
+
+        try:
+            gen1 = controller.load_file(str(first_path))
+            assert self._wait(qapp, lambda: bool(frames))
+            assert frames[-1].file_generation == gen1
+
+            original = worker_module.compute_waveform_cross_section
+            entered = threading.Event()
+            block_next = {"value": True}
+
+            def delayed_cross_section(*args, **kwargs):
+                sweep = args[0]
+                if block_next["value"] and sweep.sweep_index == 1:
+                    block_next["value"] = False
+                    entered.set()
+                    assert release.wait(4.0)
+                return original(*args, **kwargs)
+
+            monkeypatch.setattr(worker_module, "compute_waveform_cross_section", delayed_cross_section)
+            frames.clear()
+            controller.request_frame(1)
+            assert entered.wait(4.0)
+            gen2 = controller.load_file(str(second_path))
+            release.set()
+            assert self._wait(qapp, lambda: any(generation == gen2 for _, generation in loaded))
+            assert self._wait(qapp, lambda: frames and frames[-1].file_generation == gen2)
+            assert all(frame.file_generation == gen2 for frame in frames)
+
+            entered.clear()
+            release.clear()
+            block_next["value"] = True
+            delivered_before = len(frames)
+            controller.request_frame(1)
+            assert entered.wait(4.0)
+            final_index = controller.model.n_valid_sweeps - 1
+            for index in range(2, final_index + 1):
+                controller.request_frame(index)
+            final_request_id = controller.request_id
+            release.set()
+            assert self._wait(qapp, lambda: len(frames) > delivered_before and frames[-1].request_id == final_request_id)
+            assert frames[-1].sweep_index == final_index
+            assert frames[-1].file_generation == gen2
+            assert all(frame.request_id == final_request_id for frame in frames[delivered_before:])
+        finally:
+            release.set()
+            controller.shutdown()
 
 
 @pytest.fixture
@@ -445,7 +619,7 @@ class TestGUISmoke:
 
         # Test mode switching does not crash
         win.combo_2d_mode.setCurrentText("Raw RX amplitude")
-        win.combo_xaxis.setCurrentText("Track Index")
+        win.combo_2d_view.setCurrentText("Georeferenced Cross-Section")
         win.combo_mapping.setCurrentText("H1")
         QtWidgets.QApplication.processEvents()
 

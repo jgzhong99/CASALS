@@ -48,7 +48,7 @@ The TDMS notebook lists candidate files and requires `TDMS_PATH` when more than 
 | [Peak geolocation](L1B/geolocation/peak_geolocation.ipynb) | Compare production H1 and audited H2 mappings for the same raw-argmax and detector bins. | Explicit L1B H5 and component records. | `outputs/notebooks/geolocation/peak_geolocation/<granule-stem>/`. |
 | [Beam geometry](L1B/geolocation/beam_geometry.ipynb) | Relate stored instrument/window/Refh positions and H1/H2 mappings in ECEF and ENU. | L1B H5, selected waveform cases, and existing surfaces. | `outputs/notebooks/geolocation/beam_geometry/<granule-stem>/`. |
 | [Elevation reference audit](L1B/geolocation/elevation_reference_audit.ipynb) | Review strict H5/3DEP frame and height-processing gates and remaining blockers. | H5/LAZ pairs and preserved historical validation artifacts. | Reads existing `outputs/notebooks/10_3dep_elevation_validation/` results. |
-| [Vertical datum alignment](L1B/geolocation/vertical_datum_alignment.ipynb) | Meeting-informed same-pulse EGM2008 / GEOID18 comparison, tide sensitivities, and separate-site empirical alignment. | Both current H5/LAZ pairs; fixed historical ROI splits; audited PROJ grid. | New timestamped runs under `outputs/notebooks/geolocation/vertical_datum_alignment/runs/`. |
+| [Vertical datum alignment](L1B/geolocation/vertical_datum_alignment.ipynb) | Physical-only Native / EGM2008 / provisional GEOID18 comparison, source/correction audit, and strict closure assessment; no residual-derived correction. | Both current H5/LAZ pairs; fixed historical ROI splits; audited PROJ grid. | New timestamped runs under `outputs/notebooks/geolocation/vertical_datum_alignment/runs/`. |
 
 ### Applications
 

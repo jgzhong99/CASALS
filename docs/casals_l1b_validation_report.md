@@ -436,3 +436,7 @@ Notebook 10 and 11 were executed from fresh `casals-showcase` kernels with no ce
 ### 2026-10-15 meeting-informed follow-up
 
 The historical findings above retain their original evidence date. Jeff Lee subsequently confirmed WGS84, ellipsoidal Refh, EGM2008 tide-free, and available mean-tide correction fields. This does not confirm the full processing formula, realization/epoch, field signs, or applied status. The [new alignment experiment](vertical_datum_alignment.md) and [executed notebook](../notebooks/L1B/geolocation/vertical_datum_alignment.ipynb) supersede model-identity uncertainty while preserving those unresolved processing questions. All historical result folders remain unchanged.
+
+### Physical-only closure follow-up (2026-10-15)
+
+The active [vertical datum notebook](../notebooks/L1B/geolocation/vertical_datum_alignment.ipynb) now removes all empirical height fitting and application. It retains only Native, EGM2008-referenced, and provisional GEOID18 physical heights with independent 3DEP evaluation. The recorded source-frame operation is a non-ballpark no-op; source realization/epoch and correction applied states remain unverified. Strict physical closure is not achieved. Earlier empirical results above and all historical run directories are preserved as historical evidence, not part of the current method. See the [current physical closure report](vertical_datum_alignment.md).

@@ -75,7 +75,7 @@ product-level paths are listed alongside that earlier topic layout.
 | `07_georeferencing_geometry.ipynb` | `notebooks/geolocation/beam_geometry.ipynb` | `notebooks/L1B/geolocation/beam_geometry.ipynb` |
 | `08_waveform_decomposition.ipynb` | `notebooks/waveforms/waveform_decomposition.ipynb` | `notebooks/L1B/waveforms/waveform_decomposition.ipynb` |
 | `09_nadir_window_reflection.ipynb` | `notebooks/waveforms/nadir_window_reflection.ipynb` | `notebooks/L1B/waveforms/nadir_window_reflection.ipynb` |
-| `10_3dep_elevation_validation.ipynb` | `notebooks/geolocation/elevation_reference_validation.ipynb` | `notebooks/L1B/geolocation/elevation_reference_validation.ipynb` |
+| `10_3dep_elevation_validation.ipynb` | `notebooks/geolocation/elevation_reference_validation.ipynb` | `notebooks/L1B/geolocation/elevation_reference_audit.ipynb` |
 | `11_landcover_lidar_response.ipynb` | `notebooks/applications/landcover_response.ipynb` | `notebooks/L1B/applications/landcover_response.ipynb` |
 
 The old numbered notebook source paths are not active duplicates. References

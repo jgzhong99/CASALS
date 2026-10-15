@@ -10,7 +10,7 @@ Each pulse has one official geolocated `refh` point associated with the maximum-
 casals_l1b/       Shared H5, refh, waveform, classification, and geolocation code
 research/         Reference comparison and parameter/geolocation research
 tools/            Standalone viewers, animations, and data utilities
-notebooks/        Thirteen active research notebooks, organized by topic
+notebooks/        Thirteen active research notebooks, grouped by product level and then topic
 casals_tdms_viewer/ Qt TDMS viewer implementation; casals_gui.py is its launcher
 data/             Local raw and reference data (ignored by Git)
 outputs/          Local workflow results (ignored by Git)
@@ -67,7 +67,7 @@ The principal APIs can also be called directly: `export_refh`, `filter_refh`, `m
 
 ## Current notebooks
 
-The 13 active notebooks are organized by research topic. [notebooks/README.md](notebooks/README.md) is the navigation guide and [docs/experiments.md](docs/experiments.md) is the formal research catalog. Start Jupyter from the repository root. The L0 TDMS audit reads one explicitly selected file, distinguishes wavelength evidence from channel indices, samples waveform rows without loading full channels, and checks local L1B metadata references without reading H5 payloads. Only complete, unit-bearing wavelength mappings are plotted; lookup tables and formulas also need explicit channel-order and applicability evidence. Install `nptdms` with the `notebooks` optional dependency; the Qt viewer is not required.
+The 13 active notebooks are grouped by product level and then topic: the L0 TDMS audit is under `notebooks/L0/`, L1B H5 analyses are under `notebooks/L1B/`, and the public S3 inventory that spans product levels is under `notebooks/catalog/`. [notebooks/README.md](notebooks/README.md) is the navigation guide and [docs/experiments.md](docs/experiments.md) is the formal research catalog. Start Jupyter from the repository root. The L0 TDMS audit reads one explicitly selected file, distinguishes wavelength evidence from channel indices, samples waveform rows without loading full channels, and checks local L1B metadata references without reading H5 payloads. Only complete, unit-bearing wavelength mappings are plotted; lookup tables and formulas also need explicit channel-order and applicability evidence. Install `nptdms` with the `notebooks` optional dependency; the Qt viewer is not required.
 
 Existing notebook output directories remain intact as historical results and inputs. New notebook runs write to `outputs/notebooks/<topic>/<notebook>/<dataset>/`. The 21 earlier research notebooks and four superseded synthetic root demos remain under `research/archived_notebooks/` with their saved outputs.
 

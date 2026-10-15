@@ -1,6 +1,6 @@
 # Refactor Inventory
 
-Updated 2026-10-14. The path inventory below records the earlier two-research-line layout pass; the third round kept the established directories and simplified the interfaces and duplicated refh code within them. The old paths below are from the layout-pass base commit `e1acecdefa393952526ad810908387c2adb041f4`. The 2026-10-09 report is a historical snapshot; the current active notebook count is 13, and `backup.bat` is currently tracked and present.
+Updated 2026-10-15. The path inventory below records the earlier two-research-line layout pass; the third round kept the established directories and simplified the interfaces and duplicated refh code within them. The old paths below are from the layout-pass base commit `e1acecdefa393952526ad810908387c2adb041f4`. The 2026-10-09 report is a historical snapshot; the current active notebook count is 13, and `backup.bat` is currently tracked and present.
 
 ## Python code
 
@@ -40,7 +40,7 @@ The top-level `scripts/` and `experiments/` packages were removed after migratio
 
 ## Notebooks
 
-The earlier layout-pass review covered [Refh quality and surfaces](../notebooks/refh/quality_and_surfaces.ipynb), [Refh classification](../notebooks/refh/classification.ipynb), [waveform analysis](../notebooks/waveforms/waveform_analysis.ipynb), and [peak geolocation](../notebooks/geolocation/peak_geolocation.ipynb). At the time, these used the numbered paths `notebooks/01_refh_quality.ipynb`, `notebooks/02_refh_classification.ipynb`, `notebooks/03_waveform_analysis.ipynb`, and `notebooks/04_peak_geolocation.ipynb`. Their saved outputs were regenerated from local real data and checked after execution; evidence and limits are in [refactor_improvement_report.md](refactor_improvement_report.md).
+The earlier layout-pass review covered [Refh quality and surfaces](../notebooks/L1B/refh/quality_and_surfaces.ipynb), [Refh classification](../notebooks/L1B/refh/classification.ipynb), [waveform analysis](../notebooks/L1B/waveforms/waveform_analysis.ipynb), and [peak geolocation](../notebooks/L1B/geolocation/peak_geolocation.ipynb). At the time, these used the numbered paths `notebooks/01_refh_quality.ipynb`, `notebooks/02_refh_classification.ipynb`, `notebooks/03_waveform_analysis.ipynb`, and `notebooks/04_peak_geolocation.ipynb`. Their saved outputs were regenerated from local real data and checked after execution; evidence and limits are in [refactor_improvement_report.md](refactor_improvement_report.md).
 
 All 21 former research notebooks and the geolocation archive notes are preserved under `research/archived_notebooks/` with their original filenames and saved cell outputs:
 
@@ -55,27 +55,28 @@ outputs and original filenames: `01_refh_data_contract.ipynb`,
 `02_waveform_components.ipynb`, `03_beam_geolocation_candidates.ipynb`, and
 `04_refh_classification_and_reference.ipynb`. There are 25 archived notebooks
 in total. Four notebooks were active at the time of the 2026-10-09 report; the
-current active set has 13 notebooks, including `notebooks/data/tdms_audit.ipynb`.
+current active set has 13 notebooks, including `notebooks/L0/data/tdms_audit.ipynb`.
 
 ## 2026-10-14 active notebook topic migration
 
-The 12 formerly numbered active notebooks are represented by these current
-topic paths. The new TDMS audit is an additional thirteenth active notebook.
+The 12 formerly numbered active notebooks were grouped by topic on 2026-10-14.
+The new TDMS audit is the additional thirteenth active notebook. Current
+product-level paths are listed alongside that earlier topic layout.
 
-| Former active notebook | Current path |
+| Former active notebook | Topic path at 2026-10-14 | Current product-level path |
 | --- | --- |
-| `00_s3_data_inventory.ipynb` | `notebooks/data/s3_inventory.ipynb` |
-| `01_refh_quality.ipynb` | `notebooks/refh/quality_and_surfaces.ipynb` |
-| `02_refh_classification.ipynb` | `notebooks/refh/classification.ipynb` |
-| `03_waveform_analysis.ipynb` | `notebooks/waveforms/waveform_analysis.ipynb` |
-| `04_peak_geolocation.ipynb` | `notebooks/geolocation/peak_geolocation.ipynb` |
-| `05_forest_transect_showcase.ipynb` | `notebooks/refh/forest_transect.ipynb` |
-| `06_waveform_gallery.ipynb` | `notebooks/waveforms/waveform_gallery.ipynb` |
-| `07_georeferencing_geometry.ipynb` | `notebooks/geolocation/beam_geometry.ipynb` |
-| `08_waveform_decomposition.ipynb` | `notebooks/waveforms/waveform_decomposition.ipynb` |
-| `09_nadir_window_reflection.ipynb` | `notebooks/waveforms/nadir_window_reflection.ipynb` |
-| `10_3dep_elevation_validation.ipynb` | `notebooks/geolocation/elevation_reference_validation.ipynb` |
-| `11_landcover_lidar_response.ipynb` | `notebooks/applications/landcover_response.ipynb` |
+| `00_s3_data_inventory.ipynb` | `notebooks/data/s3_inventory.ipynb` | `notebooks/catalog/s3_inventory.ipynb` |
+| `01_refh_quality.ipynb` | `notebooks/refh/quality_and_surfaces.ipynb` | `notebooks/L1B/refh/quality_and_surfaces.ipynb` |
+| `02_refh_classification.ipynb` | `notebooks/refh/classification.ipynb` | `notebooks/L1B/refh/classification.ipynb` |
+| `03_waveform_analysis.ipynb` | `notebooks/waveforms/waveform_analysis.ipynb` | `notebooks/L1B/waveforms/waveform_analysis.ipynb` |
+| `04_peak_geolocation.ipynb` | `notebooks/geolocation/peak_geolocation.ipynb` | `notebooks/L1B/geolocation/peak_geolocation.ipynb` |
+| `05_forest_transect_showcase.ipynb` | `notebooks/refh/forest_transect.ipynb` | `notebooks/L1B/refh/forest_transect.ipynb` |
+| `06_waveform_gallery.ipynb` | `notebooks/waveforms/waveform_gallery.ipynb` | `notebooks/L1B/waveforms/waveform_gallery.ipynb` |
+| `07_georeferencing_geometry.ipynb` | `notebooks/geolocation/beam_geometry.ipynb` | `notebooks/L1B/geolocation/beam_geometry.ipynb` |
+| `08_waveform_decomposition.ipynb` | `notebooks/waveforms/waveform_decomposition.ipynb` | `notebooks/L1B/waveforms/waveform_decomposition.ipynb` |
+| `09_nadir_window_reflection.ipynb` | `notebooks/waveforms/nadir_window_reflection.ipynb` | `notebooks/L1B/waveforms/nadir_window_reflection.ipynb` |
+| `10_3dep_elevation_validation.ipynb` | `notebooks/geolocation/elevation_reference_validation.ipynb` | `notebooks/L1B/geolocation/elevation_reference_validation.ipynb` |
+| `11_landcover_lidar_response.ipynb` | `notebooks/applications/landcover_response.ipynb` | `notebooks/L1B/applications/landcover_response.ipynb` |
 
 The old numbered notebook source paths are not active duplicates. References
 to numbered output directories were audited by role: current notebooks use
@@ -84,7 +85,7 @@ metadata, or preserved validation evidence. The related `research/reference/`
 scripts also read and write the existing 3DEP attribution chain under
 `outputs/notebooks/10_3dep_elevation_validation/`; its reports and downstream
 checks depend on those artifact paths. Those references remain in place to
-preserve provenance. New active notebook products use the topic paths in
+preserve provenance. New notebook runs retain the topic-based output paths in
 `notebooks/README.md`; the elevation-validation notebook is explicitly
 read-only over its historical result tree. Historical reports and catalogs
 retain their original artifact paths.

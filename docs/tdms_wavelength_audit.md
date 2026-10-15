@@ -138,7 +138,7 @@ Run the selected-file notebook into a new directory; keep both the input file an
 ```powershell
 $env:CASALS_TDMS_PATH = 'data/raw/tdms/casals_18-11-2024_13-34-53_158-003.tdms'
 $env:CASALS_TDMS_OUTPUT_ROOT = 'outputs/notebooks/data/tdms_audit/casals_18-11-2024_13-34-53_158-003/runs/<new-run-dir>'
-python -m jupyter nbconvert --to notebook --execute notebooks/data/tdms_audit.ipynb --output tdms_audit.executed.ipynb --output-dir $env:CASALS_TDMS_OUTPUT_ROOT --ExecutePreprocessor.cwd=. --ExecutePreprocessor.timeout=600
+python -m jupyter nbconvert --to notebook --execute notebooks/L0/data/tdms_audit.ipynb --output tdms_audit.executed.ipynb --output-dir $env:CASALS_TDMS_OUTPUT_ROOT --ExecutePreprocessor.cwd=. --ExecutePreprocessor.timeout=600
 ```
 
 The earlier metadata-only batch remains preserved in `outputs/notebooks/data/tdms_audit/batch_20261014_channel_status/`. The current raw-integrity batch and both selected-file notebook runs are listed in the follow-up evidence above. Final validation passed: `python -m pytest -q -p no:cacheprovider` reported 236 passed; `python -m compileall -q casals_l1b research tools tests` passed; all 13 active notebooks passed nbformat validation, IPython-aware code-cell compilation, and import resolution; current notebook links in the README and experiment catalog resolve.

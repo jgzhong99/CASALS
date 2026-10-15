@@ -123,3 +123,34 @@ Outputs: `population.parquet`, `metrics.csv`, `geoid.csv`, `parity.csv`, `frame.
 Focused tests cover the four-argument physical boundary, lack of fitting/correction entry points, changing 3DEP reference heights without changing CASALS heights, actual H5/geoid/C7 parity for both dates, independent grid sign checks, no-op/ballpark detection, withholding verified status on incomplete evidence, retained residual tails and the bias/RMSE decomposition. Full notebook execution, parity, preservation and visual verification records are recorded with the completed run below.
 
 Completed physical-only run: [20261015T214817464342Z](../outputs/notebooks/geolocation/vertical_datum_alignment/runs/20261015T214817464342Z/). All seven code cells executed in a fresh kernel without errors. Two PNG figures are embedded and visually inspected. All 88 focused tests passed. C7 heights and independently rebuilt reference planes match the historical baseline exactly on 32,859 / 16,064 field pulses and 147 / 165 road test pulses; main test counts remain 445 / 6,615. Both independent four-cell grid checks agree with PROJ within 2.2e-14 m. The pre/post SHA-256 check preserved all 1376 files (36449452738 bytes), including all pre-existing output files, raw H5/LAZ, other notebooks and unchanged historical datum/correction modules. See `execution_verification.json`, `acceptance_audit.json`, `preservation_verification.csv`, and `artifact_sha256.csv` in this run. No strict physical closure is claimed.
+
+## Independent geodetic software verification
+
+The current notebook adds a fixed-sample software comparison using the existing C7 operation, a separate rasterio interpolation, the [NGS Geoid Height Service](https://geodesy.noaa.gov/web_services/geoid.shtml), and the [NOAA VDatum Full API](https://vdatum.noaa.gov/docs/services.html). The NGS request explicitly uses `model=14` (GEOID18) and negative west longitude. The VDatum request explicitly declares geographic coordinates, NAD83(2011) ellipsoidal input, NAVD88/GEOID18 output, metre height units, the documented service region, and 2010.0 input/output epochs.
+
+The 20 pulse IDs per granule are frozen and asserted by the helper. They were selected by deterministic max-min spatial sampling over each complete H5 stream, using finite Refh and coordinates and SNR >= 5 only. The manifest includes granule, pulse ID/index, spatial rank, coordinates, Refh, SNR, and the explicit numerical-only assumption `Assumed NAD83(2011) coordinates for numerical verification only`. No 3DEP height or residual participates in this selection or in choosing conversion parameters. Every comparison uses the same 20 coordinates per granule. The local C7 operation remains the pinned GEOID18 grid (`us_noaa_g2018u0.tif`, SHA-256 `fa9a407ac7ee3f5a3694008e4bcd09ce9cc250452f0c3b11700a4960340abce2`).
+
+The APIs returned 40/40 valid NGS GEOID18 results and 40/40 valid VDatum results. Their height outputs were rounded to millimetres in the recorded responses; the numerical comparison uses a 0.01 m tolerance. Statistics below are metres; PROJ-NGS and raster-NGS refer to geoid undulation differences, while PROJ-VDatum compares NAVD88 heights.
+
+| Granule | Points / NGS calls | PROJ-NGS mean / RMSE / max abs | Raster-NGS mean / RMSE / max abs | PROJ-raster max abs | Result |
+|---|---:|---:|---:|---:|---|
+| 2024-11-12 | 20 / 20 | -0.000082 / 0.000279 / 0.000609 | -0.000082 / 0.000278 / 0.000610 | 0.000004 | PASSED |
+| 2024-11-18 | 20 / 20 | -0.000081 / 0.000264 / 0.000450 | -0.000082 / 0.000264 / 0.000448 | 0.000005 | PASSED |
+
+| Granule | VDatum calls | PROJ-VDatum mean | RMSE | Max abs | VDatum-NGS max abs | Result |
+|---|---:|---:|---:|---:|---:|---|
+| 2024-11-12 | 20 / 20 | -0.000011 | 0.000515 | 0.001101 | 0.000497 | PASSED |
+| 2024-11-18 | 20 / 20 | -0.000003 | 0.000337 | 0.000625 | 0.000722 | PASSED |
+
+The largest observed difference among the sampled software outputs is 0.001101 m. The unchanged independent C7 field-test residuals at SNR >= 5 are:
+
+| Granule | Matched / eligible | Bias | RMSE | NMAD |
+|---|---:|---:|---:|---:|
+| 2024-11-12 | 445 / 478 | -1.670506 m | 1.673526 m | 0.087692 m |
+| 2024-11-18 | 6,615 / 6,615 | -1.648579 m | 1.650993 m | 0.087435 m |
+
+The largest software difference is about 1,500 times smaller than the remaining bias, so the GEOID18 numerical implementation does not explain the metre-level CASALS-3DEP residual. PROJ and the independent raster agree within 5 micrometres; PROJ and VDatum agree within 1.2 millimetres. This is evidence of numerical consistency under the stated coordinate assumption, not proof that the unknown CASALS source frame was transformed correctly.
+
+**Final classifications:** A. Software numerical verification: **PASSED**. B. Source-frame transformation verification: **UNRESOLVED**. C. Strict CASALS-3DEP vertical closure: **NOT ACHIEVED**. The separate WGS84-ensemble-to-NAD83(2011) operation remains `proj=noop ellps=GRS80`; no new physical correction enters the formal height calculation, and the approximately -1.65 m residual remains unexplained.
+
+The complete current notebook run is [20261015T230358378823Z](../outputs/notebooks/geolocation/vertical_datum_alignment/runs/20261015T230358378823Z/). All eight code cells executed without errors. Its `geodetic_crosscheck/` directory contains the fixed sample manifest, per-point comparison CSVs, raw NOAA request/response log, summary, and software-difference plot. Successful responses from the actual serial 80-call service check are retained and reused in this complete notebook execution. `crosscheck_summary.json` also records the raw-input manifest, source-code hashes, and a notebook-source hash. The current C7 metric table matches the preceding completed run exactly. A post-run SHA-256 check against the saved protected-file manifest verified all 1,376 listed historical inputs and results unchanged; see [preservation_verification.csv](../outputs/notebooks/geolocation/vertical_datum_alignment/runs/20261015T230358378823Z/preservation_verification.csv).

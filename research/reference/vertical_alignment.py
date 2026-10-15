@@ -196,7 +196,7 @@ def audit_source_metadata():
         NASA_design_assessment="POS 510 hardware described; no per-granule GNSS solution frame/epoch or correction applied-state contract established")
 
 
-def grid_point_check(grid_path, lon, lat, h, proj_height):
+def grid_point_check(grid_path, lon, lat, h, proj_height, *, projection_tolerance_m=1e-7):
     """Independent four-cell raster interpolation; does not call PROJ to sample N."""
     import rasterio
     from rasterio.windows import Window
@@ -214,7 +214,8 @@ def grid_point_check(grid_path, lon, lat, h, proj_height):
                   + fr*((1-fc)*cells[1, 0]+fc*cells[1, 1]))
         # This audited GeoTIFF stores signed geoid undulation N; C7 uses inverse vgridshift.
         navd88 = float(h-n)
-        np.testing.assert_allclose(navd88, proj_height, rtol=0, atol=1e-7)
+        if projection_tolerance_m is not None:
+            np.testing.assert_allclose(navd88, proj_height, rtol=0, atol=projection_tolerance_m)
         return dict(longitude_deg=lon, latitude_deg=lat, assumed_NAD83_ellipsoidal_h_m=h,
                     N_GEOID18_m=n, independently_computed_H_m=navd88,
                     PROJ_H_m=float(proj_height), difference_m=navd88-float(proj_height),

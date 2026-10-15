@@ -1,0 +1,453 @@
+### Meeting Participants
+
+* **Professor (Prof. Jie Shan)** – Purdue University
+
+
+* **John** – NASA Goddard Space Flight Center
+
+
+* **Jiagan** – PhD Student, Purdue University
+
+
+* **Haoxiao** – PhD Student, Purdue University
+
+
+* **Jeff Lee** – NASA Goddard Space Flight Center
+
+
+* **Natalie** – NASA Goddard Space Flight Center
+
+
+* **Guan Sun** – NASA Goddard Space Flight Center
+
+
+
+---
+
+### Detailed Transcript
+
+ Professor: [Laughs] Yeah, right? [chuckles] Appraisal committee. He's here. Yeah. Cool. In a team meeting. But anyway, I—I think I can, you know, turn the meeting to you. I invited two of my students, Jiagan and Haoxiao here. So, yeah. So, John, it's yours.
+
+ John: Um, okay. So, what I—one of the things I was thinking is I know you shared some slides with Guan and I, but, um, if you wouldn't mind, um, showing those for the others in our group here at Goddard, um, so that they can see, um, some of your results, um, that would be great. I can also kind of give you an update on what we've found and, um, what, uh, what our plans are here for the next six months or so from a data perspective.
+
+ Professor: Okay, um, yeah, I did share this a couple of months ago, right? And we made some—some progress, not too much, but—but I'm not present—you know, not prepared today for presentation.
+
+ John: Yeah, no problem.
+
+ Professor: Um, but, you know, um, but since, you know, not all—everybody has been on the same page, so I can ask Jiagan, um, to present what we had so far. Um, Haoxiao come to the board a little bit late, and, um, he also did something, maybe he can, uh, show you after Jiagan made his—present his work. So, Jiagan, uh, are you ready to give a very brief introduction and show what you did?
+
+ Professor: Jiagan, can you hear me?
+
+ Professor: Oh.
+
+ John: Maybe their microphone's not working.
+
+ Haoxiao: Oh, oh, s—sorry, Professor. Jiagan, uh, his microphone is not working.
+
+ Professor: Oh, okay. Are you sitting next to each other, or what?
+
+ Haoxiao: Uh, yeah, we are sitting in the office now. Uh, do you need him to use my laptop to present his work?
+
+ Professor: Yeah, you—you know, if you have access to the file, and then you could use whatever computer.
+
+ Haoxiao: Oh, okay. Uh...
+
+ Professor: Because he's next to you, right?
+
+ Haoxiao: Yeah, yes. Okay, I, uh, so let me talk to him. Okay.
+
+ Professor: Maybe you can mute mute one and then...
+
+ John: Well, while they show that, why don't I—I've put a slide together for, um, our ESTO review, just to kind of talk a little bit about...
+
+ Professor: Okay.
+
+ John: ...what the—I can—I can show it. It's a—it's got a—a few updates on things we're trying to go back and, you know, we're basically going to do some reprocessing of our Level 1.
+
+ Professor: Mm.
+
+ John: Um, and there's a few things in there, but there's two that I figure I can hit on. Um, so let me share this.
+
+ John: Okay, can you see this?
+
+ Professor: Yes.
+
+ John: All right. So, two things that we're finding, uh, in the data. One is that the current geolocation algorithm was done independently for each of our tracks, and it produces cross-track offset artifacts. So, in theory, all of the tracks should be spaced evenly. Now, of course, there's uncertainty in our geolocation and, you know, there—there's jitter and all sorts of things that play roles in why that might not be the case. But, um, when we're doing the geolocation independently for each track, we're actually creating even larger, um, separation. So you can see here, this plot—I don't know if you can see my—my cursor, but some of the tracks have gaps that are 53 centimeters apart, others just 19. And in, uh, you know, sort of the worst-case scenario, some tracks actually flip-flop. So here, track 19 and 20 actually swapped. Um, and, you know, we think a—a lot of this is from imprecision in the roll and pitch pointing bias estimations, um, but this can be fixed by doing an ensemble pointing bias solution where you're sort of, you know, geolocating all the—all the tracks together so that they have knowledge of each other. Um, so, um, our—our geolocation group's actually going back and doing that now, and—and they emailed us earlier today that they had the first flight done for us to look at. So, um, that's something that—that we're going to go back and—and—and fix.
+
+ John: We've also found that, um, in removing our window reflection, we have, uh, too large of a—of a, um, of a—a segment that we've used to remove the reflection. And so when the reflection is near the surface, but not comp—like, exactly over top of the surface, like you see here, um, in—in this plot, um, we're actually removing part of the surface. So we're seeing a—a slight signal, part of that, you know, um, peak from the surface, but not the whole peak, and it can look kind of like more like noise in our, um, waveforms. Um, so one of the things we're going to do is Jeff Lee is going to make that window narrower so that it's, uh, more in line with the reflection, um, to help prevent this. I mean, there's still going to be times where the reflection is, uh, you know, right over the surface, and, you know, that's still going to cause some issues. But in a case like this, we'll be able to fix it and—and preserve the surface, uh, signal. And, Jeff, I don't—is there anything else you want to bring up as far as things we're going to try to improve in the Level 1 product?
+
+ Jeff Lee: Um, I guess the product itself, um, adding metadata, cloud optimizing it, doing that kind of stuff. Um, [coughs] excuse me. There—there's also the possibility of, uh, of improving the reference height. So right now, there's a reference height used for geolocation, and, uh, it's just the waveform bin with the—the peak amplitude. Uh, but if we were to, uh, look at the centroid instead of the peak bin, uh, we could get a little resolution back on—on geolocation and give a better target, uh, for that geolocation. Um, so yeah, there—there's definitely some things we're working on, uh, but the—the two things that, uh, John described are the main ones.
+
+ John: Yeah, so we'll let you all know when we have the new version of the Level 1 product, and we'll, you know, put it on the, uh, the AM—the Amazon Web Service bucket for people to—to use and download.
+
+ Professor: Okay. Um, not sure Jiagan is ready or not. Let's see.
+
+ Jiagan: Uh, o—okay. I fixed my, uh, microphone. Can you hear me?
+
+ John: Yeah.
+
+ Professor: Yes. Yes.
+
+ Jiagan: Okay. Um...
+
+ Professor: That's great. Let me say a few words, um, uh, before Jiagan makes the presentation. So, we did the two rounds of, you know, um, uh, these exercises. The first one was that we used your initial data, even without georeferencing, and that was a small sample, uh, data, Level 0 data, and was back to a few months ago, I think. Um, we—we realized there's some window reflection problem, so we simply used the, uh, uh, the, you know, the signal-to-noise ratio and get a threshold, and then remove it. It seems to work fine. And we didn't continue working on that direction. We thought, you know, um, this is a temporary thing and will be fixed, uh, in the future flights. So this is one thing. The other thing is that once we get your Level 1 data, and we start working on your Level 1 data, and we are trying to—to get the information basically. Uh, we didn't expect there were too much, you know, georeferencing issues there. Uh, and so we only look at, you know, one flight, um, and we didn't check the cross-track thing. Uh, you know, the compare the cross-track, but that's a very, you know, a good notion there. What bias we found is in the elevation. So we did compare, um, CaSALS elevation with 3DEP. I think I wrote an email on this. Uh, we—we trust—we believe that is possibly a, uh, vertical datum issue. We didn't know which vertical datum you use or exactly which, you know, ellipsoid you use. So the bias is about, uh, 32 meters. And even though, uh, you know, that the the by—after we remove this big number, 32, we still find some 1-meter bias. So we believe, um, this can also be fixed with two possible, uh, pro—you know, with two possible causes. The first one is is, you know, we are not 100% sure what datum or ellipsoid, uh, geoid you are using. This is one issue. The other issue probably is more problematic is the reference—is is the georeferencing. It's not because of the datum. Um, you know, we we we didn't pick up the right datum, and that may also relate to what, um, you showed us, um, the corresponding two tracks are not perfectly aligned.
+
+ John: Yeah.
+
+ Professor: Yeah, I think that's possibly the same same cause. It's not the datum. It's it's the intrinsic, um, don't know the cause, don't know the reason. It might be because of the time, when you georeferencing, you use the time, and maybe because of the, uh, interpolation. Um, so, but anyway, I think we can discuss this further, yeah. Maybe Jiagan can show, uh, what we did so far.
+
+ Jiagan: Uh, okay. Uh, okay, uh, I'm glad to be here to briefly introduce our recent work on CaSALS lidar data. Uh, our, uh, our work is about to better understand the CaSALS measurement and, uh, explore how we can process the existing data into useful products. The CaSALS, uh, currently, uh, we has, uh, uh, Level 0 and, uh, Level 1B products, uh, and, uh, we know that, uh, Level—Level 1B data can be accessed from the a—Amazon server. And, uh, our work mainly focused on the Level 1B, because the full waveform contains more information than, uh, uh, a single reference height, because, uh, the points are geolocated. Uh, we—based on Level 1B products, we—we want to develop some, uh, like Level 2 products, including, uh, 3D point clouds, point classification, digital surface and, uh, terrain models, um, and also vegetation structure. Um, and, uh, based on our understanding, we think, uh, using this full waveform measurement, we—we can, it—it can help a lot to, uh, about the, um, vegetation observation, uh, and, uh, and terrain—terrain measurements. Yeah. Um, one important question is how to convert individual samples in the received waveform into 3D geolocations. Uh, and, uh, based on our experiment, we think, uh, we know that in the H5 files, uh, we can we can get the RW start and the RW stop points, and there is also a a reference height point, and, uh, we can interpolate the, uh, 3D coordinates. Um, so we can geolocate any point between, uh, this two point. And, uh, here here, uh, the the below is, uh, is a waveform of this, uh, wave. Um, and, uh, this slide presents two examples of terrain profiles in areas with, uh, with NAIP imagery. Uh, the the images on the left shows the locations of the selected, uh, transect, and, uh, while the plot shows the elevation distribution of the, uh, lidar points along those lines. Uh, the of—and here, the the dark line, um, is a fitted DSM. Uh, we use the point cloud to fit, uh, fit, uh, upper surface, so we can get the, uh, DSM. And, uh, and th—and also, we choose the points with high, uh, SNR, so we can get the ground point and fit a ground surface, a ground plane, uh, and then we can get the DEM or DTM. Um, also next, we perform a...
+
+ Professor: That that is a classified, just by the way. We we group them, um, to, you know, we classify them into two groups: canopy and the ground. And of course, there are a lot of, you know, individual—those can be removed easily, there's some noise.
+
+ Jiagan: Yes.
+
+ Professor: Yeah.
+
+ Jiagan: Uh, yeah. And, uh, we also perform, uh, classifi—an initial classification of the Level 1B reference point. Uh, at this stage, at this stage, the classification is is relatively simple, and, uh, focuses primarily on, uh, identifying ground points and, uh, removing noise. Uh, we use these rules to to filter the point. Um, here here is the, uh, here are the classification results for one CaSALS Level 1B data set collected on, uh, November 18th, 2024. Uh, the top figure shows the complete point cloud, uh, based on the, uh, refer—reference height point, um, and, uh, we can see there are many noise points. Uh, and the middle figure shows, uh, and the middle figure shows the point cloud after filtering. We can see that many isolated points have been, uh, removed, while the main surface structure is preserved. And the bottom figure shows the points classifi—classified as ground, so overall the the ground points formed a relatively continuous surface, although some areas remain uneven or incomplete. Uh, and, uh, here and this is the basic filtering result, and we can so we can get to the ground and, uh, and some objects like forest. Um, and, uh, I also, uh, based on the filtered reference point, we can also generate, uh, digital surface model, um, and this map shows the spatial distribution of the surface elevation along the along the flight. Um...
+
+ Professor: Jiagan, if you look at the elevation, the they are not converted. They are just ellipsoid height at this time.
+
+ Jiagan: Oh, yes. It's based on WGS 84.
+
+ Professor: Yeah.
+
+ Jiagan: Uh, and and finally, uh, here here, I chose an example of the received waveform data organized by sweep and the track. Uh, the horizontal axis represents the tracking index, and the vertical axis represents the received waveform bin. And the colors indicate the received signal relative to the background level. Um, you we can see the below figures. Uh, this these two figures are are corresponded to, uh, to one sweep. And the upper figure is the median value of the of this, uh, observation. It contains more than 10,000 sweep. Uh, so, uh, based on these figures, we can easily see the surface, and, uh, and, uh, remove the noise. Yeah. Uh, so these are our current progress. Thank you.
+
+ Professor: So, John, uh, they we find this, you know, vertical georeferencing thing when we compare with the 3DEP elevation. Uh, the one that you showed mostly, I think, is a horizontal. Um, I'm not sure these two things be related, but I suspect that they are related. Uh, could be, you know, because of the frequency of IMU and GPS, if they are not the same when you do the interpolation, or the starting time has some bias, you know, slightly off-sync, they are not, um, fully accurately synced. Um, so, I mean, the the the it's just my thought, so, you know, we need to look into this more carefully about this, yeah.
+
+ John: And so let me...
+
+ Professor: I mean, um, Haoxiao did something similar to this, and I'm not sure if you or we have time, you know, to let him present his work, but they are very similar. But they did independently, yeah. So Haoxiao, are you ready to show something too?
+
+ Haoxiao: Oh, okay, Professor. So let me, uh, show my work.
+
+ Professor: Yeah. Just very briefly, I think we we only have less than an hour or something.
+
+ Haoxiao: Oh, okay. Uh, yeah, so wait a moment. Share my screen. Mm.
+
+ Haoxiao: Uh, yes, uh, so, uh, hello everyone. So can you see my screen? Uh, yeah, Professor, can you see my screen now?
+
+ Professor: Yeah, I can. Yes, I can.
+
+ Haoxiao: Okay, okay. Good. I also, uh, let me introduce my, uh, work briefly. So I am a new PhD student, uh, just joined, uh, Professor Shan's team, so I'm new to, uh, this data, and I just did some, uh, exploration with this data. Uh, so so first of all, I have a quicker, uh, glance at this, uh, this the sample data I h—I have, uh, just one, uh, L1B data and two L0 data, so, uh, I will intro—uh, so I think our, uh, major work will be focusing on L1B data, so I I will, uh, talk to, uh, my work on L1B, uh, briefly. So, uh, so basically, I f—I, uh, analyzed this sample data, and, uh, I just, uh, created a a 3D point cloud. Uh, this, as you can see, this is a generation workflow, so I, uh, read its longitude, latitude, and RF, just means the, uh, reference height, um, of of this data, and I, uh, create a 3D, uh, point cloud. As you can see, this is a 3D point cloud in, uh, local, uh, coordinate system, but we can convert, uh, it into, uh, a geo, uh, a in longitude and latitude. As you can see, uh, for this for this sample data, uh, it, uh, ha—it has, uh, more than, uh, 3 million points in total, and I just choose, uh, the data with, uh, with a good SNR is true, and I chose the—so I selected, uh, more than 2 billion [million] points, and I and I did a, uh, simple, uh, segmentation work. As you can see, uh, this is, uh, the result of, uh, classification.
+
+ Haoxiao: Uh, so, uh, so this is my, uh, principle: So I choose, uh, a local area, uh, which the window size is 10 m x 10 m. So within this local window, I I, uh, calculated the, uh, mean, uh, height. Uh, so I choose this mean height as a local reference, so I can calculate a relative height, uh, which equals, uh, which equals to Z minus local reference. So I can get all, uh, the relative height of all date of all points, and I can, uh, classify with this principle. So for example, uh, I if if the relative height is within -0.5 to, uh, +0.5 meters, so I think, uh, I regard these points are within near surface. So, uh, principles are the same, so I can get transition and even, uh, evaluated, uh, and other classes. So as you can see, this is, uh, uh, the result, uh, of classification from top view. So as we can see, uh, most of these points are classified as near surface candidate. Uh, probably we can we can use this, uh, class as ground, for ground analysis, and, uh, just for and just very few points like, uh, in green color, uh, they are classified as evaluated return candidate. So probably we can use the this class, uh, to analyze, uh, some, mm, other objects like a vegetation or even trees. And this is, uh, statistical result. Uh, yeah. So, yeah, this is a very, uh, very simple result, because, uh, I'm new to this data, so I just did this work, uh, very simple one. Yeah, that that's my work. Uh, thank you. Thank you.
+
+ Professor: Okay.
+
+ Professor: So, John and the group, uh, w—we didn't pay too much attention to the georeferencing thing. We know there might be some issues, but we thought, you know, our focus is starting—should start in from Level 1.
+
+ John: Yeah.
+
+ John: Yeah, uh, Natalie, do you have any questions for them? Because I know you've also been looking at 3DEP.
+
+ Natalie: Yeah. I mean, do you have a sense of the differences that you're seeing with 3DEP, um, from the CaSALS ground data? You're also looking at the, um, November 18th flight, and I've focused on the November 12th flight for the, um, vegetated surface, so it's a little bit different.
+
+ Professor: Mm.
+
+ Natalie: Um, but I think I remember slides from you from over the summer, and you were seeing quite good agreement, um, with 3DEP, if I remember correctly.
+
+ Professor: I mean, there there are two levels of agreement. The first one is the, you know, the data you provided is relative to the ellipsoid, and it's not NAVD 88, not relative to the geoid. So, um, that has the difference of -32 in average, and we fixed that. We, you know, we figure out and we fixed that. Now, the remaining thing, difference, is still, to me, is still relatively, um, significant, so it is 1 meter in average. So that's a bias, and 3—3DEP should be better than this. So I assume if you did everything correct for georeferencing, it should also be better than 1 meter. So the variation is small. I think Jiagan has the number, it's just maybe, you know, uh, uh, tens of centimeter, 10 or 20, less than 20 centimeters. So this variation is consistent with 3DEP quality. And the only uncertainty is that we don't know how good CaSALS georeferencing is. So, um, so that's, you know, the only uncertainty we know. Uh, you know, if we can reduce the offset to 10 or 20 centimeters, and then we probably can conclude CaSALS georeferencing is equivalent to, uh, 3DEP. But at this time, as I said, we found there's, uh, 1-meter bias, which cannot be explained. So Jiagan, I don't have the exact number, maybe you can comment a little bit, yeah. We did this evaluation earlier.
+
+ Jiagan: Uh, uh, yes, we compared CaSALS Level 1B elevation with 3DEP and, uh, found a, uh, systematic vertical bias, uh, but the residual spread is relatively small around, uh, 10 to 20 centimeters after removing the bias. So we want we wonder the vertical datum used in CaSALS Level 1B, and, uh, whether any additional height corrections are needed to make the elevation directly compared with 3DEP.
+
+ Natalie: Um, and is that a low bias in CaSALS? Is that what you're seeing?
+
+ Professor: I'm sorry, uh, Natalie. I'm sorry, I didn't get you.
+
+ Natalie: Uh, is that a low bias? I I'm seeing consistently that CaSALS is lower than 3DEP.
+
+ Professor: Oh! Or whether it's lower or higher?
+
+ Natalie: Yeah.
+
+ Professor: I don't know.
+
+ Natalie: Okay. Okay.
+
+ Professor: You you exclude this, uh, uh, geoid correction, right? That's what you are asking, right?
+
+ Natalie: Yeah. Yeah.
+
+ Professor: You exclude. I don't know this 1-meter bias is above or lower.
+
+ Natalie: Okay.
+
+ Professor: Jiagan, do you have any... We can find out. Let me see. Maybe Jiagan can find out. I I think in one of my slides.
+
+ Jiagan: Uh, uh, yeah, I'm looking for it. Yeah.
+
+ Professor: Yeah.
+
+ Jeff Lee: So did you correct the CaSALS data by the geoid value that's provided in the L1B file, or did you use your own geoid?
+
+ Professor: We use our own geoid, right?
+
+ Jeff Lee: Okay.
+
+ Professor: I mean, it's not our own, but we use, uh, um, this vertical datum geoid.
+
+ Jeff Lee: EGM 2008 or...
+
+ Professor: Um, I think we tried several different ones, and we wanted to find out. Uh, that's why I wrote, you know, in my last email to John, I asked specifically what you used, and we're trying to be consistent with yours.
+
+ Jeff Lee: Yeah, so we used EGM 2008 [Professor: Uh-huh.] in the free—in the free-tide system. [chuckles]
+
+ Professor: Say it again?
+
+ Jeff Lee: And we also provide corrections to go to the mean-tide system on the product.
+
+ Professor: Wow, okay.
+
+ Jeff Lee: Um, everything is WGS 84.
+
+ Professor: Yeah, WGS. And you said you used, um, 2008, EGM 2008?
+
+ Jeff Lee: Correct.
+
+ Professor: And what's the the other thing?
+
+ Jeff Lee: So it's it's in the tide-free system.
+
+ Professor: Oh, tide-free, okay.
+
+ Jeff Lee: Yeah, and we provide a correction for the geoid if you want to convert it to the mean-tide system. Both of those parameters are on the product, the L1B products.
+
+ Professor: Oh, we didn't use this. Uh, we simply use the vertical datum app from NOAA. Uh, that's what we used. Uh, we can give another try, and try to be exactly consistent with yours. Um, hopefully we can remove you know, this 1-meter offset in the vertical direction, but but I suspect that is, you know, it's not going to affect the horizontal, cross-track.
+
+ Jeff Lee: Right. Yeah, the horizontal is curious. Yeah.
+
+ Professor: It's it's possibly related to the time. Is there any pattern, if you if you could show the figure again? You know, the offset has any pattern there between the track?
+
+ John: Which figure?
+
+ Professor: I mean the figure initially you showed. At the very beginning, you showed there's some offset.
+
+ John: Yeah, let me pull it up.
+
+ John: This one?
+
+ Professor: Mm. So the blue points and the red points should be identical, right? Should be at the same place, is that what you are seeing?
+
+ John: No, so, um, you know, track 19 should be closer to track 18, and track 20 should be closer to 21, and they've flipped.
+
+ Professor: How could that be?
+
+ John: Well, if, you know, since they're all being geolocated independently, um, and there's, you know, error in our our roll and pitch pointing bias estimations, if the errors are positive for one and negative for the other, right, and they're being applied independently, then they could swap.
+
+ Professor: And that...
+
+ John: At least that—that's our theory at the moment. [laughs]
+
+ Professor: I see. Then it is not the time, it is, I mean not I mean may not be the time, but the angle.
+
+ John: Right.
+
+ Professor: Yeah. Let me double check carefully. So, red is 20, but they are not equal distance, you're right?
+
+ John: Well, in theory, all of these should be equal distance apart, right? And, of course, there's jitter and things like that, so I wouldn't expect them to be perfect, right? But, you know, the fact that some tracks like 21 and 22 are 53 centimeters apart, and then tracks 19 and 20 have actually flop—you know, flip-flopped and, you know, the separation is actually -5 centimeters, like that's a big range, right?
+
+ Professor: Yeah, I I see. Yeah, okay, I see that.
+
+ John: And so you end up getting these gaps between tracks in some cases like 21 and 22, and then in other cases the the tracks swap, and um, so our thinking is that having, you know, having them geolocated with knowledge of each other should should help with that.
+
+ Professor: So if this this little thing, you know, little thing, is that on top of the trees or is on the ground? So it's better to show on on the ground.
+
+ John: Yeah, this is these are the this it's like looking down from above, right? It's spots on the ground.
+
+ Professor: But—I mean, is it the bare ground or trees?
+
+ John: Uh, I this is just the footpr—the dots for the footprints, I believe. Uh, yeah. They're not they're not any heights or anything like that.
+
+ Jeff Lee: I I think they're ground points.
+
+ John: It's just showing where the Right, where the waveforms are, right, as you go along the tracks.
+
+ Jeff Lee: Yeah, I think that's the reference height that Dave plotted, and so that would that would probably be He he's good enough not to get into the canopy and and just get, you know, ground points.
+
+ Professor: Okay. So okay. So if it's ground, then No, I mean should be on the ground. But the other thing, have you checked this uh your pointing, if you plot the IMU record and see if there's any, you know, jitter on the angle change? I I this I suspect this is because of the IMU.
+
+ John: Yeah, I I think I'd have to ask Dave Harding, um, but I imagine he probably checked that. But I'll double I'll ask him.
+
+ Professor: Mm. Because it's irregular, and at certain points, uh, you you even flipped, that means, you know, that IMU, that track has some sudden change, right? Now, it flipped the left and right or before and after. So what's the frequency of IMU?
+
+ John: Guan, is it Do you know what the frequency is?
+
+ Guan Sun: IMU, the data frequency is 250 Hz, I think.
+
+ Professor: 250? And GPS?
+
+ Guan Sun: GPS is done um I'm not sure. Need to go back, um.
+
+ Professor: Yeah, so if if because you know, you need to, because of the frequency, GPS is much slower than IMU. So you in order to get this plot, you need both. And you you need to access the IMU and the GPS data very, very precisely at the same, you know, time incident.
+
+ Guan Sun: Well, but there's like a those uh spots, uh the time separation of those spots are significantly shorter than the rate of the GPS and the MU, because uh IMU, I mean.
+
+ Professor: Yeah, so that's why...
+
+ Guan Sun: So we are scanning at 114 uh kHz.
+
+ Professor: Yeah, that's why...
+
+ Guan Sun: Uh-huh.
+
+ Professor: ...yeah, that's why you need to very precise the interpolation, because this is interpolated, right, in terms of time. So...
+
+ Guan Sun: I see what you mean. Um...
+
+ Professor: Yeah, we need to be very, very accurate and precise in order to do this. Do you have a time tag for each track, or...
+
+ Guan Sun: Yeah, each spot each spot is time tagged. Each pulse goes out is time tagged. Uh, each pulse received is time tagged.
+
+ Professor: So if you know, if the time tag has a certain offset, and then, you know, the neighbor, I mean, this should 53, 32, this should still be equal distance, I mean, roughly, and...
+
+ Guan Sun: Yeah, one thing in our mind is like uh if you look uh 256 of as a group, they will finish uh all of them like within fraction of this um uh IMU time, right? So they should uh if it's uh if it's error from your our time interpretation, they should shift as a global offset instead of in per every single track. Yeah. The argument behind this is when we do the Because the traditional lidar is one-beam system. So when you do the one-beam, uh geolocation, you just use the one beam. Signal-to-noise ratio is not that great, I guess. Then you you do that, there's a tolerance of how how precise you can do it, so there's an error bar of individual individual track. You don't care about the adjacent channel. That error bar, if you check the I think the spec of Applanix, it's almost the spacing of the uh spacing of the tracks. Uh, so if error bar is in the order of spacing of the tracks, so and because the tracks Physically, track spacing is fixed by the dispersion and wavelengths. It's very precise. Uh, it's uh let's say, okay, less than 1% less than 1% of the of the variation there relative to the track spacing there of the wavelength accuracy. Um, then then the the spacing should be should be like uh if you if it's wrong, you will globally point it wrong, and they will start wander, they will start wander together. But the the fact is like they jump across each other, we always think like it's it's the error bar, because if you put the error bar on this two, they still meet the spec, this blue and red dots, right? It's still within the error bar of the of the Applanix uh uh track precision. But because uh, as John mentioned, [laughs] if with an error bar, one is positive, another is negative, they could like end up closer or going further away.
+
+ Professor: Mhm. Guan, I just wonder if you plot the angles, you know, the three IMU angles, and see if you can see some, you know, abnormal changes or not smooth changes. Then if you if you see this, and very likely it's because of this.
+
+ John: Yeah, we can take a look at that.
+
+ Guan Sun: That's good.
+
+ John: Yeah.
+
+ Professor: I mean, I mean, we we can, um, we can look into this. I'm not sure your timeline, but this is a challenging problem. We'll be happy to look into this. I mean, there's not just, you know, we are doing classification, all those things, you know, um, but we are willing to look into this. Um, it has Can we work uh you know explore this problem on both Level 0 and Level 1, right? Or or we have to work on one of them?
+
+ John: Say that again. Sorry, uh, my...
+
+ Professor: No, if we look into this issue, this problem, should we work on Level 0 or Level 1 or both? Or either of them, it doesn't matter?
+
+ Guan Sun: Um, I think...
+
+ Professor: No, we have to we have to work on Level 0, right?
+
+ Guan Sun: Yeah, because if you look at the Level 1, the damage is already done, I think. [laughs]
+
+ Professor: Yeah, it is already done, right. Yeah.
+
+ John: Yeah.
+
+ Guan Sun: And also like uh uh Dave has a recommendation of um the surface return, because uh um the calibration has to use surface return. I think the first round Jeff probably can um uh elaborate better. We didn't do the centroid um uh calculation of the surface return pulse. Um, so the signal is it's a simple like a peak search or something like that. And uh there's uh like our digitizer is digitizer at 1 GHz, so there's a quantized 1-nanosecond um cross-cut, 1-nanosecond time interval there. But if you do the centroid, and then will be improved, so also peak, uh, the surface return will be more has a better signal-to-noise ratio. Um, I think those things are probably in the in what in in the wish list or to-do list, uh, our data data processing team is looking into there. But depends on how much resource they have.
+
+ John: Yeah, we, you know, we'll dive into this further, and, you know, we also just got an email about the ensemble calibration results, so we should take a look at that and see how that changed things. Um, so yeah, I mean, it there's going to be probably the rest of this calendar year of digging into this and reprocessing things before we have, you know, next year, something to a new version to, um, share with folks.
+
+ Guan Sun: There's As John mentioned, there's a high hope of this ensemble um uh geolocation, because uh if you if we treat uh 256 of them as correlated uh tracks with fixed relationship, you get extra signal-to-noise ratio improvement from that, even though like certain spot the surface return is not uh, you know, have some digitizing error there. But you have so many spots, and they are correlated. The correlation there give you the signal-to-noise ratio enhancement. So the high hope is like with this approach, uh you get benefit of continuously along-track sampling, you also get the uh benefit of contiguous cross-track sampling, and those two one like truly is become like a imaging type of uh [Professor: Yeah.] spot. Uh, it will it will increase our like signal-to-noise ratio to get more precise track uh geolocation.
+
+ Professor: Hey, can you remind me how big is the footprint in in particular in this data set?
+
+ Guan Sun: 0.23 cm? Or 0.25? John, do you remember that?
+
+ John: Um, it depends on the exact altitude, but yeah, it's right in that range.
+
+ Guan Sun: Yeah, it's by angle, but uh at 4.5 m—km, it's somewhere around It It happened to be like along-track and the cross-track has a similar Along-track, I think, is uh 0.24, and the cross-track is 0.2, if we use 4 point 4.5 km. Um, somewhere there, 0.23, 0.24, 0.23, 0.25-ish.
+
+ Professor: So let me understand. One small superficial thing: So you mentioned different teams, so so this team we are talking to is the hardware, system team? And Harding, Dave Harding is the data team, and there's another team?
+
+ John: No, so there's there's the calibration team, which is like uh Tim Lucey's group—or Scott Lucey's group, sorry. Um, and then there's the engineering team, so that's Guan, Jeff Chen. So Guan, um, is on the call as well. And then there's the data team, um, and so the Dave Harding's really been looking at the Level 0, Level 1 data. Um, and then, you know, Jeff Lee is really the sort of the uh the architect of the the Level 1 data. Um, so he's taking the Level 0, taking the geolocation uh data from from that team and and put it all together into a file. And then Natalie's working on our, um, 3D point cloud data, and she's doing comparisons to 3DEP, and then Ben, uh, Jelley, who's also on, is is going to be looking at uh comparisons with ICESat-2.
+
+ Professor: Oh, I see. Okay, that's that's very good. So we know who to talk to. [laughs]
+
+ John: Yeah. Yeah.
+
+ Professor: So Dave is in the in the Harding is in the data team, right?
+
+ John: Correct.
+
+ Professor: Okay. Okay.
+
+ John: But he's also retired, so he's doing all this for fun. [laughs] Um...
+
+ Professor: Yeah, yeah. Yeah, I understand.
+
+ John: Sometimes he can be sometimes he's quick to respond, other times it takes a while to to get a response from him, so, um, you know, if if you email him, you might want to CC Guan or myself and just so that, um, we know, um, in case in case he's on vacation or something.
+
+ Professor: Okay, sure. I will do that, yeah. Um, I don't think it is confidential. Um, I'm handling your manuscript, so you knew that, Guan, right? Uh, so it has been um on the I think the last round, I mean, hopefully last round of of review, and, uh, I send you the notification, so I'm not volunteering any information, because you know it is me that handling the paper. I'm not reviewing the paper, I'm just, you know, handling the the review process. So is that possible that I share your when the current manuscript to my team? That's my question.
+
+ Guan Sun: Is the question for me?
+
+ Professor: Yeah, I think you are the you are the...
+
+ Guan Sun: Oh, you mean the airplane uh airplane uh our airplane demonstration paper?
+
+ Professor: I yeah, it's it's sent to TGRS. I didn't read it, honestly, so but I know it is from your team, so...
+
+ Guan Sun: John, I don't see any issue there. John, what do you think?
+
+ John: I I don't either, no.
+
+ Guan Sun: Yeah.
+
+ Professor: Okay. Okay. So we we we will keep it, you know, um, as for us only. Hopefully we'll be accepted very soon, so I think I think it is under minor, uh, minor revision. You you received the information, right, the notification? I sent you a couple days ago. Probably you didn't know who sent you. [laughs] Yeah.
+
+ Professor: So, um, if you want us to look into this georeferencing thing, we'll be happy to do it. Uh, I just want to make sure we start with the right data, which is the Level 0, and you also share this data, Level 0 data, uh either in Amazon or or, you know, a small sample that you shared back to the summer. So I don't know which one we should use. Is Level 0 data also in Amazon?
+
+ John: No.
+
+ Professor: Okay.
+
+ John: Just the just the Level 1, so [Professor: Yeah.] yeah, we'd have to find a way to share that with you guys. So, um, yeah, I mean we can talk our our group at Goddard can talk and figure out, uh, how to best share data with you, and take a look at the new calibration and geolocation results and see see what that's showing us, and and get back to you on that.
+
+ Professor: Okay, so, yeah. But because we do have some sample Level 0 data, but that was, you know, right after you finished the data collection and has been a year old, so I'm not sure if you have any changes you know, over the or, you know, after that time, even though it's still Level 0, but there may be some changes, so we we just want to make sure we start with the, you know, right place, right data.
+
+ John: Yeah.
+
+ John: Okay, sounds good. We'll uh we'll reach back out to you and let you know.
+
+ Professor: Yeah. Have you heard anything from Paula? She she told me she doesn't have money.
+
+ John: No, I mean, so we've got a review, um, that's what these slides are for, um, on Monday, and then, you know, cuz of the CR, she doesn't really know what her budget technically is next year. Um, so they like, you know, prorate prorate whatever it is based on the the two months or two and a half months, um, uh for the for the continuing resolution. Um, so she really won't know what kind of budget she has until there's an actual budget.
+
+ Professor: Which will be the the beginning of next year?
+
+ John: Hopefully. [laughter]
+
+ Professor: I you know, I talked to her, um, at IGARSS, and anyway, I mean, he's I think he be he's very interested in CaSALS work, uh-huh. And also talked to Mike.
+
+ John: Yep.
+
+ Professor: Mike Seablom, or Seabom, right?
+
+ John: Seablom, yep.
+
+ Professor: Yeah, Seablom, yeah. He's also very supportive, but...
+
+ John: Yeah.
+
+ John: Yeah, so it's, you know, we should have more clarity, hopefully, in the new year, so.
+
+ Professor: Okay. I think that's something very, you know, core solid engineering work, so that means very good for PhD work, so we'll be we're enthusiastically looking into it, yeah.
+
+ John: Yeah.
+
+ Professor: Is that possible you share, you know, some of the slides with us? If not, that's fine, so.
+
+ John: Yeah, these are I'm still working on them, but I can [Professor: Okay.] I can share, uh, you know, when when I'm finished them, I can share them with you guys.
+
+ Professor: Okay.
+
+ Professor: Okay, so we probably should, you know, keep in touch.
+
+ John: Yes, um, I'll reach out to you uh once we look at this new geolocation data and figure out what or how to send you files, and then, um, you know, we can always plan another meeting down the road and and discuss further.
+
+ Professor: Yeah. Yeah, okay. So I even didn't check if the the old Level 0 data has IMU, GPS, all those things or not, so we I mean, should be there, but we we...
+
+ John: Okay. Yeah, check that and see what you have there and and let us know, cuz maybe you already even have the data.
+
+ Professor: We did have a sample, old you know, initial sample...
+
+ John: Okay.
+
+ Professor: ...data, that, yeah, very small subset, yes.
+
+ John: Okay. Yeah, uh maybe just s- shoot us a message on what I don't remember what exact uh date and times that subset was, but, um, you know, let us know, and if we think there's a better one, we can send you a new subset.
+
+ Professor: Okay, sounds good.
+
+ John: All right. Thanks, everyone. I'm going to run to my next meeting. [laughs]
+
+ Professor: Okay, thank you. Thank you, everyone. Nice talking to you.
+
+ John: Bye.
+
+ Professor: Okay. Bye-bye.

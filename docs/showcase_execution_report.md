@@ -128,6 +128,29 @@ Standalone `scene_geometry_3d.html` and `single_pulse_geometry_3d.html` are in t
 Re-execution: start Jupyter at repository root with the existing `casals-showcase` kernel, or execute each notebook independently with `jupyter nbconvert --to notebook --execute --inplace --ExecutePreprocessor.kernel_name=casals-showcase --ExecutePreprocessor.timeout=1800`. All source paths/configuration are repository-relative. Changing a pulse/AOI requires fresh visual review; unreviewed cases retain unknown labels. Missing default feature outputs are extracted only for the fixed small subset into the showcase directory; missing surfaces use the existing formal APIs only in that directory.
 
 
+## 2026-10-14 topic-migration validation
+
+The active `refh/forest_transect.ipynb` was executed from a fresh copy with all
+outputs isolated under `outputs/notebooks/_migration_validation_20261014/`.
+Its H5 screening and candidate profiles completed. One generated USGS NAIP
+image URL returned a transient HTTP 502 after the catalog and export requests
+had succeeded. The same image URL returned HTTP 200 on a later direct retry;
+all six candidate crops and the fixed AOI image were then retrieved through
+`research.showcase.fetch_naip` with acquisition-date and request provenance.
+The complete forest notebook rerun then finished with no cell errors. The
+catalog and export endpoints were valid, so no service URL or request change
+was made. The new images retain the helper's documented limitation: service
+georeferencing is used, but absolute footprint registration was not
+independently validated.
+
+The same isolated validation pass completed `refh/quality_and_surfaces.ipynb`
+(5 code cells), `waveforms/waveform_analysis.ipynb` (6), and
+`geolocation/beam_geometry.ipynb` (8), all with no notebook error outputs.
+Executed notebooks are in
+`outputs/notebooks/_migration_validation_20261014/executed_notebooks/`;
+generated files are under its separate `artifacts/` directory. Existing
+topic-organized and historical output directories were left untouched.
+
 ## 2026-10-11 method-improvement rerun addendum
 
 This addendum records the clean-kernel execution and review completed on 2026-10-11. The earlier 2026-10-10 results above remain as the historical showcase record. New showcase and research artifacts are isolated under each notebook's `method_improvement/<granule>/` directory; the pre-existing output trees were left intact.

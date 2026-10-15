@@ -6,7 +6,7 @@ Local inputs and generated products are excluded from Git. Preserve original CAS
 | --- | --- | --- |
 | `data/raw/casals_l1b/` | Original CASALS L1B H5 granules | Read-only source inputs. |
 | `data/raw/tdms/` | TDMS recordings, `.tdms_index` sidecars, viewer assets, and notes | Original TDMS files are read-only. Index sidecars are not complete data files. |
-| `outputs/notebooks/data/tdms_audit/<tdms-stem>/runs/<run-id>/` | TDMS metadata/property inventory, Step/Sweep layout, wavelength evidence, bounded waveform samples, and local L1B metadata cross-check | Each run uses a new directory; no TDMS or H5 input is modified. |
+| `outputs/notebooks/data/tdms_audit/<tdms-stem>/runs/<run-id>/` | TDMS metadata/property inventory, Step/Sweep layout, wavelength evidence, bounded raw-byte and waveform checks, and descriptive L1B `/dac` association | Each run uses a new directory; no TDMS or H5 input is modified. The complete H5 `/dac` and associated index/navigation datasets are read for descriptive summaries; waveform datasets are not loaded. |
 | `data/reference/3dep/` | 3DEP LAS/LAZ clips | External reference data with source metadata. |
 | `data/derived/` | Products intentionally reused as inputs | Record the source workflow before reuse. |
 | `outputs/refh/<h5-stem>/` | Refh export, filtering, DSM, ground, classification, and evaluation products | Regenerable, per-input workflow outputs. |

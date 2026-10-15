@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import struct
 from pathlib import Path
 
 import numpy as np
@@ -12,6 +13,7 @@ from research.tdms_audit import (
     _unit,
     analyze_channel_layout,
     audit_all_tdms,
+    audit_raw_data_samples,
     channel_property_variation,
     discover_tdms_files,
     metadata_inventory,
@@ -19,6 +21,7 @@ from research.tdms_audit import (
     open_tdms_metadata,
     read_waveform_row,
     read_waveform_samples,
+    resolve_tdms_reference,
     select_row_indices,
     select_tdms_file,
     wavelength_evidence,
@@ -139,6 +142,39 @@ def _write_tdms(
     return path
 
 
+def _write_partial_tail_tdms(path: Path) -> Path:
+    """Make a tiny fixed-width file with three full raw chunks and a 2-sample tail."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with TdmsWriter(path) as writer:
+        writer.write_segment([
+            RootObject(properties={"Run label": "partial-tail fixture"}),
+            GroupObject("CASALS", properties={
+                "# WVLSteps/Sweep": 1, "# Sweeps/ShiftCycle": 2, "Sweeps/File": 5,
+            }),
+            ChannelObject("CASALS", "Sweep0Step0", np.arange(4, dtype=np.int16)),
+            ChannelObject("CASALS", "Sweep1Step0", np.arange(4, dtype=np.int16) + 10),
+        ])
+    payload = bytearray(path.read_bytes())
+    raw_start = struct.unpack_from("<Q", payload, 20)[0] + 28
+    channels = 2
+    samples_per_chunk = 4
+    raw_chunks = []
+    for chunk in range(3):
+        for channel in range(channels):
+            values = np.arange(samples_per_chunk, dtype=np.int16) + 100 * chunk + 10 * channel
+            raw_chunks.append(values.tobytes())
+    for channel in range(channels):
+        raw_chunks.append((np.arange(2, dtype=np.int16) + 300 + 10 * channel).tobytes())
+    raw_payload = b"".join(raw_chunks)
+    payload = payload[:raw_start] + raw_payload
+    struct.pack_into("<Q", payload, 12, len(payload) - 28)
+    path.write_bytes(payload)
+    index = bytearray(payload[:raw_start])
+    index[:4] = b"TDSh"
+    Path(f"{path}_index").write_bytes(index)
+    return path
+
+
 def test_inventory_preserves_properties_and_reports_segment_limitations(tmp_path: Path):
     path = tmp_path / "two_segments.tdms"
     with TdmsWriter(path) as writer:
@@ -240,6 +276,8 @@ def test_layout_validates_step_sweep_counts_lengths_and_file_order():
     assert index_by_name["Sweep0Step1"] == 2
     assert index_by_name["Sweep1Step2"] == 5
     assert layout["samples_per_row"] == 4
+    assert layout["channel_structure_complete"] is True
+    assert layout["row_layout_valid"] is True
 
     missing = _inventory(channel_names=[
         "Sweep0Step0", "Sweep0Step1", "Sweep0Step2",
@@ -255,6 +293,13 @@ def test_layout_validates_step_sweep_counts_lengths_and_file_order():
     assert not unequal_layout["channel_lengths_consistent"]
     assert not unequal_layout["rows_file_divide_channel_length"]
     assert not unequal_layout["layout_complete"]
+
+    unresolved_inventory = _inventory()
+    unresolved_inventory["groups"][0]["properties"]["Sweeps/File"] = 5
+    structurally_complete_but_unresolved_rows = analyze_channel_layout(unresolved_inventory)
+    assert structurally_complete_but_unresolved_rows["channel_structure_complete"] is True
+    assert structurally_complete_but_unresolved_rows["row_layout_valid"] is False
+    assert structurally_complete_but_unresolved_rows["layout_complete"] is False
 
 
 def test_layout_handles_multiple_groups_and_reports_extra_duplicate_or_unknown_channels():
@@ -291,6 +336,9 @@ def test_direct_channel_wavelengths_require_units_and_include_provenance():
     mapped = next(row for row in evidence["mapping"] if row["channel_name"] == "Sweep1Step2")
     assert mapped["wavelength_nm"] == pytest.approx(1040.21)
     assert "run.tdms" in mapped["source"]
+    assert "scope=channel" in mapped["source"]
+    assert "channel=Sweep1Step2" in mapped["source"]
+    assert "property=Wavelength (nm)" in mapped["source"]
     assert mapped["calibration_status"].startswith("explicit wavelength record")
 
     micro = _inventory(channel_properties={
@@ -394,6 +442,11 @@ def test_control_values_serialized_configs_and_unlabeled_arrays_remain_candidate
         "unlabeled_numeric_array_candidates", "indirect_tuning_or_calibration_candidates"
     }
 
+    dac_inventory = _inventory(group_properties={"DAC": 0.25, "laser DAC code": 125.0})
+    dac_evidence = wavelength_evidence(dac_inventory, analyze_channel_layout(dac_inventory))
+    assert dac_evidence["grade"] == "D"
+    assert dac_evidence["mapping"] == []
+
 
 def test_contradictory_physical_wavelength_sources_never_emit_mapping():
     direct = {
@@ -490,6 +543,59 @@ def test_file_discovery_and_selection_exclude_index_sidecars(tmp_path: Path):
     with pytest.raises(ValueError, match=r"Expected a \.tdms file"):
         select_tdms_file(tmp_path, data_dir, "a.tdms_index")
     assert select_tdms_file(tmp_path, data_dir, "data/b.tdms") == second.resolve()
+
+
+def test_tdms_reference_requires_unique_exact_basename_match(tmp_path: Path):
+    first = tmp_path / "a" / "source.tdms"
+    second = tmp_path / "b" / "other.tdms"
+    assert resolve_tdms_reference(r"folder\source.tdms", [first, second]) == first
+    assert resolve_tdms_reference("source.tdms.bak", [first, second]) is None
+    assert resolve_tdms_reference("missing.tdms", [first, second]) is None
+    assert resolve_tdms_reference("source.tdms", [first, tmp_path / "duplicate" / "source.tdms"]) is None
+
+
+def test_raw_audit_verifies_selected_full_chunks_and_partial_tail_without_claiming_rows(tmp_path: Path):
+    path = _write_partial_tail_tdms(tmp_path / "partial_tail.tdms")
+    with open_tdms_metadata(path) as (tdms, reader_info):
+        inventory = metadata_inventory(tdms)
+        inventory["reader_status"].update(reader_info)
+        layout = analyze_channel_layout(inventory)
+        raw = audit_raw_data_samples(tdms, path, layout)
+
+    assert raw["lead_in_matches_reader_and_file"] is True
+    assert raw["index_sidecar"]["status"] == "matches_main_metadata_prefix"
+    assert raw["status"] == "partial_final_chunk_verified"
+    assert raw["full_chunk_count"] == 3
+    assert raw["candidate_complete_storage_chunks"] == 3
+    assert raw["partial_final_chunk_samples"] == 2
+    assert raw["channel_lengths_match_raw_byte_count"] is True
+    assert raw["sampled_chunk_indices"] == [0, 1, 2]
+    assert raw["sampled_value_count_checked"] == 28
+    assert raw["valid_prefix_rows"] is None
+    assert raw["row_layout_valid"] is False
+    assert raw["all_selected_slices_match_raw_bytes_and_raw_only_reader"] is True
+    assert np.array_equal(raw["partial_final_chunk_matrix"], np.array([[300, 301], [310, 311]]))
+
+
+def test_batch_counts_raw_integrity_failure_separately_from_metadata_success(tmp_path: Path, monkeypatch):
+    import research.tdms_audit as tdms_audit
+
+    data_dir = tmp_path / "tdms"
+    _write_tdms(data_dir / "raw_failure.tdms")
+
+    def fail_raw_read(*args, **kwargs):
+        return {"status": "read_integrity_failed", "error": "synthetic read mismatch"}
+
+    monkeypatch.setattr(tdms_audit, "audit_raw_data_samples", fail_raw_read)
+    result = audit_all_tdms(data_dir, tmp_path / "batch")
+    row = result["summaries"][0]
+    assert row["metadata_audit_status"] == "metadata_audited"
+    assert row["raw_read_status"] == "read_integrity_failed"
+    assert row["overall_status"] == "read_integrity_failed"
+    assert result["metadata_audited_count"] == 1
+    assert result["metadata_error_count"] == 0
+    assert result["read_integrity_failed_count"] == 1
+    assert result["error_count"] == 1
 
 
 def test_select_rows_rejects_duplicate_or_out_of_range_indices():

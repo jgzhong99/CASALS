@@ -57,6 +57,67 @@ outputs and original filenames: `01_refh_data_contract.ipynb`,
 in total. Four notebooks were active at the time of the 2026-10-09 report; the
 current active set has 13 notebooks, including `notebooks/data/tdms_audit.ipynb`.
 
+## 2026-10-14 active notebook topic migration
+
+The 12 formerly numbered active notebooks are represented by these current
+topic paths. The new TDMS audit is an additional thirteenth active notebook.
+
+| Former active notebook | Current path |
+| --- | --- |
+| `00_s3_data_inventory.ipynb` | `notebooks/data/s3_inventory.ipynb` |
+| `01_refh_quality.ipynb` | `notebooks/refh/quality_and_surfaces.ipynb` |
+| `02_refh_classification.ipynb` | `notebooks/refh/classification.ipynb` |
+| `03_waveform_analysis.ipynb` | `notebooks/waveforms/waveform_analysis.ipynb` |
+| `04_peak_geolocation.ipynb` | `notebooks/geolocation/peak_geolocation.ipynb` |
+| `05_forest_transect_showcase.ipynb` | `notebooks/refh/forest_transect.ipynb` |
+| `06_waveform_gallery.ipynb` | `notebooks/waveforms/waveform_gallery.ipynb` |
+| `07_georeferencing_geometry.ipynb` | `notebooks/geolocation/beam_geometry.ipynb` |
+| `08_waveform_decomposition.ipynb` | `notebooks/waveforms/waveform_decomposition.ipynb` |
+| `09_nadir_window_reflection.ipynb` | `notebooks/waveforms/nadir_window_reflection.ipynb` |
+| `10_3dep_elevation_validation.ipynb` | `notebooks/geolocation/elevation_reference_validation.ipynb` |
+| `11_landcover_lidar_response.ipynb` | `notebooks/applications/landcover_response.ipynb` |
+
+The old numbered notebook source paths are not active duplicates. References
+to numbered output directories were audited by role: current notebooks use
+them as read-only historical products, pseudo-reference inputs, selected-case
+metadata, or preserved validation evidence. The related `research/reference/`
+scripts also read and write the existing 3DEP attribution chain under
+`outputs/notebooks/10_3dep_elevation_validation/`; its reports and downstream
+checks depend on those artifact paths. Those references remain in place to
+preserve provenance. New active notebook products use the topic paths in
+`notebooks/README.md`; the elevation-validation notebook is explicitly
+read-only over its historical result tree. Historical reports and catalogs
+retain their original artifact paths.
+
+The active output-path review also corrected two helper-backed destinations:
+waveform analysis now passes the topic/notebook root to the feature extractor,
+which adds the granule name once, and peak geolocation writes its extracted
+tables into the granule output root without a duplicate granule subfolder. The
+waveform-gallery fallback now checks the extractor's actual
+`feature_subset/<granule>/run_metadata.json` path. Existing historical result
+folders were not changed.
+
+Specific historical path consumers retained after review:
+
+- `01_refh_quality/` supplies the Refh quality notebook's previous LAS and
+  raster products; `02_refh_classification/reference_transfer/` supplies the
+  classification notebook's existing pseudo-reference.
+- `03_waveform_analysis/method_improvement/peaks/` supplies existing waveform
+  feature metadata. `06_waveform_gallery/method_improvement/` supplies
+  selected-case metadata and imagery to beam geometry, waveform decomposition,
+  nadir reflection, and land-cover response. `09_nadir_window_reflection/`
+  supplies selected reflection records to waveform decomposition.
+- `10_3dep_elevation_validation/` and `11_landcover_lidar_response/` contain
+  frozen 3DEP attribution and ROI evidence read by the elevation-validation and
+  land-cover notebooks. `research/reference/` scripts form a dependent
+  read/write chain within the 10 directory; reports cite those same artifacts.
+  They remain at their established paths so reruns and saved analyses stay
+  linked.
+- Historical report links and `data/reference/landcover_rois/roi_manifest.geojson`
+  retain their original output references. These identify evidence sources;
+  they are not current notebook entry points or destinations for the
+  representative validation runs.
+
 ## Local-only and preserved material
 
 - The 2026-10-09 report recorded `backup.bat` as removed; the current checkout has it tracked and present. That report also records removal of empty `.agents/`, `casals_l1b/docs/`, and former script/experiment shells, plus the redundant Open3D LAS/LAZ viewer. Original and large data were preserved.

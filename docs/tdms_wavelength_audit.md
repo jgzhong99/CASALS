@@ -1,7 +1,37 @@
 # CASALS TDMS Wavelength and Metadata Audit
 
 Audit date: 2026-10-14  
-Scope: every `.tdms` file under `data/raw/tdms/`, both local L1B H5 files, the available viewer configuration, and relevant local design material. Raw TDMS and H5 inputs were read only. The notebook run selected the 13:34 TDMS; the batch command independently inventoried both TDMS files.
+Scope: every `.tdms` file under `data/raw/tdms/`, both local L1B H5 files, the available viewer configuration, and relevant local design material. Raw TDMS and H5 inputs were read only. The notebook was run separately on both TDMS files; the batch command independently inventoried both.
+
+## Follow-up evidence (2026-10-14)
+
+A second pass checked storage-chunk boundaries, selected raw values, `.tdms_index` metadata prefixes, and quantitative `/dac` associations. The fresh batch artifacts are in `outputs/notebooks/data/tdms_audit/batch_20261014_raw_integrity_final_01/`. The selected-file notebook completed without cell errors for the 13:34 TDMS in `outputs/notebooks/data/tdms_audit/casals_18-11-2024_13-34-53_158-003/runs/20261014_final_audit_01/` and for the 13:37 TDMS in `outputs/notebooks/data/tdms_audit/casals_18-11-2024_13-37-23_164-002/runs/20261014_partial_tail_review_01/`. The earlier directories listed below remain preserved.
+
+### Raw-byte boundaries and selected value checks
+
+Both files have one declared segment whose next-segment boundary equals file size, and both `.tdms_index` files match the main file's metadata prefix byte-for-byte except for the `TDSm` versus `TDSh` tag. `incomplete_final_segment=False` describes the segment boundary; it does not imply that the raw payload ends on a whole channel chunk.
+
+| TDMS file | Raw data bytes | Storage chunk accounting | Bounded checks | Row interpretation |
+| --- | ---: | --- | --- | --- |
+| `casals_18-11-2024_13-34-53_158-003.tdms` | 20,300,431,360 | 14,080 complete chunks x 2,816 int16 samples/channel | Chunks 0, 7,040, and 14,079; all 256 channels; 2,162,688 values compared across indexed slices, raw-only `nptdms`, and direct bytes. Every checked value matched. | `Sweeps/File=14,080`, 2,816 samples/channel, and raw-byte layout agree structurally. This supports 14,080 candidate row intervals, but does not certify every sample or acquisition event. |
+| `casals_18-11-2024_13-37-23_164-002.tdms` | 17,582,522,368 | 12,194 complete chunks x 2,816 samples/channel, followed by a 1,310,720-byte tail = 2,560 samples/channel across 256 channels | Chunks 0, 1, 6,097, 12,191, 12,192, 12,193, plus the partial tail; all 256 channels; 4,980,736 values compared across indexed slices, raw-only `nptdms`, and direct bytes. Every checked value matched. | Channel-name structure is complete, but 34,340,864 samples/channel is not divisible by `Sweeps/File=14,080`. Candidate acquisition rows and `valid_prefix_rows` remain unresolved; 2,816 is only the observed TDMS chunk size. |
+
+For the 13:37 file, `nptdms` reports 256 channel-status records with `expected_length=2,816` and `read_length=2,560`, a 256-value final-chunk shortfall per channel (65,536 summed). The selected raw tail is consistent with the recorded channel values and direct raw bytes. The raw area is structurally bounded and sampled consistently; the available files do not show whether acquisition ended normally or was interrupted, and this check does not rule out acquisition-level dropouts. No complete raw-file byte-by-byte checksum comparison was performed.
+
+### Quantitative L1B `/dac` association
+
+The notebook read the complete `/dac` arrays and the associated `/track_num`, `/sweep_num`, `/delta_time`, beam-angle, and instrument-position arrays from both local L1B H5 files. It did not load the full H5 files or TX/RX waveform datasets. `/dac` has 3,604,480 `float64` entries in each file, but only a dimension-list HDF5 attribute; it has no wavelength unit or calibration field. Values exactly round-trip through `float32`, which describes storage precision only.
+
+Each H5 has track IDs 0-255 with 14,080 samples per track, sweep IDs 0-14,079 with 256 samples per sweep, exactly one record per track/sweep pair, and strictly increasing `delta_time`. The first track IDs in file order are `0, 8, 16, ... 120`. These validate the H5's internal index grid; they do not pair it with either local TDMS.
+
+| L1B H5 | `/dac` range; unique values | Pearson r: track / sweep / time | r: beam azimuth / elevation | r: instrument longitude / latitude | Sweep-mean trend |
+| --- | --- | --- | --- | --- | --- |
+| `casals_l1b_20241112T165718_001_02.h5` | -0.1286101 to -0.1260585; 168,475 | -0.277 / 0.516 / 0.516 | 0.557 / 0.893 | 0.528 / 0.516 | Slope 6.44e-8 per sweep; R2 0.288; 53.1% of adjacent sweep-mean steps increase. |
+| `casals_l1b_20241118T171757_001_02.h5` | -0.0435643 to -0.0373387; 1,401,176 | 0.008 / 0.985 / 0.985 | 0.789 / -0.822 | -0.985 / -0.987 | Slope 4.16e-7 per sweep; R2 0.971; 99.9% of adjacent sweep-mean steps increase. |
+
+The Nov 12 within-track standard deviation has median 0.0004874, comparable to its 0.0004851 range of track means. For Nov 18 the median within-track standard deviation is 0.0017139, much larger than the 0.0000477 range of track means. These observations show that `/dac` varies across sweep/time, with different descriptive patterns between the two files; they do not identify DAC units, wavelength, or causal control behavior. Beam-angle and position correlations are also descriptive and use HDF5 values with no unit attributes.
+
+Neither H5's root `tdms_file` basename matches either local TDMS file. No correlation was computed between local TDMS values and L1B arrays. Both local TDMS files remain wavelength Grade D; neither L1B `/dac` array changes that evidence. No physical wavelength map is available or recoverable from the inspected TDMS metadata or these uncalibrated H5 DAC values.
 
 ## Findings
 
@@ -62,9 +92,9 @@ The local proposal draft `Archive/000 proposal/CASALS 20241216Rev.pdf` describes
 
 ## Bounded waveform evidence
 
-For the 13:34 file, the notebook read only three rows—0, 7,040, and 14,079—using channel slices across all 256 channels. This read 2,162,688 `int16` values (4,325,376 bytes). Every sampled value was finite; the sampled minimum and maximum were −32,730 and 32,735 raw counts. Finite values do not establish a valid return because no invalid-sample code is documented in the inspected metadata. A bounded viewer/software parity check passed after the viewer's configured cut; it verifies software reshaping only.
+The original row-oriented view of the 13:34 file read rows 0, 7,040, and 14,079 using channel slices across all 256 channels. That sample contained 2,162,688 `int16` values (4,325,376 bytes). Every sampled value was finite; the sampled minimum and maximum were −32,730 and 32,735 raw counts. The follow-up pass separately checked the selected storage chunks listed above. Finite values do not establish a valid return because no invalid-sample code is documented in the inspected metadata. A bounded viewer/software parity check passed after the viewer's configured cut; it verifies software reshaping only.
 
-No waveform rows were read from the 13:37 file because its row/sample shape is unresolved and every channel has a segment-status shortfall. No full-file waveform scan was performed.
+No row-index waveform slices were read from the 13:37 file because its row/sample shape is unresolved and every channel has a segment-status shortfall. The later bounded storage-chunk and tail checks are summarized above; no full-file waveform scan was performed.
 
 The executed notebook saved the complete property inventory, layout, grade-D wavelength evidence, per-channel sample statistics, and these figures under:
 
@@ -103,12 +133,12 @@ Batch-audit both local TDMS files into a new output directory:
 python -m research.tdms_audit --all --data-dir data/raw/tdms --output-dir outputs/notebooks/data/tdms_audit/<new-batch-dir>
 ```
 
-Run the selected-file notebook into a new directory; keep the input file unchanged:
+Run the selected-file notebook into a new directory; keep both the input file and source notebook unchanged:
 
 ```powershell
 $env:CASALS_TDMS_PATH = 'data/raw/tdms/casals_18-11-2024_13-34-53_158-003.tdms'
 $env:CASALS_TDMS_OUTPUT_ROOT = 'outputs/notebooks/data/tdms_audit/casals_18-11-2024_13-34-53_158-003/runs/<new-run-dir>'
-python -m jupyter nbconvert --to notebook --execute --inplace --ExecutePreprocessor.timeout=600 notebooks/data/tdms_audit.ipynb
+python -m jupyter nbconvert --to notebook --execute notebooks/data/tdms_audit.ipynb --output tdms_audit.executed.ipynb --output-dir $env:CASALS_TDMS_OUTPUT_ROOT --ExecutePreprocessor.cwd=. --ExecutePreprocessor.timeout=600
 ```
 
-The recorded batch result is in `outputs/notebooks/data/tdms_audit/batch_20261014_channel_status/`. It audited both files with zero metadata-audit errors; it skipped raw row slicing for the 13:37 file because the channel/sample shape and read-status evidence do not support a safe reshape. The notebook executed with no cell errors. The full test suite passed (233 tests), `compileall` passed, and all 13 active notebooks passed nbformat validation and IPython-aware code-cell compilation.
+The earlier metadata-only batch remains preserved in `outputs/notebooks/data/tdms_audit/batch_20261014_channel_status/`. The current raw-integrity batch and both selected-file notebook runs are listed in the follow-up evidence above. Final validation passed: `python -m pytest -q -p no:cacheprovider` reported 236 passed; `python -m compileall -q casals_l1b research tools tests` passed; all 13 active notebooks passed nbformat validation, IPython-aware code-cell compilation, and import resolution; current notebook links in the README and experiment catalog resolve.

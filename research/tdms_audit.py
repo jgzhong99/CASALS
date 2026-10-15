@@ -7,10 +7,12 @@ import base64
 import csv
 import json
 import re
+import struct
 from contextlib import contextmanager
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Iterator
+import warnings
 
 import numpy as np
 
@@ -120,6 +122,15 @@ def select_tdms_file(project_root: str | Path, data_dir: str | Path,
     raise ValueError(
         f"Found {len(candidates)} TDMS files; set TDMS_PATH to choose one explicitly:\n{listing}"
     )
+
+
+def resolve_tdms_reference(reference: str | None, local_tdms_paths: list[str | Path]) -> Path | None:
+    """Return a unique exact-basename match; counts alone never imply a source match."""
+    if not reference:
+        return None
+    reference_name = str(reference).replace("\\", "/").rsplit("/", 1)[-1].casefold()
+    matches = [Path(path) for path in local_tdms_paths if Path(path).name.casefold() == reference_name]
+    return matches[0] if len(matches) == 1 else None
 
 
 class TdmsReadError(OSError):
@@ -402,11 +413,15 @@ def analyze_channel_layout(inventory: dict[str, Any], group_name: str | None = N
     if rows_per_file and len(lengths) == 1 and lengths[0] % rows_per_file == 0:
         samples_per_row = lengths[0] // rows_per_file
     row_count_matches = bool(rows_per_file and all(length % rows_per_file == 0 for length in lengths))
-    complete = bool(
+    channel_structure_complete = bool(
         expected and not missing and not duplicates and not duplicate_names
         and recognized_count == len(expected) and all(item["layout_status"] == "ok" for item in parsed)
-        and channel_lengths_consistent and row_count_matches
     )
+    row_layout_valid = (
+        bool(channel_lengths_consistent and row_count_matches and samples_per_row)
+        if rows_per_file is not None else None
+    )
+    complete = bool(channel_structure_complete and row_layout_valid)
     return {
         "group_name": group["name"],
         "steps_per_sweep": steps,
@@ -433,6 +448,8 @@ def analyze_channel_layout(inventory: dict[str, Any], group_name: str | None = N
         "channel_lengths_consistent": channel_lengths_consistent,
         "rows_file_divide_channel_length": row_count_matches,
         "samples_per_row": samples_per_row,
+        "channel_structure_complete": channel_structure_complete,
+        "row_layout_valid": row_layout_valid,
         "layout_complete": complete,
         "channels": parsed,
     }
@@ -456,9 +473,12 @@ def _finite_number(row: dict[str, Any]) -> float | None:
 
 
 def _source(row: dict[str, Any], source_file: str | None) -> str:
-    owner = row.get("group_name") or row.get("channel_name") or "file"
-    prefix = f"{source_file}:" if source_file else ""
-    return f"{prefix}{row['scope']}:{owner}.{row['property_name']}"
+    return (
+        f"file={source_file or '<unspecified>'}; scope={row['scope']}; "
+        f"group={row.get('group_name') or '<none>'}; "
+        f"channel={row.get('channel_name') or '<none>'}; "
+        f"property={row['property_name']}"
+    )
 
 
 def _mapping_row(
@@ -516,7 +536,8 @@ def wavelength_evidence(
     conflicts: list[str] = []
     partial_direct: dict[str, float] = {}
     direct_mapping: list[dict[str, Any]] = []
-    direct_complete = bool(layout["layout_complete"] and ordered_channels)
+    channel_structure_complete = layout.get("channel_structure_complete", layout["layout_complete"])
+    direct_complete = bool(channel_structure_complete and ordered_channels)
 
     for channel in ordered_channels:
         rows = [
@@ -549,7 +570,7 @@ def wavelength_evidence(
     if direct_complete and len(direct_mapping) == len(ordered_channels):
         complete_mappings.append(("A", direct_mapping))
 
-    if layout["layout_complete"] and ordered_channels:
+    if channel_structure_complete and ordered_channels:
         table_rows = [
             row for row in properties
             if row["scope"] in {"file", "group"}
@@ -614,7 +635,7 @@ def wavelength_evidence(
         if "formula" in _tokens(row["property_name"])
         and _parameter_formula_is_complete(row["raw_value"])
     ]
-    if layout["layout_complete"] and ordered_channels and layout["sweeps_per_cycle"]:
+    if channel_structure_complete and ordered_channels and layout["sweeps_per_cycle"]:
         if len(starts) == len(increments) == len(offsets) == len(formulas) == 1:
             start, increment, offset, formula = starts[0], increments[0], offsets[0], formulas[0]
             start_value, increment_value, offset_value = (
@@ -834,6 +855,380 @@ def read_waveform_samples(
     }
 
 
+def _tdms_lead_in(path: Path) -> dict[str, Any]:
+    with path.open("rb") as stream:
+        lead_in = stream.read(28)
+    if len(lead_in) != 28:
+        return {"valid": False, "error": "File is shorter than a 28-byte TDMS lead-in."}
+    tag = lead_in[:4]
+    toc_mask, version, next_offset, raw_offset = struct.unpack("<IIQQ", lead_in[4:28])
+    declared_end = None if next_offset == 0xFFFFFFFFFFFFFFFF else 28 + next_offset
+    return {
+        "valid": tag == b"TDSm",
+        "tag": tag.decode("ascii", errors="replace"),
+        "toc_mask": toc_mask,
+        "version": version,
+        "next_segment_offset": next_offset,
+        "raw_data_offset": raw_offset,
+        "raw_data_position": 28 + raw_offset,
+        "declared_segment_end": declared_end,
+        "interleaved": bool(toc_mask & (1 << 5)),
+        "big_endian": bool(toc_mask & (1 << 6)),
+    }
+
+
+def _tdms_index_prefix_status(path: Path, raw_data_position: int) -> dict[str, Any]:
+    index_path = Path(f"{path}_index")
+    if not index_path.is_file():
+        return {"status": "not_present", "path": str(index_path)}
+    result = {"status": "not_compared", "path": str(index_path), "size_bytes": index_path.stat().st_size}
+    if index_path.stat().st_size != raw_data_position:
+        result["reason"] = "Single-segment metadata-prefix comparison does not apply to this index size."
+        return result
+    with path.open("rb") as main_stream, index_path.open("rb") as index_stream:
+        main_prefix = main_stream.read(raw_data_position)
+        index_prefix = index_stream.read(raw_data_position)
+    matches = (
+        len(main_prefix) == len(index_prefix) == raw_data_position
+        and main_prefix[:4] == b"TDSm"
+        and index_prefix[:4] == b"TDSh"
+        and main_prefix[4:] == index_prefix[4:]
+    )
+    return {
+        **result,
+        "status": "matches_main_metadata_prefix" if matches else "mismatch",
+        "matches_main_metadata_prefix": bool(matches),
+    }
+
+
+def _raw_chunk_matrix(stream: Any, offset: int, byte_count: int, *, dtype: np.dtype,
+                      channel_count: int, sample_count: int, interleaved: bool) -> np.ndarray:
+    stream.seek(offset)
+    raw = stream.read(byte_count)
+    values = np.frombuffer(raw, dtype=dtype)
+    expected_values = channel_count * sample_count
+    if len(raw) != byte_count or values.size != expected_values:
+        raise OSError(f"Raw TDMS slice returned {len(raw)} bytes / {values.size} values; expected {byte_count} / {expected_values}.")
+    matrix = values.reshape(sample_count, channel_count).T if interleaved else values.reshape(channel_count, sample_count)
+    return matrix
+
+
+def audit_raw_data_samples(
+    tdms: Any, path: str | Path, layout: dict[str, Any],
+    row_indices: list[int] | tuple[int, ...] | None = None,
+) -> dict[str, Any]:
+    """Check one fixed-width TDMS segment against bounded channel slices and its raw bytes."""
+    from nptdms import TdmsFile
+
+    path = Path(path)
+    segments = getattr(getattr(tdms, "_reader", None), "_segments", None) or []
+    result: dict[str, Any] = {
+        "status": "partial_data_unresolved",
+        "segment_count": len(segments),
+        "incomplete_final_segment": getattr(getattr(tdms, "file_status", None), "incomplete_final_segment", None),
+        "channel_structure_complete": layout.get("channel_structure_complete"),
+        "row_layout_valid": layout.get("row_layout_valid"),
+        "valid_prefix_rows": None,
+        "partial_final_row_samples": None,
+        "candidate_samples_per_row": None,
+        "full_chunk_count": None,
+        "candidate_complete_storage_chunks": None,
+        "partial_final_chunk_samples": None,
+        "sampled_chunk_indices": [],
+        "sampled_channel_count": 0,
+        "sampled_value_count_checked": 0,
+        "index_sidecar": {"status": "not_checked"},
+        "sample_matrices": {},
+        "partial_final_chunk_matrix": None,
+        "error": None,
+    }
+    if len(segments) != 1:
+        result["error"] = "Bounded raw-byte verification currently requires one fixed-layout TDMS segment."
+        return result
+
+    segment = segments[0]
+    header = _tdms_lead_in(path)
+    raw_start = int(segment.data_position)
+    file_size = path.stat().st_size
+    segment_end = int(segment.next_segment_pos)
+    raw_bytes = segment_end - raw_start
+    result.update({
+        "lead_in": header,
+        "raw_data_position": raw_start,
+        "segment_end_position": segment_end,
+        "file_size_bytes": file_size,
+        "raw_data_bytes": raw_bytes,
+        "segment_incomplete": bool(getattr(segment, "segment_incomplete", False)),
+        "toc_mask": int(segment.toc_mask),
+    })
+    result["index_sidecar"] = _tdms_index_prefix_status(path, raw_start)
+    header_matches = bool(
+        header.get("valid")
+        and header.get("raw_data_position") == raw_start
+        and header.get("declared_segment_end") is not None
+        and header.get("declared_segment_end") == segment_end
+        and segment_end == file_size
+        and not bool(getattr(segment, "segment_incomplete", False))
+        and not bool(getattr(getattr(tdms, "file_status", None), "incomplete_final_segment", False))
+    )
+    result["lead_in_matches_reader_and_file"] = header_matches
+
+    channel_by_path = {
+        str(channel.path): channel
+        for group in tdms.groups()
+        for channel in group.channels()
+    }
+    data_objects = [obj for obj in segment.ordered_objects if getattr(obj, "has_data", False)]
+    try:
+        ordered_channels = [channel_by_path[str(obj.path)] for obj in data_objects]
+    except KeyError as exc:
+        result["error"] = f"TDMS segment data channel is missing from metadata: {exc}"
+        return result
+    if not ordered_channels:
+        result["error"] = "TDMS segment has no fixed-width channel data."
+        return result
+
+    chunk_samples = [int(obj.number_values) for obj in data_objects]
+    dtype_sizes = [int(channel.dtype.itemsize) for channel in ordered_channels]
+    dtype_signatures = {(channel.dtype.kind, int(channel.dtype.itemsize)) for channel in ordered_channels}
+    if len(set(chunk_samples)) != 1 or len(set(dtype_sizes)) != 1 or len(dtype_signatures) != 1:
+        result["error"] = "Raw channel chunks do not share one fixed-width sample layout."
+        return result
+    samples_per_chunk = chunk_samples[0]
+    channel_count = len(ordered_channels)
+    itemsize = dtype_sizes[0]
+    chunk_bytes = channel_count * samples_per_chunk * itemsize
+    full_chunks, tail_bytes = divmod(raw_bytes, chunk_bytes)
+    tail_samples, tail_remainder = divmod(tail_bytes, channel_count * itemsize)
+    endian_dtype = ordered_channels[0].dtype.newbyteorder(">" if header.get("big_endian") else "<")
+    interleaved = bool(header.get("interleaved"))
+    expected_channel_length = full_chunks * samples_per_chunk + tail_samples
+    lengths_match = all(len(channel) == expected_channel_length for channel in ordered_channels)
+    result.update({
+        "raw_chunk_samples_per_channel": samples_per_chunk,
+        "raw_chunk_bytes": chunk_bytes,
+        "nptdms_chunk_count": int(segment.num_chunks),
+        "full_chunk_count": full_chunks,
+        "candidate_complete_storage_chunks": full_chunks,
+        "partial_final_chunk_bytes": tail_bytes,
+        "partial_final_chunk_samples": tail_samples if tail_remainder == 0 else None,
+        "channel_lengths_match_raw_byte_count": bool(lengths_match and tail_remainder == 0),
+        "all_channel_lengths": sorted({int(len(channel)) for channel in ordered_channels}),
+        "channel_status_count": (
+            len(getattr(tdms.file_status, "channel_statuses", None) or {})
+            if getattr(tdms.file_status, "channel_statuses", None) is not None else None
+        ),
+        "interleaved": interleaved,
+    })
+    if layout.get("row_layout_valid") and layout.get("samples_per_row"):
+        result["candidate_samples_per_row"] = layout["samples_per_row"]
+        if layout["samples_per_row"] == samples_per_chunk and tail_samples:
+            result["partial_final_row_samples"] = tail_samples
+
+    status_items = getattr(tdms.file_status, "channel_statuses", None)
+    status_records = list(status_items.items()) if isinstance(status_items, dict) else []
+    status_mismatches = [
+        status for _, status in status_records
+        if getattr(status, "expected_length", None) != samples_per_chunk
+        or getattr(status, "read_length", None) != (tail_samples if tail_samples else samples_per_chunk)
+    ]
+    result["status_record_layout_mismatch_count"] = len(status_mismatches) if status_records else None
+    result["status_record_shortfall_samples"] = (
+        sum(max(0, int(status.expected_length) - int(status.read_length)) for _, status in status_records)
+        if status_records else None
+    )
+    status_matches_tail = (
+        len(status_records) == channel_count and not status_mismatches
+        if tail_samples else not status_records or not status_mismatches
+    )
+
+    if full_chunks <= 0 or tail_remainder != 0 or tail_bytes and tail_samples <= 0:
+        result["error"] = "Raw TDMS bytes do not contain a verifiable full chunk or uniform partial channel chunk."
+        return result
+    if row_indices is not None and not layout.get("row_layout_valid"):
+        result["error"] = "ROW_INDICES cannot be applied because the acquisition row layout is unresolved."
+        return result
+    if row_indices is not None and layout.get("samples_per_row") != samples_per_chunk:
+        result["error"] = "ROW_INDICES do not map one-to-one to fixed-width TDMS storage chunks."
+        return result
+    if row_indices is not None:
+        selected_chunks = [int(value) for value in row_indices]
+        if len(set(selected_chunks)) != len(selected_chunks) or any(value < 0 or value >= full_chunks for value in selected_chunks):
+            result["error"] = f"Requested chunk indices must be unique and within 0..{full_chunks - 1}."
+            return result
+    elif layout.get("row_layout_valid") and layout.get("samples_per_row") == samples_per_chunk:
+        selected_chunks = select_row_indices(full_chunks)
+    else:
+        selected_chunks = sorted({value for value in (0, 1, full_chunks // 2, full_chunks - 3,
+                                                       full_chunks - 2, full_chunks - 1) if 0 <= value < full_chunks})
+    result["sampled_chunk_indices"] = selected_chunks
+
+    raw_file = path.open("rb")
+    raw_tdms = None
+    all_slices_match = True
+    sample_matrices: dict[int, np.ndarray] = {}
+    tail_matrix = None
+    try:
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=DeprecationWarning)
+            raw_tdms = TdmsFile.open(raw_file)
+            raw_channel_by_path = {
+                str(channel.path): channel
+                for group in raw_tdms.groups()
+                for channel in group.channels()
+            }
+            raw_only_segments = getattr(raw_tdms._reader, "_segments", None) or []
+            raw_order = [str(obj.path) for obj in raw_only_segments[0].ordered_objects
+                         if getattr(obj, "has_data", False)] if len(raw_only_segments) == 1 else []
+            indexed_order = [str(obj.path) for obj in data_objects]
+            if raw_order != indexed_order:
+                all_slices_match = False
+
+            def compare_chunk(chunk_index: int, sample_count: int, byte_offset: int, byte_count: int) -> np.ndarray:
+                nonlocal all_slices_match
+                raw_matrix = _raw_chunk_matrix(
+                    raw_file, byte_offset, byte_count, dtype=endian_dtype,
+                    channel_count=channel_count, sample_count=sample_count, interleaved=interleaved,
+                )
+                layout_by_name = {item["name"]: item for item in layout.get("channels", [])}
+                structure_complete = bool(
+                    layout.get("channel_structure_complete")
+                    and len(layout_by_name) == channel_count
+                    and all(channel.name in layout_by_name for channel in ordered_channels)
+                    and all(item.get("footprint_index") is not None for item in layout_by_name.values())
+                )
+                layout_channels = (
+                    sorted(layout_by_name.values(), key=lambda item: item["footprint_index"])
+                    if structure_complete
+                    else [layout_by_name.get(channel.name, {"name": channel.name}) for channel in ordered_channels]
+                )
+                result["layout_channels"] = layout_channels
+                indexed_matrix = np.empty((channel_count, sample_count), dtype=ordered_channels[0].dtype)
+                for channel_index, channel in enumerate(ordered_channels):
+                    start = chunk_index * samples_per_chunk
+                    stop = start + sample_count
+                    indexed_values = np.asarray(channel[start:stop])
+                    raw_values = np.asarray(raw_channel_by_path[str(channel.path)][start:stop])
+                    direct_values = raw_matrix[channel_index]
+                    if (
+                        indexed_values.size != sample_count or raw_values.size != sample_count
+                        or not np.array_equal(indexed_values, raw_values)
+                        or not np.array_equal(indexed_values, direct_values)
+                    ):
+                        all_slices_match = False
+                    footprint = (
+                        layout_by_name[channel.name]["footprint_index"]
+                        if structure_complete else channel_index
+                    )
+                    indexed_matrix[footprint] = direct_values
+                return indexed_matrix
+
+            for chunk_index in selected_chunks:
+                sample_matrices[chunk_index] = compare_chunk(
+                    chunk_index, samples_per_chunk, raw_start + chunk_index * chunk_bytes, chunk_bytes
+                )
+            if tail_samples:
+                tail_matrix = compare_chunk(
+                    full_chunks, tail_samples, raw_start + full_chunks * chunk_bytes, tail_bytes
+                )
+    except Exception as exc:
+        all_slices_match = False
+        result["error"] = f"{type(exc).__name__}: {exc}"
+    finally:
+        if raw_tdms is not None:
+            raw_tdms.close()
+        else:
+            raw_file.close()
+
+    result["sample_matrices"] = sample_matrices
+    result["partial_final_chunk_matrix"] = tail_matrix
+    result["sampled_channel_count"] = channel_count if all_slices_match else 0
+    result["sampled_value_count_checked"] = (
+        channel_count * samples_per_chunk * len(selected_chunks)
+        + channel_count * (tail_samples if tail_matrix is not None else 0)
+        if all_slices_match else 0
+    )
+    result["all_selected_slices_match_raw_bytes_and_raw_only_reader"] = bool(all_slices_match)
+    index_ok = result["index_sidecar"].get("status") in {"not_present", "matches_main_metadata_prefix", "not_compared"}
+    if not result.get("error") and header_matches and lengths_match and all_slices_match and index_ok and status_matches_tail:
+        result["status"] = "partial_final_chunk_verified" if tail_samples else "selected_complete_chunks_verified"
+        if (
+            layout.get("row_layout_valid")
+            and layout.get("samples_per_row") == samples_per_chunk
+            and layout.get("rows_per_file") == full_chunks
+            and tail_samples == 0
+        ):
+            result["valid_prefix_rows"] = full_chunks
+    elif not all_slices_match or not lengths_match or not header_matches or not index_ok:
+        result["status"] = "read_integrity_failed"
+        result["error"] = result.get("error") or "TDMS header, index, channel lengths, or sampled raw bytes did not agree."
+    else:
+        result["status"] = "partial_data_unresolved"
+        result["error"] = result.get("error") or "The partial raw chunk could not be reconciled with channel status records."
+    return result
+
+
+def summarize_raw_waveform_samples(raw_audit: dict[str, Any]) -> dict[str, Any]:
+    matrices = raw_audit.get("sample_matrices") or {}
+    tail_matrix = raw_audit.get("partial_final_chunk_matrix")
+    if not matrices:
+        return {
+            "status": "not_sampled",
+            "selected_chunk_indices": raw_audit.get("sampled_chunk_indices", []),
+            "selected_rows": [],
+            "channel_statistics": [],
+            "matrices": {},
+        }
+    chunk_indices = sorted(matrices)
+    first_matrix = matrices[chunk_indices[0]]
+    channel_count, _ = first_matrix.shape
+    channel_values = []
+    for channel_index in range(channel_count):
+        pieces = [matrices[index][channel_index] for index in chunk_indices]
+        if tail_matrix is not None:
+            pieces.append(tail_matrix[channel_index])
+        channel_values.append(np.concatenate(pieces))
+    all_values = np.concatenate(channel_values)
+    finite = np.isfinite(all_values)
+    layout_channels = raw_audit.get("layout_channels", [])
+    stats = []
+    for channel_index, values in enumerate(channel_values):
+        channel = layout_channels[channel_index] if channel_index < len(layout_channels) else {}
+        finite_values = np.isfinite(values)
+        stats.append({
+            "channel_name": channel.get("name", str(channel_index)),
+            "step": channel.get("step"),
+            "sweep": channel.get("sweep"),
+            "footprint_index": channel.get("footprint_index"),
+            "sample_count": int(values.size),
+            "finite_sample_count": int(finite_values.sum()),
+            "finite_fraction": float(finite_values.mean()),
+            "minimum_raw_count": float(np.min(values)),
+            "maximum_raw_count": float(np.max(values)),
+            "zero_fraction": float(np.mean(values == 0)),
+        })
+    return {
+        "status": "sampled_raw_chunks_read",
+        "selected_chunk_indices": chunk_indices,
+        "selected_rows": chunk_indices if raw_audit.get("valid_prefix_rows") is not None else [],
+        "raw_integrity_status": raw_audit.get("status"),
+        "valid_prefix_rows": raw_audit.get("valid_prefix_rows"),
+        "candidate_complete_storage_chunks": raw_audit.get("candidate_complete_storage_chunks"),
+        "candidate_samples_per_row": raw_audit.get("candidate_samples_per_row"),
+        "partial_final_chunk_samples": raw_audit.get("partial_final_chunk_samples"),
+        "sampled_value_count": int(all_values.size),
+        "sampled_bytes": int(all_values.nbytes),
+        "finite_sample_count": int(finite.sum()),
+        "finite_fraction": float(finite.mean()),
+        "minimum_raw_count": float(np.min(all_values)),
+        "maximum_raw_count": float(np.max(all_values)),
+        "validity_note": "Finite numeric samples only; no invalid-sample sentinel is documented in the inspected metadata.",
+        "channel_statistics": stats,
+        "matrices": matrices,
+        "partial_final_chunk_matrix": tail_matrix,
+    }
+
+
 def audit_tdms_file(
     path: str | Path, row_indices: list[int] | tuple[int, ...] | None = None,
 ) -> dict[str, Any]:
@@ -844,6 +1239,8 @@ def audit_tdms_file(
         inventory["reader_status"].update(reader_info)
         layout = analyze_channel_layout(inventory)
         wavelength = wavelength_evidence(inventory, layout, source_file=path.name)
+        raw_audit = audit_raw_data_samples(tdms, path, layout, row_indices)
+        raw_waveform = summarize_raw_waveform_samples(raw_audit)
         try:
             waveform = read_waveform_samples(tdms, layout, row_indices)
         except Exception as exc:
@@ -854,12 +1251,31 @@ def audit_tdms_file(
                 "channel_statistics": [],
                 "matrices": {},
             }
+        if waveform["status"] == "skipped_incomplete_layout" and raw_waveform["status"] == "sampled_raw_chunks_read":
+            waveform = raw_waveform
+        if raw_audit.get("error"):
+            waveform["error"] = raw_audit["error"]
+        raw_summary = {key: value for key, value in raw_audit.items()
+                       if key not in {"sample_matrices", "partial_final_chunk_matrix", "layout_channels"}}
 
     summary = {
         "file_name": path.name,
         "path": str(path.resolve()),
         "size_bytes": path.stat().st_size,
-        "status": "audited",
+        "metadata_audit_status": "metadata_audited",
+        "raw_read_status": raw_audit["status"],
+        "overall_status": (
+            "read_integrity_failed" if raw_audit["status"] == "read_integrity_failed"
+            else "partial_data_unresolved" if raw_audit["status"] == "partial_data_unresolved"
+            else "partial_tail_verified" if raw_audit["status"] == "partial_final_chunk_verified"
+            else "audited"
+        ),
+        "status": (
+            "read_integrity_failed" if raw_audit["status"] == "read_integrity_failed"
+            else "partial_data_unresolved" if raw_audit["status"] == "partial_data_unresolved"
+            else "partial_tail_verified" if raw_audit["status"] == "partial_final_chunk_verified"
+            else "audited"
+        ),
         "metadata_source": inventory["reader_status"]["metadata_source"],
         "index_error": inventory["reader_status"]["index_error"],
         "groups": len(inventory["groups"]),
@@ -886,6 +1302,8 @@ def audit_tdms_file(
         "rows_per_file": layout["rows_per_file"],
         "samples_per_row": layout["samples_per_row"],
         "layout_complete": layout["layout_complete"],
+        "channel_structure_complete": layout.get("channel_structure_complete"),
+        "row_layout_valid": layout.get("row_layout_valid"),
         "missing_step_sweep_count": len(layout["missing_step_sweep"]),
         "duplicate_step_sweep_count": len(layout["duplicate_step_sweep"]),
         "extra_step_sweep_count": len(layout["extra_step_sweep"]),
@@ -896,10 +1314,16 @@ def audit_tdms_file(
         "wavelength_candidate_count": len(wavelength["source_properties"]),
         "waveform_sample_status": waveform["status"],
         "sampled_rows": waveform["selected_rows"],
+        "sampled_chunk_indices": waveform.get("selected_chunk_indices", []),
         "sampled_value_count": waveform.get("sampled_value_count", 0),
         "finite_fraction": waveform.get("finite_fraction"),
         "minimum_raw_count": waveform.get("minimum_raw_count"),
         "maximum_raw_count": waveform.get("maximum_raw_count"),
+        "candidate_complete_storage_chunks": raw_audit.get("candidate_complete_storage_chunks"),
+        "partial_final_chunk_samples": raw_audit.get("partial_final_chunk_samples"),
+        "valid_prefix_rows": raw_audit.get("valid_prefix_rows"),
+        "sampled_channel_count": raw_audit.get("sampled_channel_count"),
+        "sampled_value_count_checked": raw_audit.get("sampled_value_count_checked"),
         "error": waveform.get("error"),
     }
     return {
@@ -907,6 +1331,8 @@ def audit_tdms_file(
         "inventory": inventory,
         "layout": layout,
         "wavelength_evidence": wavelength,
+        "raw_integrity": raw_summary,
+        "raw_waveform_samples": raw_waveform,
         "waveform_samples": waveform,
     }
 
@@ -933,12 +1359,15 @@ def audit_all_tdms(
 
     summaries = []
     columns = [
-        "file_name", "size_bytes", "status", "metadata_source", "segment_count",
+        "file_name", "size_bytes", "status", "metadata_audit_status", "overall_status",
+        "raw_read_status", "metadata_source", "segment_count",
         "channel_status_count", "channel_status_mismatch_count", "channel_status_shortfall_samples",
         "groups", "channels", "steps_per_sweep", "sweeps_per_shift_cycle",
-        "rows_per_file", "samples_per_row", "layout_complete",
+        "rows_per_file", "samples_per_row", "channel_structure_complete", "row_layout_valid", "layout_complete",
         "wavelength_grade", "wavelength_evidence_class", "physical_wavelength_available",
-        "waveform_sample_status", "sampled_rows", "sampled_value_count",
+        "waveform_sample_status", "sampled_rows", "sampled_chunk_indices", "sampled_value_count",
+        "candidate_complete_storage_chunks", "partial_final_chunk_samples", "valid_prefix_rows",
+        "sampled_channel_count", "sampled_value_count_checked",
         "finite_fraction", "minimum_raw_count", "maximum_raw_count", "error",
     ]
     for path in files:
@@ -952,6 +1381,7 @@ def audit_all_tdms(
             _write_json(file_dir / "channel_layout.json", result["layout"])
             _write_json(file_dir / "wavelength_evidence.json", result["wavelength_evidence"])
             _write_json(file_dir / "waveform_sample_summary.json", waveform)
+            _write_json(file_dir / "raw_integrity.json", result["raw_integrity"])
             with (file_dir / "waveform_sample_statistics.csv").open("w", newline="", encoding="utf-8") as stream:
                 rows = result["waveform_samples"]["channel_statistics"]
                 writer = csv.DictWriter(stream, fieldnames=list(rows[0]) if rows else [
@@ -967,6 +1397,9 @@ def audit_all_tdms(
                 "path": str(path.resolve()),
                 "size_bytes": path.stat().st_size,
                 "status": "audit_error",
+                "metadata_audit_status": "metadata_error",
+                "overall_status": "metadata_error",
+                "raw_read_status": "not_attempted",
                 "metadata_source": None,
                 "segment_count": None,
                 "channel_status_count": None,
@@ -979,12 +1412,20 @@ def audit_all_tdms(
                 "rows_per_file": None,
                 "samples_per_row": None,
                 "layout_complete": False,
+                "channel_structure_complete": False,
+                "row_layout_valid": None,
                 "wavelength_grade": None,
                 "wavelength_evidence_class": None,
                 "physical_wavelength_available": False,
                 "waveform_sample_status": "not_attempted",
                 "sampled_rows": [],
+                "sampled_chunk_indices": [],
                 "sampled_value_count": 0,
+                "candidate_complete_storage_chunks": None,
+                "partial_final_chunk_samples": None,
+                "valid_prefix_rows": None,
+                "sampled_channel_count": 0,
+                "sampled_value_count_checked": 0,
                 "finite_fraction": None,
                 "minimum_raw_count": None,
                 "maximum_raw_count": None,
@@ -1000,8 +1441,20 @@ def audit_all_tdms(
     result = {
         "data_dir": str(Path(data_dir).resolve()),
         "file_count": len(files),
-        "audited_count": sum(row["status"] == "audited" for row in summaries),
-        "error_count": sum(row["status"] != "audited" for row in summaries),
+        "metadata_audited_count": sum(row.get("metadata_audit_status") == "metadata_audited" for row in summaries),
+        "no_tail_storage_files_sampled_count": sum(
+            row.get("raw_read_status") == "selected_complete_chunks_verified" for row in summaries
+        ),
+        "partial_tail_verified_count": sum(
+            row.get("raw_read_status") == "partial_final_chunk_verified" for row in summaries
+        ),
+        "valid_prefix_count": sum(row.get("valid_prefix_rows") is not None for row in summaries),
+        "partial_unresolved_count": sum(row.get("raw_read_status") == "partial_data_unresolved" for row in summaries),
+        "read_integrity_failed_count": sum(row.get("raw_read_status") == "read_integrity_failed" for row in summaries),
+        "metadata_error_count": sum(row.get("metadata_audit_status") == "metadata_error" for row in summaries),
+        "audited_count": sum(row.get("status") == "audited" for row in summaries),
+        "error_count": sum(row.get("metadata_audit_status") == "metadata_error"
+                            or row.get("raw_read_status") == "read_integrity_failed" for row in summaries),
         "summaries": summaries,
     }
     _write_json(output_dir / "batch_audit.json", result)

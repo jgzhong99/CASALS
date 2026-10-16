@@ -1,6 +1,6 @@
 # CASALS to 3DEP: physical vertical transformation and closure
 
-Updated 2026-10-15. The [current notebook](../notebooks/L1B/geolocation/vertical_datum_alignment.ipynb) now performs physical height conversion and independent evaluation only. `empirical_alignment()` and its calls, residual-derived height parameters, associated result files, charts, and before/after tables have been removed from the active helper, notebook, and tests. There is no disabled fitting option. The [original audit notebook](../notebooks/L1B/geolocation/elevation_reference_audit.ipynb), historical `vertical_datum_comparison.py` including its historical C8 experiment, and all existing run directories remain unchanged.
+Updated 2026-10-15. The [current notebook](../notebooks/L1B/geolocation/vertical_datum_alignment.ipynb) preserves the physical-only H0 baseline and adds conditional, explicitly 3D reference-frame hypotheses, fixed-point NGS HTDP verification, and independent evaluation. `empirical_alignment()` and its calls, residual-derived height parameters, associated result files, charts, and before/after tables have been removed from the active helper, notebook, and tests. There is no disabled fitting option. The [original audit notebook](../notebooks/L1B/geolocation/elevation_reference_audit.ipynb), historical `vertical_datum_comparison.py` including its historical C8 experiment, and all existing run directories remain unchanged.
 
 **Strict physical transformation and CASALS–3DEP height closure have not been achieved.** The available C7 calculation is a reproducible **provisional physical transformation**. No newly verified frame or ranging correction was found, and no additional atmospheric, range-bias, or tide term is applied.
 
@@ -30,11 +30,11 @@ The named L1A/ARD records are also absent. The two available TDMS files (`13-34-
 
 The [NASA CASALS design paper](https://ntrs.nasa.gov/api/citations/20240001267/downloads/Conference%20Paper.pdf), page 3, describes POS 510 GNSS/INS hardware. This does not establish a per-granule solution frame, epoch, or applied correction record. The linked CryoCloud tutorial could not be retrieved in this investigation; its earlier descriptions remain historical evidence, not new field-level confirmation.
 
-The [NGS HTDP guide](https://geodesy.noaa.gov/TOOLS/Htdp/HTDP-user-guide.pdf), sections 8–9 and Tables 4–5, was investigated as the official time-dependent route. Identified frames and epochs are prerequisites. NGS cautions that WGS84 transformations are approximate; HTDP must not transform between realizations within one NAD83 plate frame (use NCAT for those). Consequently no realization, epoch, velocity, Helmert parameter set, or HTDP result has been assigned to CASALS by assumption. Exact source-frame provenance is needed before implementing that route.
+The [NGS HTDP guide](https://geodesy.noaa.gov/TOOLS/Htdp/HTDP-user-guide.pdf), sections 8?9 and Tables 4?5, identifies official global-frame operations and separate coordinate-epoch propagation. A bounded fixed-point check runs HTDP 3.6.0 for H5 pulse 0 in each granule under explicit WGS84(G2296), ITRF2014, and ITRF2020 assumptions; the ITRF2014 case is also propagated to NAD83(2011), epoch 2010.0. This is conditional model verification, not evidence assigning any realization or epoch to CASALS. NGS cautions that WGS84 transformations are approximate; HTDP must not transform between realizations within one NAD83 plate frame (use NCAT for those).
 
 ## Actual C7 operation and missing frame step
 
-The required physical chain is source ellipsoidal XYZ → verified source-frame/epoch transformation → NAD83(2011), epoch 2010.0 ellipsoidal height → GEOID18 → NAVD88:
+The required physical chain is source ellipsoidal XYZ ? verified source-frame transformation ? coordinate propagation to NAD83(2011), epoch 2010.0 ? GEOID18 ? NAVD88:
 
 ```text
 H_NAVD88 = h_NAD83(2011),2010.0 - N_GEOID18
@@ -49,9 +49,9 @@ step inv proj=vgridshift grids=us_noaa_g2018u0.tif multiplier=1
 step proj=utm zone=18 ellps=GRS80
 ```
 
-The actual EPSG:4979 WGS84 ensemble → EPSG:6319 NAD83(2011) frame operation is `proj=noop ellps=GRS80`, the inverse of “NAD83(2011) to WGS 84 (1)”. It is **non-ballpark but null**, with three zero translation parameters and 2.0 m stated accuracy. Longitude, latitude, and ellipsoidal height changes are all numerically zero. No time propagation is performed. The combined operation's 2.015 m accuracy is metadata, not an observed error or guarantee. WGS84 and GRS80 ellipsoids are recorded, but this no-op is not evidence of a resolved physical frame transformation.
+The preserved H0 EPSG:4979 WGS84 ensemble ? EPSG:6319 NAD83(2011) frame operation is `proj=noop ellps=GRS80`, the inverse of ?NAD83(2011) to WGS 84 (1)?. It is **non-ballpark but null**, with three zero translation parameters and 2.0 m stated accuracy. Longitude, latitude, and ellipsoidal height changes are all numerically zero. No time propagation is performed. The combined operation?s 2.015 m accuracy is metadata, not an observed error or guarantee. WGS84 and GRS80 ellipsoids are recorded, but this no-op is not evidence of a resolved physical frame transformation. New H1-H4 routes are isolated conditional diagnostics described below; they leave this H0 C7 baseline intact.
 
-The current result is always provisional because source realization/epoch, target epoch achievement, and Refh processing application are unverified. The status gate cannot promote a no-op, ballpark operation, or incomplete evidence to verified status.
+The H0 result remains provisional because its source realization/coordinate epoch, target epoch achievement, and Refh processing application are unverified. The new H1-H4 experiments are recorded as conditional reference-frame hypotheses and do not promote H0 or establish the source metadata.
 
 ## GEOID18 grid and independent sign check
 
@@ -108,9 +108,9 @@ All-valid and SNR >= 3 tails are retained in the notebook and `metrics.csv`. C7 
 ## Closure conclusion
 
 1. The active experiment contains no empirical height-offset estimation or application.
-2. A true CASALS WGS84-realization/epoch → NAD83(2011), epoch 2010.0 transformation has **not** been identified or implemented; the actual frame step remains a recorded no-op.
+2. Conditional official EPSG/PROJ frame operations and a two-point HTDP epoch-2010 propagation are implemented and numerically checked; the actual CASALS GNSS/INS realization and coordinate epoch remain **unidentified**, so no route can be selected as the true physical transformation. H0 remains the preserved no-op baseline.
 3. Neutral atmosphere and other ranging/tide correction applied states remain unresolved. None is reapplied.
-4. The executed physical operations are EGM2008 diagnostic subtraction and the audited GEOID18 inverse grid operation plus UTM projection under the documented provisional source assumption. No newly verified physical correction is available.
+4. The executed physical calculations include the EGM2008 diagnostic, the preserved H0 GEOID18 operation, and conditional H1-H4 frame-plus-GEOID18 diagnostics. No additional range, atmospheric, or tide correction is verified or applied.
 5. The high-quality signed GEOID18 biases remain approximately -1.67 / -1.65 m. Strict closure is **not achieved**.
 6. Missing evidence is per-granule GNSS/INS realization and coordinate epoch; trajectory/intermediate-frame and epoch propagation records; and the exact Refh range equation with per-field units, signs, application stages and applied flags. No residual fit replaces these records.
 
@@ -122,7 +122,7 @@ Outputs: `population.parquet`, `metrics.csv`, `geoid.csv`, `parity.csv`, `frame.
 
 Focused tests cover the four-argument physical boundary, lack of fitting/correction entry points, changing 3DEP reference heights without changing CASALS heights, actual H5/geoid/C7 parity for both dates, independent grid sign checks, no-op/ballpark detection, withholding verified status on incomplete evidence, retained residual tails and the bias/RMSE decomposition. Full notebook execution, parity, preservation and visual verification records are recorded with the completed run below.
 
-Completed physical-only run: [20261015T214817464342Z](../outputs/notebooks/geolocation/vertical_datum_alignment/runs/20261015T214817464342Z/). All seven code cells executed in a fresh kernel without errors. Two PNG figures are embedded and visually inspected. All 88 focused tests passed. C7 heights and independently rebuilt reference planes match the historical baseline exactly on 32,859 / 16,064 field pulses and 147 / 165 road test pulses; main test counts remain 445 / 6,615. Both independent four-cell grid checks agree with PROJ within 2.2e-14 m. The pre/post SHA-256 check preserved all 1376 files (36449452738 bytes), including all pre-existing output files, raw H5/LAZ, other notebooks and unchanged historical datum/correction modules. See `execution_verification.json`, `acceptance_audit.json`, `preservation_verification.csv`, and `artifact_sha256.csv` in this run. No strict physical closure is claimed.
+Earlier physical-only run retained as the H0 baseline:  [20261015T214817464342Z](../outputs/notebooks/geolocation/vertical_datum_alignment/runs/20261015T214817464342Z/). All seven code cells executed in a fresh kernel without errors. Two PNG figures were embedded and visually inspected. Its parity, preservation, and validation records remain historical evidence; the current frame/epoch execution below supersedes its notebook validation status while preserving that baseline.
 
 ## Independent geodetic software verification
 
@@ -151,6 +151,78 @@ The largest observed difference among the sampled software outputs is 0.001101 m
 
 The largest software difference is about 1,500 times smaller than the remaining bias, so the GEOID18 numerical implementation does not explain the metre-level CASALS-3DEP residual. PROJ and the independent raster agree within 5 micrometres; PROJ and VDatum agree within 1.2 millimetres. This is evidence of numerical consistency under the stated coordinate assumption, not proof that the unknown CASALS source frame was transformed correctly.
 
-**Final classifications:** A. Software numerical verification: **PASSED**. B. Source-frame transformation verification: **UNRESOLVED**. C. Strict CASALS-3DEP vertical closure: **NOT ACHIEVED**. The separate WGS84-ensemble-to-NAD83(2011) operation remains `proj=noop ellps=GRS80`; no new physical correction enters the formal height calculation, and the approximately -1.65 m residual remains unexplained.
+The classifications in the preceding 2026-10-15 H0-only section describe its same-frame software check. The current conditional frame and epoch checks, and their limits, are reported in the following section; neither set of numerical checks establishes the CASALS source realization or strict physical closure.
 
 The complete current notebook run is [20261015T230358378823Z](../outputs/notebooks/geolocation/vertical_datum_alignment/runs/20261015T230358378823Z/). All eight code cells executed without errors. Its `geodetic_crosscheck/` directory contains the fixed sample manifest, per-point comparison CSVs, raw NOAA request/response log, summary, and software-difference plot. Successful responses from the actual serial 80-call service check are retained and reused in this complete notebook execution. `crosscheck_summary.json` also records the raw-input manifest, source-code hashes, and a notebook-source hash. The current C7 metric table matches the preceding completed run exactly. A post-run SHA-256 check against the saved protected-file manifest verified all 1,376 listed historical inputs and results unchanged; see [preservation_verification.csv](../outputs/notebooks/geolocation/vertical_datum_alignment/runs/20261015T230358378823Z/preservation_verification.csv).
+
+## Conditional 3D frame and coordinate-epoch results
+
+Current real-data notebook run: [`20261016T031500000000Z`](../outputs/notebooks/geolocation/vertical_datum_alignment/runs/20261016T031500000000Z/). It uses both current H5/LAZ granules and preserves the physical-only H0 result. No residual is used to select an operation or estimate a correction.
+
+### Operation audit and same-epoch verification
+
+All source hypotheses use explicit 3D geographic CRSs: WGS84(G2296) EPSG:10605, ITRF2014 EPSG:7912, and ITRF2020 EPSG:9989. Their installed frame reference epochs are respectively 2024, 2010, and 2015; the selected time-dependent Helmert parameter reference epoch is 2010.0. These are three distinct metadata/time concepts. The operation audit records the full EPSG chain, parameters/rates, coordinate-frame rotation convention, authority, area of use, input/output coordinate time, and inverse round trip. EPSG:10605 is routed through ITRF2020 by EPSG operation 10608, followed by the time-dependent ITRF2020-to-NAD83(2011) operation 10334. ITRF2014 uses operation 8970; ITRF2020 uses 10334. The G2296, ITRF2014, and ITRF2020 operations were available, non-ballpark, explicit, and covered both granule extents. An independent ITRF2014 geocentric XYZ construction agreed with the 3D geographic route within 10 micrometres.
+
+PROJ and NGS HTDP 3.6.0 were compared at the same input and output observation epoch for the actual H5 pulse 0 in each granule. HTDP writes ellipsoidal height to millimetres, so the height differences include that output rounding.
+
+| Source hypothesis | Maximum horizontal difference, two points | Maximum height difference, two points | Result |
+|---|---:|---:|---|
+| WGS84(G2296) | 0.000006 m | 0.000403 m | Numerically consistent at the same epoch |
+| ITRF2014 | 0.000005 m | 0.000208 m | Numerically consistent at the same epoch |
+| ITRF2020 | 0.000005 m | 0.000363 m | Numerically consistent at the same epoch |
+
+### Separate coordinate-epoch propagation
+
+For two fixed pulse-0 points only, HTDP applied the ITRF2014-assumption frame route to NAD83(2011) at the observation epoch, then its modelled coordinate propagation to epoch 2010.0. The B-to-C changes are not inferred from H4 and are not a whole-granule propagation result.
+
+| Date | B-to-C horizontal displacement | B-to-C ellipsoidal-height change |
+|---|---:|---:|
+| 2024-11-12 | 0.032809 m | +0.013 m |
+| 2024-11-18 | 0.031209 m | +0.012 m |
+
+The target-height values are reported at millimetre precision by HTDP. The flight timestamps and input-frame assumptions remain conditional because neither H5 provides the navigation coordinate epoch. Thus the model operation is verified for these checkpoints, while a verified CASALS epoch transformation is not established. H4 only supplies 2010.0 as the Helmert parameter-evaluation time for the unchanged input coordinates; its label explicitly says it is not epoch propagation.
+
+### GEOID18 checks at the propagated checkpoints
+
+The two HTDP outputs were passed through the NAD83(2011) C7 route and independently checked with four-cell rasterio interpolation, the NGS GEOID18 service, and NOAA VDatum. Both NGS and both VDatum responses validated. The numerical tolerance is 0.01 m. The largest PROJ-to-NGS geoid difference was 0.000174 m, the largest PROJ-to-raster height difference was 0.00000102 m, and the largest PROJ-to-VDatum NAVD88-height difference was 0.000174 m. These results use the pinned `us_noaa_g2018u0.tif`, SHA-256 `fa9a407ac7ee3f5a3694008e4bcd09ce9cc250452f0c3b11700a4960340abce2`. The final run reuses the validated responses logged with the checkpoint; it makes no broad network sample for this additional check.
+
+### Common-pulse 3DEP results
+
+Primary comparison uses the independent field test population at SNR >= 5. Each row below uses the exact intersection of valid pulses across H0 and every available H1-H4 route. Bias is transformed CASALS minus the independently re-queried 3DEP plane, in metres.
+
+| Date | Hypothesis | Common n | Mean bias | RMSE | NMAD |
+|---|---|---:|---:|---:|---:|
+| 2024-11-12 | H0 no-op C7 baseline | 427 | -1.6713 | 1.6743 | 0.0896 |
+| 2024-11-12 | H1 WGS84(G2296), observation-time assumption | 427 | -0.3681 | 0.3820 | 0.0933 |
+| 2024-11-12 | H2 ITRF2014, observation-time assumption | 427 | -0.3687 | 0.3826 | 0.0933 |
+| 2024-11-12 | H3 ITRF2020, observation-time assumption | 427 | -0.3682 | 0.3820 | 0.0933 |
+| 2024-11-12 | H4 ITRF2014, parameter-time sensitivity at 2010 | 427 | -0.3567 | 0.3709 | 0.0918 |
+| 2024-11-18 | H0 no-op C7 baseline | 6,615 | -1.6486 | 1.6510 | 0.0874 |
+| 2024-11-18 | H1 WGS84(G2296), observation-time assumption | 6,615 | -0.2893 | 0.3028 | 0.0879 |
+| 2024-11-18 | H2 ITRF2014, observation-time assumption | 6,615 | -0.2899 | 0.3033 | 0.0879 |
+| 2024-11-18 | H3 ITRF2020, observation-time assumption | 6,615 | -0.2893 | 0.3028 | 0.0879 |
+| 2024-11-18 | H4 ITRF2014, parameter-time sensitivity at 2010 | 6,615 | -0.2821 | 0.2960 | 0.0876 |
+
+The exact shared high-SNR field pulse sets are recorded in `frame_hypothesis_common_pulses.csv`: 427 pulses for 2024-11-12 (SHA-256 `cacd54d3c66f382c533089c7c1e72569cac94bb35f65043a67ef46e1e83b7e3a`) and 6,615 for 2024-11-18 (SHA-256 `c876199660cd2607c333d6745898998cd12e0672e24d1aa44b6641bacb61dcc2`). Exact IDs are saved alongside those hashes. The separate own-coverage table retains method-specific support: for 2024-11-12 H0 has 445/478 pulses, H1/H2/H3 each 435/478, and H4 437/478; the common intersection is 427/478. For 2024-11-18 every method has 6,615/6,615. The all-valid and SNR >= 3 strata and road population are also saved.
+
+On the common high-SNR field test sets, the 2024-11-12 minus 2024-11-18 mean-bias difference is -0.022677 m for H0, and -0.078826, -0.078851, -0.078828, and -0.074513 m for H1-H4 respectively. This is a date-level difference in two separate independent-test populations, not a pulse-paired temporal change.
+
+### Paired frame-effect decomposition
+
+For every paired valid field/road pulse, the saved decomposition verifies `delta_residual = delta_H - delta_reference` within 1e-10 m. Medians below are for the independent-test field population, across its SNR strata; query displacement is horizontal.
+
+| Date | Route | Median delta h | Median delta H | Median query displacement | Median delta 3DEP | Median delta residual |
+|---|---|---:|---:|---:|---:|---:|
+| 2024-11-12 | H2 ITRF2014 at observation time | +1.304344 m | +1.304356 m | 1.179960 m | +0.003752 m | +1.300602 m |
+| 2024-11-12 | H4 parameter-time sensitivity at 2010 | +1.315557 m | +1.315567 m | 1.000213 m | +0.002953 m | +1.312610 m |
+| 2024-11-18 | H2 ITRF2014 at observation time | +1.360686 m | +1.360709 m | 1.126996 m | +0.002361 m | +1.358348 m |
+| 2024-11-18 | H4 parameter-time sensitivity at 2010 | +1.371134 m | +1.371151 m | 0.950382 m | +0.005012 m | +1.366139 m |
+
+H1 and H3 produce nearly the same changes as H2 (within about 0.0007 m in median ellipsoidal-height change). The transformed routes reduce the absolute common-sample bias by about 1.30?1.37 m under the ITRF-aligned assumptions. Most of the residual change is in transformed height; the re-queried low-slope 3DEP field-plane median changes are a few millimetres. These residual improvements make an omitted frame conversion a plausible major contributor if the source was global-frame aligned. They do not establish that it was.
+
+### Current evidence classification
+
+- **Numerical transformation verified:** yes, for the explicit installed EPSG operations and the fixed HTDP/XYZ checkpoints; the GEOID18 route also agrees with independent raster, NGS, and VDatum checks.
+- **Source-frame hypothesis plausible:** yes. H1-H3 are coherent global-frame assumptions, but the H5 and available source records do not identify the actual GNSS/INS realization.
+- **Coordinate-epoch transformation verified for CASALS:** no. HTDP demonstrated the modelled 2010.0 step for two conditional fixed points; the source coordinate epochs and the per-pulse source trajectory provenance are missing.
+- **Strict physical CASALS-3DEP closure achieved:** no. The conditional high-SNR biases remain about -0.28 to -0.37 m, and Refh ranging/correction application and independent-reference uncertainty remain unresolved. No fitted bias, residual-selected route, or additional physical correction is applied.

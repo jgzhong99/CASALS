@@ -94,6 +94,7 @@ TARGET_VERTICAL_EPSG = 5703
 TARGET_COMPOUND = "EPSG:6347 + EPSG:5703"
 GEOID18_GRID = "us_noaa_g2018u0.tif"
 GEOID18_GRID_URL = f"https://cdn.proj.org/{GEOID18_GRID}"
+GEOID18_GRID_SHA256 = "fa9a407ac7ee3f5a3694008e4bcd09ce9cc250452f0c3b11700a4960340abce2"
 
 CANDIDATE_LABELS = {
     "C0": "Native Refh",
@@ -142,6 +143,25 @@ def _sha256(path: Path, chunk_bytes: int = 8 * 1024 * 1024) -> str:
         for chunk in iter(lambda: stream.read(chunk_bytes), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def require_geoid18_grid() -> Path:
+    """Require the pinned local NOAA GEOID18 grid used by every C7 route."""
+    from pyproj import datadir
+
+    data_dirs = [Path(value) for value in str(datadir.get_data_dir()).split(os.pathsep) if value]
+    grid = next((directory / GEOID18_GRID for directory in data_dirs
+                 if (directory / GEOID18_GRID).is_file()), None)
+    if grid is None:
+        raise FileNotFoundError(
+            f"Required local GEOID18 grid {GEOID18_GRID} is unavailable; configure the pinned grid first."
+        )
+    actual = _sha256(grid)
+    if actual != GEOID18_GRID_SHA256:
+        raise ValueError(
+            f"GEOID18 grid SHA256 mismatch for {grid}: {actual} != {GEOID18_GRID_SHA256}"
+        )
+    return grid
 
 
 def _write_artifact_manifest(output_dir: Path) -> Path:
@@ -515,6 +535,8 @@ def configure_private_proj_data(output_dir: Path = OUTPUT_ROOT) -> dict[str, Any
         response = requests.get(GEOID18_GRID_URL, timeout=120)
         response.raise_for_status()
         grid_path.write_bytes(response.content)
+    if _sha256(grid_path) != GEOID18_GRID_SHA256:
+        raise ValueError(f"Downloaded GEOID18 grid SHA256 mismatch: {grid_path}")
     os.environ["PROJ_NETWORK"] = "OFF"
     os.environ["PROJ_DATA"] = str(proj_dir)
     os.environ["PROJ_LIB"] = str(proj_dir)
@@ -760,16 +782,18 @@ def transform_c7(
     z = np.asarray(refh_m, dtype=np.float64).reshape(-1)
     if len({len(lon), len(lat), len(z)}) != 1:
         raise ValueError("Longitude, latitude, and height arrays must have equal length.")
+    grid_path = require_geoid18_grid()
     group, aoi = _transformer_group(lon, lat, source_epsg=source_epsg)
     if not group.transformers:
         raise RuntimeError("No non-ballpark C7 transformer is available for this area.")
-    # The comparison target's product metadata specifies NAVD88/GEOID18.
-    # PROJ may rank older geoid-model routes higher, so select the first
-    # available non-ballpark operation that actually uses the GEOID18 grid.
+    # The comparison target's product metadata specifies NAVD88/GEOID18 for
+    # every source CRS. Never let the frame-specific path choose another geoid.
     transformer = choose_available_non_ballpark_operation(
-        group, required_grid_name=GEOID18_GRID if source_epsg == 4979 else None
+        group, required_grid_name=GEOID18_GRID
     )
     used_grids = require_selected_operation_grids(transformer)
+    if not any(row.get("name") == GEOID18_GRID and row.get("available") for row in used_grids):
+        raise RuntimeError(f"Selected C7 operation does not use required grid {GEOID18_GRID}.")
     x, y, out_z = transformer.transform(lon, lat, z, errcheck=False)
     x, y, out_z = (np.asarray(v, dtype=np.float64) for v in (x, y, out_z))
     finite_input = np.isfinite(lon) & np.isfinite(lat) & np.isfinite(z)
@@ -781,14 +805,10 @@ def transform_c7(
     audit["finite_output_count"] = int(finite_output.sum())
     audit["finite_transform_fraction"] = float(valid.sum() / max(int(finite_input.sum()), 1))
     audit["selected_operation_grids"] = used_grids
-    audit["selected_operation_status"] = (
-        "available_non_ballpark_required_GEOID18_grid"
-        if source_epsg == 4979 else
-        ("best_available" if group.best_available else "available_non_ballpark_operation")
-    )
-    audit["selected_operation_grid_constraint"] = (
-        GEOID18_GRID if source_epsg == 4979 else None
-    )
+    audit["selected_operation_status"] = "available_non_ballpark_required_GEOID18_grid"
+    audit["selected_operation_grid_constraint"] = GEOID18_GRID
+    audit["selected_grid_path"] = str(grid_path)
+    audit["selected_grid_sha256"] = GEOID18_GRID_SHA256
     audit["vertical_change_m"] = _summary(out_z[valid] - z[valid])
 
     sample = np.flatnonzero(valid)
@@ -817,6 +837,7 @@ def sample_geoid18_undulation(
     latitude_deg: Sequence[float] | np.ndarray,
 ) -> tuple[np.ndarray, dict[str, Any]]:
     """Sample NOAA GEOID18 through the NAD83(2011) ellipsoid-to-NAVD88 path."""
+    require_geoid18_grid()
     lon = np.asarray(longitude_deg, dtype=np.float64).reshape(-1)
     lat = np.asarray(latitude_deg, dtype=np.float64).reshape(-1)
     group, aoi = _transformer_group(lon, lat, source_epsg=6319)

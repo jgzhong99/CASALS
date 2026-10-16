@@ -33,6 +33,7 @@ NGS_DOC_URL = "https://geodesy.noaa.gov/web_services/geoid.shtml"
 VDATUM_DOC_URL = "https://vdatum.noaa.gov/docs/services.html"
 COORDINATE_ASSUMPTION = "Assumed NAD83(2011) coordinates for numerical verification only"
 MODEL_TOLERANCE_M = 0.01
+GEOID18_SHA256 = physical.GRID_SHA256
 MAX_ATTEMPTS = 3
 REQUEST_TIMEOUT_SECONDS = 15
 REQUEST_PAUSE_SECONDS = 0.15
@@ -278,7 +279,9 @@ def _json_safe(value: Any) -> Any:
 def _load_response_cache(runs_root: Path) -> tuple[dict[str, dict[str, Any]], dict[str, str]]:
     cache: dict[str, dict[str, Any]] = {}
     sources: dict[str, str] = {}
-    for path in sorted(runs_root.glob("*/geodetic_crosscheck/service_requests_responses.json")):
+    paths = set(runs_root.glob("*/geodetic_crosscheck/service_requests_responses.json"))
+    paths.update(runs_root.glob("*/htdp_crosscheck/*/service_requests_responses.json"))
+    for path in sorted(paths):
         try:
             content = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
@@ -438,6 +441,175 @@ def _frame_status_from_operation(audit: Mapping[str, Any]) -> dict[str, Any]:
 
 def _write_json(path: Path, obj: Any) -> None:
     path.write_text(json.dumps(_json_safe(obj), indent=2, allow_nan=False), encoding="utf-8")
+
+
+def run_transformed_checkpoint_crosscheck(
+    points_2010: pd.DataFrame,
+    output: str | Path,
+    *,
+    project_root: str | Path | None = None,
+) -> dict[str, Any]:
+    """Check two HTDP-propagated NAD83(2011) epoch-2010 points with NOAA services.
+
+    This deliberately makes at most four point requests (NGS plus VDatum for
+    each granule), reusing the validated response cache from prior runs. No
+    3DEP elevations or residuals are inputs to the conversion or check.
+    """
+    output = Path(output)
+    output.mkdir(parents=True, exist_ok=False)
+    required = {
+        "granule_id", "pulse_index", "longitude_deg", "latitude_deg",
+        "ellipsoidal_height_m", "source_epsg_assumption", "coordinate_epoch",
+    }
+    missing = required - set(points_2010.columns)
+    if missing:
+        raise ValueError(f"HTDP checkpoint table is missing columns: {sorted(missing)}")
+    points = points_2010.copy()
+    if len(points) != len(datum.GRANULES):
+        raise ValueError("Expected exactly one propagated fixed point for each current granule")
+    if set(points.granule_id.astype(str)) != {spec.granule_id for spec in datum.GRANULES}:
+        raise ValueError("HTDP checkpoints do not match the two current CASALS granules")
+    if not points.pulse_index.astype(int).eq(0).all():
+        raise ValueError("Only the explicitly frozen H5 pulse_index=0 checkpoints are accepted")
+    if not points.source_epsg_assumption.astype(int).eq(7912).all():
+        raise ValueError("This cross-check is conditional on the HTDP ITRF2014 source-frame route")
+    if not np.allclose(points.coordinate_epoch.to_numpy(float), 2010.0, rtol=0, atol=1e-9):
+        raise ValueError("HTDP checkpoint coordinates must be propagated to epoch 2010.0")
+    coordinate_values = points[["longitude_deg", "latitude_deg", "ellipsoidal_height_m"]].to_numpy(float)
+    if not np.isfinite(coordinate_values).all():
+        raise ValueError("HTDP checkpoint coordinates and heights must be finite")
+
+    root = Path(project_root).resolve() if project_root is not None else datum.PROJECT_ROOT
+    runs_root = root / "outputs/notebooks/geolocation/vertical_datum_alignment/runs"
+    cache, cache_sources = _load_response_cache(runs_root)
+    grid = datum.OUTPUT_ROOT / "proj_data" / datum.GEOID18_GRID
+    if physical.sha256(grid) != GEOID18_SHA256:
+        raise ValueError("The pinned GEOID18 grid SHA256 changed")
+    previous_data_dir = datadir.get_data_dir()
+    previous_network = network.is_network_enabled()
+    datadir.set_data_dir(str(grid.parent))
+    network.set_network_enabled(False)
+    rows: list[dict[str, Any]] = []
+    calls: list[dict[str, Any]] = []
+    operation_rows: list[dict[str, Any]] = []
+    try:
+        if datum.require_geoid18_grid() != grid:
+            raise RuntimeError("PROJ did not resolve the pinned local GEOID18 grid")
+        with requests.Session() as session:
+            for point in points.sort_values("granule_id").to_dict("records"):
+                lon = float(point["longitude_deg"])
+                lat = float(point["latitude_deg"])
+                height = float(point["ellipsoidal_height_m"])
+                x, y, h_proj, audit = datum.transform_c7(
+                    [lon], [lat], [height], source_epsg=6319, return_audit=True
+                )
+                h_proj = float(np.asarray(h_proj)[0])
+                if audit["selected_operation_grid_constraint"] != datum.GEOID18_GRID:
+                    raise RuntimeError("Checkpoint C7 operation did not require the pinned GEOID18 grid")
+                if audit["selected_grid_sha256"] != GEOID18_SHA256:
+                    raise RuntimeError("Checkpoint C7 operation did not use the pinned GEOID18 grid")
+                raster = physical.grid_point_check(
+                    grid, lon, lat, height, h_proj, projection_tolerance_m=None
+                )
+
+                ngs_params = build_ngs_params(lon, lat)
+                ngs = _query_service(
+                    provider="NGS Geoid Height Service", url=NGS_GEOID_URL,
+                    params=ngs_params, parser=parse_ngs_geoid_response,
+                    session=session, cache=cache, cache_sources=cache_sources,
+                )
+                ngs.update({"granule_id": point["granule_id"], "pulse_index": 0,
+                            "checkpoint_epoch": 2010.0, "coordinate_assumption":
+                            "HTDP ITRF2014-assumption output in NAD83(2011), epoch 2010.0"})
+                calls.append(ngs)
+
+                vparams = build_vdatum_params(
+                    lon, lat, height, REGION_BY_GRANULE[str(point["granule_id"])]
+                )
+                vdatum = _query_service(
+                    provider="NOAA VDatum Full API", url=VDATUM_URL, params=vparams,
+                    parser=lambda payload, expected=vparams: parse_vdatum_response(payload, expected),
+                    session=session, cache=cache, cache_sources=cache_sources,
+                )
+                vdatum.update({"granule_id": point["granule_id"], "pulse_index": 0,
+                               "checkpoint_epoch": 2010.0, "coordinate_assumption":
+                               "HTDP ITRF2014-assumption output in NAD83(2011), epoch 2010.0"})
+                calls.append(vdatum)
+
+                n_proj = height - h_proj
+                n_ngs = float(ngs["parsed"]) if ngs["status"] == "success" else np.nan
+                h_ngs = height - n_ngs if np.isfinite(n_ngs) else np.nan
+                h_vdatum = (float(vdatum["parsed"]["target_height_m"])
+                            if vdatum["status"] == "success" else np.nan)
+                rows.append({
+                    "granule_id": point["granule_id"], "pulse_index": 0,
+                    "source_frame_assumption": "ITRF2014", "source_frame_verified": False,
+                    "target_frame": "NAD83(2011)", "target_coordinate_epoch": 2010.0,
+                    "longitude_deg": lon, "latitude_deg": lat,
+                    "ellipsoidal_height_m_HTDP_rounded_to_mm": height,
+                    "GEOID18_grid": datum.GEOID18_GRID,
+                    "GEOID18_grid_sha256": GEOID18_SHA256,
+                    "H_PROJ_m": h_proj, "N_PROJ_m": n_proj,
+                    "N_RASTER_m": float(raster["N_GEOID18_m"]),
+                    "PROJ_minus_raster_H_m": float(raster["difference_m"]),
+                    "N_NGS_m": n_ngs, "PROJ_minus_NGS_N_m": n_proj - n_ngs if np.isfinite(n_ngs) else np.nan,
+                    "H_NGS_m": h_ngs, "H_VDATUM_m": h_vdatum,
+                    "PROJ_minus_NGS_height_m": h_proj - h_ngs if np.isfinite(h_ngs) else np.nan,
+                    "VDatum_minus_PROJ_m": h_vdatum - h_proj if np.isfinite(h_vdatum) else np.nan,
+                    "PROJ_minus_VDatum_m": h_proj - h_vdatum if np.isfinite(h_vdatum) else np.nan,
+                    "NGS_status": ngs["status"], "VDatum_status": vdatum["status"],
+                    "NGS_cache_reused": bool(ngs.get("cache_reused", False)),
+                    "VDatum_cache_reused": bool(vdatum.get("cache_reused", False)),
+                    "NGS_request_params": ngs_params, "VDatum_request_params": vparams,
+                })
+                operation_rows.append({
+                    "granule_id": point["granule_id"], "source_epsg": 6319,
+                    "coordinate_epoch": 2010.0, "operation_audit": audit,
+                    "independent_raster_check": raster,
+                })
+                time.sleep(REQUEST_PAUSE_SECONDS)
+    finally:
+        datadir.set_data_dir(previous_data_dir)
+        network.set_network_enabled(previous_network)
+
+    frame = pd.DataFrame(rows)
+    frame.to_csv(output / "htdp_epoch2010_geoid18_ngs_vdatum.csv", index=False, float_format="%.12g")
+    _write_json(output / "htdp_epoch2010_operation_audit.json", operation_rows)
+    _write_json(output / "service_requests_responses.json", {
+        "created_utc": _utc_now(), "purpose": "HTDP-propagated ITRF2014-assumption checkpoint consistency",
+        "sources": {"NGS": NGS_GEOID_URL, "VDatum": VDATUM_URL,
+                    "NGS_documentation": NGS_DOC_URL, "VDatum_documentation": VDATUM_DOC_URL},
+        "call_count": len(calls), "calls": calls,
+    })
+    differences = frame[["PROJ_minus_NGS_N_m", "PROJ_minus_VDatum_m"]].to_numpy(float)
+    finite = differences[np.isfinite(differences)]
+    raster_differences = frame["PROJ_minus_raster_H_m"].to_numpy(float)
+    raster_available = bool(np.isfinite(raster_differences).all())
+    raster_pass = (np.isfinite(raster_differences).all()
+                   and np.max(np.abs(raster_differences)) <= MODEL_TOLERANCE_M)
+    complete = (len(frame) == 2 and frame.NGS_status.eq("success").all()
+                and frame.VDatum_status.eq("success").all() and raster_available)
+    models_pass = len(finite) == 4 and np.max(np.abs(finite)) <= MODEL_TOLERANCE_M
+    status = {
+        "status": "PASSED" if complete and raster_pass and models_pass
+        else "INCOMPLETE" if not complete else "FAILED",
+        "n_fixed_points": int(len(frame)), "expected_service_calls": 4,
+        "actual_service_calls_including_cache_reuse": len(calls),
+        "successful_NGS": int(frame.NGS_status.eq("success").sum()),
+        "successful_VDatum": int(frame.VDatum_status.eq("success").sum()),
+        "max_abs_PROJ_vs_NGS_geoid_m": float(frame.PROJ_minus_NGS_N_m.abs().max())
+        if frame.PROJ_minus_NGS_N_m.notna().any() else None,
+        "max_abs_PROJ_vs_raster_height_m": float(frame.PROJ_minus_raster_H_m.abs().max())
+        if frame.PROJ_minus_raster_H_m.notna().any() else None,
+        "max_abs_PROJ_vs_VDatum_height_m": float(frame.PROJ_minus_VDatum_m.abs().max())
+        if frame.PROJ_minus_VDatum_m.notna().any() else None,
+        "model_tolerance_m": MODEL_TOLERANCE_M,
+        "source_frame_identity_confirmed": False,
+        "coordinate_epoch_result_is_conditional_on_HTDP_ITRF2014_assumption": True,
+        "strict_CASALS_3DEP_closure_established": False,
+    }
+    _write_json(output / "status.json", status)
+    return {"checkpoints": frame, "calls": calls, "status": status, "output": output}
 
 
 def run_geodetic_crosscheck(output: str | Path, *, project_root: str | Path | None = None) -> dict[str, Any]:

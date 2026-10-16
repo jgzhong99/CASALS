@@ -152,3 +152,91 @@ def test_transport_failure_uses_only_bounded_retries(monkeypatch):
     assert record["attempt_count"] == crosscheck.MAX_ATTEMPTS == 3
     assert session.calls == 3
     assert len(sleeps) == 2
+
+
+def test_htdp_epoch2010_check_uses_two_fixed_points_four_cached_api_slots(tmp_path, monkeypatch):
+    import numpy as np
+    import pandas as pd
+    from pyproj import datadir, network
+
+    datum = crosscheck.datum
+    physical = crosscheck.physical
+    grid = datum.OUTPUT_ROOT / "proj_data" / datum.GEOID18_GRID
+    assert physical.sha256(grid) == datum.GEOID18_GRID_SHA256
+    old_dir, old_network = datadir.get_data_dir(), network.is_network_enabled()
+    datadir.set_data_dir(str(grid.parent))
+    network.set_network_enabled(False)
+    points = pd.DataFrame([
+        {"granule_id": datum.GRANULES[0].granule_id, "pulse_index": 0,
+         "longitude_deg": -75.2, "latitude_deg": 38.4, "ellipsoidal_height_m": -25.5,
+         "source_epsg_assumption": 7912, "coordinate_epoch": 2010.0},
+        {"granule_id": datum.GRANULES[1].granule_id, "pulse_index": 0,
+         "longitude_deg": -76.5, "latitude_deg": 36.2, "ellipsoidal_height_m": -30.0,
+         "source_epsg_assumption": 7912, "coordinate_epoch": 2010.0},
+    ])
+    expected_geoid = {}
+    for row in points.to_dict("records"):
+        _, _, h_proj, _ = datum.transform_c7(
+            [row["longitude_deg"]], [row["latitude_deg"]], [row["ellipsoidal_height_m"]],
+            source_epsg=6319,
+        )
+        check = physical.grid_point_check(
+            grid, row["longitude_deg"], row["latitude_deg"], row["ellipsoidal_height_m"],
+            float(h_proj[0]), projection_tolerance_m=None,
+        )
+        expected_geoid[(row["longitude_deg"], row["latitude_deg"])] = check["N_GEOID18_m"]
+    datadir.set_data_dir(old_dir)
+    network.set_network_enabled(old_network)
+
+    class Response:
+        status_code = 200
+
+        def __init__(self, url, params, payload):
+            self.url = url
+            self.text = "mock official response"
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+    class Session:
+        def __enter__(self):
+            self.calls = 0
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def get(self, url, *, params, timeout):
+            self.calls += 1
+            assert timeout == crosscheck.REQUEST_TIMEOUT_SECONDS
+            lon = float(params.get("lon", params.get("s_x")))
+            lat = float(params.get("lat", params.get("s_y")))
+            N = expected_geoid[(lon, lat)]
+            if url == crosscheck.NGS_GEOID_URL:
+                payload = {"geoidModel": "GEOID18", "units": "m", "geoidHeight": N}
+            else:
+                payload = {
+                    "region": params["region"].upper(),
+                    **{key: params[key] for key in (
+                        "s_h_frame", "s_coor", "s_v_frame", "s_v_unit", "s_v_elevation",
+                        "s_v_geoid", "s_x", "s_y", "s_z", "t_h_frame", "t_coor",
+                        "t_v_frame", "t_v_unit", "t_v_elevation", "t_v_geoid",
+                        "epoch_in", "epoch_out",
+                    )},
+                    "t_x": params["s_x"], "t_y": params["s_y"],
+                    "t_z": float(params["s_z"]) - N, "uncertainty": "0.05",
+                }
+            return Response(url, params, payload)
+
+    monkeypatch.setattr(crosscheck, "_load_response_cache", lambda _root: ({}, {}))
+    monkeypatch.setattr(crosscheck.requests, "Session", Session)
+    monkeypatch.setattr(crosscheck.time, "sleep", lambda *_args: None)
+    result = crosscheck.run_transformed_checkpoint_crosscheck(
+        points, tmp_path / "htdp_check", project_root=tmp_path
+    )
+    assert result["status"]["status"] == "PASSED"
+    assert result["status"]["actual_service_calls_including_cache_reuse"] == 4
+    assert result["checkpoints"].NGS_status.eq("success").all()
+    assert result["checkpoints"].VDatum_status.eq("success").all()
+    assert result["checkpoints"].target_coordinate_epoch.unique().tolist() == [2010.0]

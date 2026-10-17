@@ -529,6 +529,8 @@ def run_frame_hypotheses(R: dict, output: str | Path) -> dict:
                 "granule_id": gid, "hypothesis": name, "pulse_index": fr.pulse_index.to_numpy(np.int64),
                 "population": g.population.to_numpy(), "research_role": g.research_role.to_numpy(),
                 "refh_snr": g.refh_snr.to_numpy(float), "supported": method_valid[(gid, name)],
+                "query_x_m": fr.query_x_m.to_numpy(float), "query_y_m": fr.query_y_m.to_numpy(float),
+                "query_crs_epsg": datum.TARGET_HORIZONTAL_EPSG,
                 "residual": fr.residual_m.to_numpy(float)}))
     pulse_residuals = pd.concat(pulse_frames, ignore_index=True)
 

@@ -157,7 +157,7 @@ The complete current notebook run is [20261015T230358378823Z](../outputs/noteboo
 
 ## Conditional 3D frame and coordinate-epoch results
 
-Current real-data notebook run: [`20261016T031500000000Z`](../outputs/notebooks/geolocation/vertical_datum_alignment/runs/20261016T031500000000Z/). It uses both current H5/LAZ granules and preserves the physical-only H0 result. No residual is used to select an operation or estimate a correction.
+Current real-data notebook run: [`20261017T015011000000Z`](../outputs/notebooks/geolocation/vertical_datum_alignment/runs/20261017T015011000000Z/). It uses both current H5/LAZ granules and preserves the physical-only H0 result. No residual is used to select an operation or estimate a correction.
 
 ### Operation audit and same-epoch verification
 
@@ -218,7 +218,7 @@ For every paired valid field/road pulse, the saved decomposition verifies `delta
 | 2024-11-18 | H2 ITRF2014 at observation time | +1.360686 m | +1.360709 m | 1.126996 m | +0.002361 m | +1.358348 m |
 | 2024-11-18 | H4 parameter-time sensitivity at 2010 | +1.371134 m | +1.371151 m | 0.950382 m | +0.005012 m | +1.366139 m |
 
-H1 and H3 produce nearly the same changes as H2 (within about 0.0007 m in median ellipsoidal-height change). The transformed routes reduce the absolute common-sample bias by about 1.30?1.37 m under the ITRF-aligned assumptions. Most of the residual change is in transformed height; the re-queried low-slope 3DEP field-plane median changes are a few millimetres. These residual improvements make an omitted frame conversion a plausible major contributor if the source was global-frame aligned. They do not establish that it was.
+H1 and H3 produce nearly the same changes as H2 (within about 0.0007 m in median ellipsoidal-height change). The transformed routes reduce the absolute common-sample bias by about 1.30 to 1.37 m under the ITRF-aligned assumptions. Most of the residual change is in transformed height; the re-queried low-slope 3DEP field-plane median changes are a few millimetres. These residual improvements make an omitted frame conversion a plausible major contributor if the source was global-frame aligned. They do not establish that it was.
 
 ### Current evidence classification
 
@@ -226,3 +226,9 @@ H1 and H3 produce nearly the same changes as H2 (within about 0.0007 m in median
 - **Source-frame hypothesis plausible:** yes. H1-H3 are coherent global-frame assumptions, but the H5 and available source records do not identify the actual GNSS/INS realization.
 - **Coordinate-epoch transformation verified for CASALS:** no. HTDP demonstrated the modelled 2010.0 step for two conditional fixed points; the source coordinate epochs and the per-pulse source trajectory provenance are missing.
 - **Strict physical CASALS-3DEP closure achieved:** no. The conditional high-SNR biases remain about -0.28 to -0.37 m, and Refh ranging/correction application and independent-reference uncertainty remain unresolved. No fitted bias, residual-selected route, or additional physical correction is applied.
+
+## Signed H0/H2 residual visualizations
+
+The completed notebook run is [20261017T015011000000Z](../outputs/notebooks/geolocation/vertical_datum_alignment/runs/20261017T015011000000Z/). The existing `residual_distributions.png` and `geoid18_spatial_residuals.png` remain the H0 physical-baseline figures in the run root. New comparison figures are saved under `frame_hypotheses/`: `vertical_residual_histograms.png`, `h0_vs_h2_residual_cdf.png`, and `h2_spatial_residuals.png`.
+
+The H0/H2 figures use the exact all-method intersection saved in `frame_hypothesis_common_pulses.csv`, restricted to field independent-test pulses with SNR >= 5. The counts and hashes are 427 / `cacd54d3c66f382c533089c7c1e72569cac94bb35f65043a67ef46e1e83b7e3a` for 2024-11-12 and 6,615 / `c876199660cd2607c333d6745898998cd12e0672e24d1aa44b6641bacb61dcc2` for 2024-11-18. The plot helper checks those IDs against `F['metrics']`, recomputes the displayed statistics, and retains each signed residual without centering or outlier removal. Histograms use density normalization and one Freedman-Diaconis bin definition per method across both dates. The spatial panels use H2's own transformed query coordinates in EPSG:6347, equal aspect, and one symmetric color range that includes all plotted residuals.
